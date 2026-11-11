@@ -6,48 +6,106 @@ interface IosBuildModalProps {
   onClose: () => void;
 }
 
-const WORKFLOW_SNIPPET = `name: Build iOS IPA (Chinta)
+const WORKFLOW_SNIPPET = `name: Build iOS IPA (Chinta / PaperPress)
+
 on:
   push:
     branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      appName:
+        description: 'Output IPA file name'
+        required: false
+        default: 'Chinta-iOS'
+      createRelease:
+        description: 'Create a GitHub Release with this IPA'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-ipa:
-    runs-on: macos-latest
+    name: Compile iOS App & Package IPA
+    runs-on: macos-14
+    timeout-minutes: 45
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
         with:
-          node-version: '22'
-      - name: Build Web App
+          fetch-depth: 1
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Node Dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Web Application
         env:
-          VITE_API_BASE_URL: https://ais-pre-x5dajtq4gftr4cicglkjqw-89921586403.asia-east1.run.app
-        run: npm install --legacy-peer-deps && npm run build
-      - run: |
-          npm install @capacitor/core@^6.2.0 @capacitor/cli@^6.2.0 @capacitor/ios@^6.2.0 --no-save --legacy-peer-deps
-          npx cap add ios || true
-          npx cap sync ios
-      - run: |
-          cd ios/App
-          if [ -d "Pods" ] && [ -d "App.xcworkspace" ]; then
-            xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \\
-              -sdk iphoneos -destination "generic/platform=iOS" -derivedDataPath build \\
-              CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO AD_HOC_CODE_SIGNING_ALLOWED=YES clean build
-          else
-            xcodebuild -project App.xcodeproj -scheme App -configuration Release \\
-              -sdk iphoneos -destination "generic/platform=iOS" -derivedDataPath build \\
-              CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO AD_HOC_CODE_SIGNING_ALLOWED=YES clean build
+          NODE_ENV: production
+        run: npm run build
+
+      - name: Setup Capacitor iOS Project
+        run: |
+          if [ ! -d "ios" ]; then
+            npx cap add ios
           fi
-      - run: |
+          npx cap sync ios
+
+      - name: Select Xcode Version
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Build iOS Archive (.app)
+        run: |
+          cd ios/App
+          if [ -d "App.xcworkspace" ] || [ -f "App.xcworkspace/contents.xcworkspacedata" ]; then
+            TARGET_FLAG="-workspace App.xcworkspace"
+          else
+            TARGET_FLAG="-project App.xcodeproj"
+          fi
+
+          xcodebuild $TARGET_FLAG \\
+            -scheme App \\
+            -configuration Release \\
+            -sdk iphoneos \\
+            -destination "generic/platform=iOS" \\
+            -derivedDataPath build \\
+            CODE_SIGNING_ALLOWED=NO \\
+            CODE_SIGNING_REQUIRED=NO \\
+            CODE_SIGN_IDENTITY="" \\
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \\
+            clean build
+
+      - name: Package Unsigned iOS .ipa (Payload)
+        run: |
+          IPA_NAME="\${{ inputs.appName || 'Chinta-iOS' }}"
+          APP_DIR=$(find ios/App/build -name "App.app" -type d | head -n 1)
           mkdir -p build_ipa/Payload
-          APP_PATH=$(find ios/App/build -name "App.app" -type d | head -n 1)
-          cp -R "$APP_PATH" build_ipa/Payload/
-          cd build_ipa && zip -r -q ../Chinta-iOS.ipa Payload
-      - uses: actions/upload-artifact@v4
+          cp -R "$APP_DIR" build_ipa/Payload/
+          cd build_ipa
+          zip -r -q "../\${IPA_NAME}.ipa" Payload/
+          cd ..
+          cp "\${IPA_NAME}.ipa" "Chinta-iOS.ipa"
+          cp "\${IPA_NAME}.ipa" "PaperPress-iOS.ipa"
+
+      - name: Upload IPA Artifact to GitHub Actions
+        uses: actions/upload-artifact@v4
         with:
           name: Chinta-iOS-IPA
-          path: Chinta-iOS.ipa`;
+          path: "*.ipa"
+          retention-days: 30`;
 
 export const IosBuildModal: React.FC<IosBuildModalProps> = ({ isOpen, onClose }) => {
   const [copiedWorkflow, setCopiedWorkflow] = useState(false);

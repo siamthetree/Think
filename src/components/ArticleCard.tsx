@@ -6,6 +6,7 @@ import {
   Repeat2,
   MessageSquare,
   CheckCircle2,
+  Clock,
 } from 'lucide-react';
 import type { FeedItem } from '../types';
 import { formatRelativeTime } from '../utils/feedParser';
@@ -21,30 +22,6 @@ interface ArticleCardProps {
   onOpenTagManager?: (article: FeedItem, e: React.MouseEvent) => void;
 }
 
-// Rich atmospheric card palettes (matching the warm terracotta & olive-green cards in the reference photo)
-const CARD_TINTS = [
-  {
-    solid: 'linear-gradient(165deg, #2D3823 0%, #242E1B 100%)',
-    overlay:
-      'linear-gradient(to top, rgba(45, 56, 35, 0.98) 0%, rgba(45, 56, 35, 0.88) 42%, rgba(45, 56, 35, 0.25) 75%, rgba(45, 56, 35, 0) 100%)',
-  },
-  {
-    solid: 'linear-gradient(165deg, #4A2825 0%, #381D1B 100%)',
-    overlay:
-      'linear-gradient(to top, rgba(74, 40, 37, 0.98) 0%, rgba(74, 40, 37, 0.88) 42%, rgba(74, 40, 37, 0.25) 75%, rgba(74, 40, 37, 0) 100%)',
-  },
-  {
-    solid: 'linear-gradient(165deg, #1F2D3A 0%, #16212B 100%)',
-    overlay:
-      'linear-gradient(to top, rgba(31, 45, 58, 0.98) 0%, rgba(31, 45, 58, 0.88) 42%, rgba(31, 45, 58, 0.25) 75%, rgba(31, 45, 58, 0) 100%)',
-  },
-  {
-    solid: 'linear-gradient(165deg, #3A2D21 0%, #2A2017 100%)',
-    overlay:
-      'linear-gradient(to top, rgba(58, 45, 33, 0.98) 0%, rgba(58, 45, 33, 0.88) 42%, rgba(58, 45, 33, 0.25) 75%, rgba(58, 45, 33, 0) 100%)',
-  },
-];
-
 export const ArticleCard: React.FC<ArticleCardProps> = ({
   article,
   viewMode = 'magazine',
@@ -54,7 +31,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
 }) => {
   const readTime = article.readTimeMin || 3;
 
-  // Stable pseudo-random engagement counts and card tint based on article ID hash
+  // Stable pseudo-random engagement counts based on article ID hash
   const pseudoCount = (seed: string, min: number, max: number) => {
     let hash = 0;
     for (let i = 0; i < seed.length; i++) {
@@ -63,9 +40,6 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     }
     return min + (Math.abs(hash) % (max - min + 1));
   };
-
-  const tintIndex = pseudoCount(article.id, 0, CARD_TINTS.length - 1);
-  const cardTint = CARD_TINTS[tintIndex];
 
   const initialLikes = pseudoCount(article.id + '_like', 4, 68);
   const initialRestacks = pseudoCount(article.id + '_re', 1, 19);
@@ -162,13 +136,14 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
               onToggleBookmark(article.id, e);
             }}
             aria-label={article.isBookmarked ? 'Remove bookmark' : 'Bookmark article'}
-            className={`p-1.5 rounded-xl liquid-glass-squircle transition-colors ${
+            title={article.isBookmarked ? 'Saved' : 'Save'}
+            className={`p-2 rounded-full transition-colors active:scale-90 ${
               article.isBookmarked
                 ? 'text-[#FF6719]'
-                : 'text-stone-500 dark:text-stone-300 hover:text-white'
+                : 'text-stone-400 hover:text-[#FF6719] dark:text-stone-500 dark:hover:text-stone-300'
             }`}
           >
-            <Bookmark className={`w-3.5 h-3.5 ${article.isBookmarked ? 'fill-current' : ''}`} />
+            <Bookmark className={`w-4 h-4 ${article.isBookmarked ? 'fill-current' : ''}`} />
           </button>
         </div>
       </article>
@@ -193,177 +168,160 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           : 'transform 380ms cubic-bezier(0.175,0.885,0.32,1.275)',
       }}
     >
-      {/* 1. Publisher Header Row (Matches reference photo: Avatar + Name + Relative Time + Right Ribbon) */}
-      <div className="flex items-center justify-between mb-2.5">
+      {/* 1. Publisher Header Row */}
+      <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2.5 min-w-0">
-          <SourceAvatar name={article.feedTitle} url={article.feedUrl} size="md" />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="font-sans font-bold text-[15px] text-stone-900 dark:text-white truncate max-w-[200px]">
-                {article.feedTitle}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5 text-[12px] text-stone-500 dark:text-stone-400">
-              <span>{formatRelativeTime(article.timestamp)}</span>
-              <span>·</span>
-              <span className="text-[#FF6719] font-medium">{readTime}m read</span>
-            </div>
+          <SourceAvatar name={article.feedTitle} url={article.feedUrl} size="sm" />
+          <div className="flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400 truncate">
+            <span className="font-semibold text-stone-800 dark:text-stone-200 truncate max-w-[160px] sm:max-w-xs">
+              {article.feedTitle}
+            </span>
+            <span aria-hidden="true" className="text-stone-300 dark:text-stone-700">·</span>
+            <span className="whitespace-nowrap">{formatRelativeTime(article.timestamp)}</span>
+            <span aria-hidden="true" className="text-stone-300 dark:text-stone-700">·</span>
+            <span className="whitespace-nowrap flex items-center gap-1">
+              <Clock className="w-3 h-3 text-stone-400" />
+              {readTime}m read
+            </span>
           </div>
         </div>
 
-        {/* Right: Unread status / Read toggle */}
+        {/* Right: Unread status or Read toggle */}
         <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
           {!article.isRead ? (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-stone-500 dark:text-stone-300">
-              <span className="w-2.5 h-3 bg-[#FF6719] rounded-[2px] inline-block" />
-            </span>
+            <span className="w-2 h-2 rounded-full bg-[#FF6719] shadow-xs" title="Unread story" />
           ) : (
             <button
               onClick={(e) => onToggleRead(article.id, e)}
               title="Mark as unread"
               className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-200"
             >
-              <CheckCircle2 className="w-4 h-4" />
+              <CheckCircle2 className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
       </div>
 
-      {/* 2. Lead Note / Teaser Sentence above the rounded feature card */}
+      {/* 2. Headline: High-Contrast Editorial Serif */}
+      <h2
+        className={`font-serif text-[19px] sm:text-[21px] font-bold leading-[1.3] text-stone-950 dark:text-stone-50 group-hover:text-[#FF6719] transition-colors mb-1.5 ${
+          article.isRead ? 'text-stone-600 dark:text-stone-400 font-semibold' : ''
+        }`}
+        style={{ textWrap: 'balance' }}
+      >
+        {article.title}
+      </h2>
+
+      {/* 3. Subtitle / Excerpt: Clean Editorial Prose */}
       {article.summary && (
-        <p className="font-sans text-[15px] leading-[1.42] text-stone-800 dark:text-stone-100 line-clamp-2 mb-3">
+        <p
+          className={`font-sans text-[14px] leading-relaxed line-clamp-2 sm:line-clamp-3 mb-3 ${
+            article.isRead
+              ? 'text-stone-500 dark:text-stone-400'
+              : 'text-stone-600 dark:text-stone-300'
+          }`}
+        >
           {article.summary}
         </p>
       )}
 
-      {/* 3. Embedded Rounded Feature Card with Atmospheric Gradient & Liquid Glass Bookmark Squircle */}
+      {/* 4. Large Featured Cover Image (16:9 Aspect Ratio) */}
+      {hasCover && (
+        <div className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 shadow-xs">
+          <img
+            src={article.imageUrl}
+            alt={article.title}
+            referrerPolicy="no-referrer"
+            loading="lazy"
+            className="w-full h-full object-cover group-hover:scale-[1.015] transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
+            onError={() => setImageFailed(true)}
+          />
+        </div>
+      )}
+
+      {/* 5. Minimal Social Action Ribbon (Heart, Comment, Restack, Share & Bookmark) */}
       <div
-        className="relative w-full rounded-[22px] overflow-hidden border border-black/[0.08] dark:border-white/[0.10] shadow-md mb-3"
-        style={{
-          background: cardTint.solid,
-        }}
+        className="flex items-center justify-between text-xs text-stone-500 dark:text-stone-400 pt-1 border-t border-stone-100 dark:border-white/[0.05]"
+        onClick={(e) => e.stopPropagation()}
       >
-        {hasCover && (
-          <div className="relative w-full h-52 sm:h-60 overflow-hidden">
-            <img
-              src={article.imageUrl}
-              alt={article.title}
-              referrerPolicy="no-referrer"
-              loading="lazy"
-              className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
-              onError={() => setImageFailed(true)}
-            />
-            {/* Smooth atmospheric blend from photo into card body */}
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{ background: cardTint.overlay }}
-            />
-          </div>
-        )}
-
-        {/* Feature Card Content Body */}
-        <div className={`relative px-4 pb-4 ${hasCover ? '-mt-16 pt-4' : 'pt-4'}`}>
-          <div className="flex items-center gap-2 mb-1.5">
-            <SourceAvatar name={article.feedTitle} url={article.feedUrl} size="sm" />
-            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/75 truncate">
-              {article.feedTitle}
-            </span>
-          </div>
-
-          <h2
-            className="font-sans text-[19px] sm:text-[21px] font-bold leading-[1.26] text-white mb-1.5 pr-12"
-            style={{ textWrap: 'balance' }}
-          >
-            {article.title}
-          </h2>
-
-          {article.summary && (
-            <p className="font-sans text-[13.5px] leading-[1.4] text-white/75 line-clamp-2 pr-14">
-              {article.summary}
-            </p>
-          )}
-
-          {/* Bottom-Right Frosted Liquid Glass Bookmark Squircle (matches reference photo) */}
+        {/* Left: Like, Comment, Restack */}
+        <div className="flex items-center gap-5 sm:gap-6">
           <button
-            type="button"
+            onClick={handleLike}
+            aria-label="Like story"
+            className={`flex items-center gap-1.5 py-1 px-1 -ml-1 rounded-lg transition-all ${
+              isLiked
+                ? 'text-[#FF4B4B] font-semibold'
+                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+            }`}
+          >
+            <Heart
+              className={`w-4 h-4 transition-transform active:scale-125 duration-150 ${
+                isLiked ? 'fill-[#FF4B4B] text-[#FF4B4B]' : 'stroke-[1.75]'
+              } ${likePopping ? 'like-pop' : ''}`}
+            />
+            <span className="text-[12px]">{likesCount}</span>
+          </button>
+
+          <button
+            onClick={() => onSelect(article)}
+            aria-label="View story and comments"
+            className="flex items-center gap-1.5 py-1 px-1 rounded-lg text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 transition-colors"
+          >
+            <MessageSquare className="w-4 h-4 stroke-[1.75]" />
+            <span className="text-[12px]">{initialComments}</span>
+          </button>
+
+          <button
+            onClick={handleRestack}
+            aria-label="Restack story"
+            className={`flex items-center gap-1.5 py-1 px-1 rounded-lg transition-all ${
+              isRestacked
+                ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+            }`}
+          >
+            <Repeat2
+              className={`w-4 h-4 transition-transform active:rotate-180 duration-200 ${
+                isRestacked ? 'text-emerald-600 dark:text-emerald-400 stroke-[2.2]' : 'stroke-[1.75]'
+              }`}
+            />
+            <span className="text-[12px]">{restacksCount}</span>
+          </button>
+        </div>
+
+        {/* Right: Share & Bookmark */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleShare}
+            aria-label="Share story link"
+            title="Share story"
+            className="p-1.5 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-white/[0.06] transition-colors relative min-w-[32px] min-h-[32px] flex items-center justify-center active:scale-90"
+          >
+            <Share2 className="w-4 h-4 stroke-[1.75]" />
+            {isCopied && (
+              <span className="absolute -top-7 right-0 px-2 py-0.5 bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 rounded-md text-[10px] font-medium shadow-md whitespace-nowrap animate-in fade-in duration-100">
+                Copied!
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={(e) => {
-              e.stopPropagation();
               triggerHapticSelection();
               onToggleBookmark(article.id, e);
             }}
             aria-label={article.isBookmarked ? 'Remove from Saved' : 'Save story'}
             title={article.isBookmarked ? 'Saved to Bookmarks' : 'Save to Bookmarks'}
-            className={`liquid-glass-squircle absolute bottom-3.5 right-3.5 w-10 h-10 rounded-[13px] flex items-center justify-center transition-transform active:scale-90 ${
-              article.isBookmarked ? 'text-[#FF6719]' : 'text-white/90 hover:text-white'
+            className={`p-1.5 rounded-full transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center active:scale-90 ${
+              article.isBookmarked
+                ? 'text-[#FF6719]'
+                : 'text-stone-400 hover:text-[#FF6719] dark:text-stone-400 dark:hover:text-white'
             }`}
           >
-            <Bookmark
-              className={`w-4 h-4 ${article.isBookmarked ? 'fill-[#FF6719] text-[#FF6719]' : 'stroke-[2]'}`}
-            />
+            <Bookmark className={`w-4 h-4 ${article.isBookmarked ? 'fill-current' : 'stroke-[1.75]'}`} />
           </button>
         </div>
-      </div>
-
-      {/* 4. Minimal Social Action Row below Card (Heart, Comment, Restack, Share) */}
-      <div
-        className="flex items-center gap-7 text-xs text-stone-500 dark:text-stone-400 pt-0.5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={handleLike}
-          aria-label="Like story"
-          className={`flex items-center gap-1.5 py-1 rounded-lg transition-all ${
-            isLiked
-              ? 'text-[#FF4B4B] font-semibold'
-              : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-          }`}
-        >
-          <Heart
-            className={`w-[18px] h-[18px] transition-transform active:scale-125 duration-150 ${
-              isLiked ? 'fill-[#FF4B4B] text-[#FF4B4B]' : 'stroke-[1.75]'
-            } ${likePopping ? 'like-pop' : ''}`}
-          />
-          <span className="text-[13px]">{likesCount}</span>
-        </button>
-
-        <button
-          onClick={() => onSelect(article)}
-          aria-label="Read story"
-          className="flex items-center gap-1.5 py-1 rounded-lg text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 transition-colors"
-        >
-          <MessageSquare className="w-[18px] h-[18px] stroke-[1.75]" />
-          <span className="text-[13px]">{initialComments}</span>
-        </button>
-
-        <button
-          onClick={handleRestack}
-          aria-label="Restack story"
-          className={`flex items-center gap-1.5 py-1 rounded-lg transition-all ${
-            isRestacked
-              ? 'text-emerald-500 font-semibold'
-              : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-          }`}
-        >
-          <Repeat2
-            className={`w-[18px] h-[18px] transition-transform active:rotate-180 duration-200 ${
-              isRestacked ? 'text-emerald-500 stroke-[2.2]' : 'stroke-[1.75]'
-            }`}
-          />
-        </button>
-
-        <button
-          onClick={handleShare}
-          aria-label="Share story link"
-          title="Share story"
-          className="flex items-center gap-1.5 py-1 rounded-lg text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 transition-colors relative"
-        >
-          <Share2 className="w-[18px] h-[18px] stroke-[1.75]" />
-          {isCopied && (
-            <span className="absolute -top-7 left-0 px-2 py-0.5 bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 rounded-md text-[10px] font-medium shadow-md whitespace-nowrap animate-in fade-in duration-100">
-              Copied!
-            </span>
-          )}
-        </button>
       </div>
     </article>
   );

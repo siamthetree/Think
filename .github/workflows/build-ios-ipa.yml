@@ -1,0 +1,173 @@
+name: Build iOS IPA (Chinta / PaperPress)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      appName:
+        description: 'Output IPA file name'
+        required: false
+        default: 'Chinta-iOS'
+      createRelease:
+        description: 'Create a GitHub Release with this IPA'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ipa:
+    name: Compile iOS App & Package IPA
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Node Dependencies
+        run: |
+          npm install --legacy-peer-deps
+
+      - name: Build Web Application
+        env:
+          NODE_ENV: production
+        run: |
+          npm run build
+
+      - name: Verify Web Dist Output
+        run: |
+          if [ ! -f "dist/index.html" ]; then
+            echo "::error::dist/index.html not found! Build failed."
+            exit 1
+          fi
+          echo "Web build successful. Output size:"
+          du -sh dist/
+
+      - name: Setup Capacitor iOS Project
+        run: |
+          # Add iOS platform if not already initialized
+          if [ ! -d "ios" ]; then
+            echo "Adding iOS platform via Capacitor..."
+            npx cap add ios
+          fi
+
+          # Sync web assets, plugins, and native configurations
+          echo "Syncing Capacitor iOS..."
+          npx cap sync ios
+
+      - name: Select Xcode Version
+        run: |
+          # Use latest available Xcode
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Build iOS Archive (.app)
+        run: |
+          cd ios/App
+
+          # Determine whether to use xcworkspace (if CocoaPods installed) or xcodeproj
+          if [ -d "App.xcworkspace" ] || [ -f "App.xcworkspace/contents.xcworkspacedata" ]; then
+            TARGET_FLAG="-workspace App.xcworkspace"
+          else
+            TARGET_FLAG="-project App.xcodeproj"
+          fi
+
+          echo "Building using $TARGET_FLAG for generic iOS device (iphoneos)..."
+
+          xcodebuild $TARGET_FLAG \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            clean build
+
+      - name: Package Unsigned iOS .ipa (Payload)
+        run: |
+          IPA_NAME="${{ inputs.appName || 'Chinta-iOS' }}"
+          
+          # Locate built App.app inside derivedDataPath
+          APP_DIR=$(find ios/App/build -name "App.app" -type d | head -n 1)
+          if [ -z "$APP_DIR" ]; then
+            echo "::error::Compiled App.app not found in build directory!"
+            find ios/App/build -maxdepth 4 -ls
+            exit 1
+          fi
+          echo "Found compiled app at: $APP_DIR"
+
+          # Create Payload directory structure for IPA
+          mkdir -p build_ipa/Payload
+          cp -R "$APP_DIR" build_ipa/Payload/
+
+          # Package Payload into .ipa file
+          cd build_ipa
+          zip -r -q "../${IPA_NAME}.ipa" Payload/
+          cd ..
+
+          # Also create a secondary copy with standard name for compatibility
+          cp "${IPA_NAME}.ipa" "Chinta-iOS.ipa"
+          cp "${IPA_NAME}.ipa" "PaperPress-iOS.ipa"
+
+          ls -lh *.ipa
+          echo "IPA packaging completed successfully."
+
+      - name: Upload IPA Artifact to GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chinta-iOS-IPA
+          path: |
+            *.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Generate Job Summary
+        run: |
+          cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          ### 📱 iOS .ipa Build Succeeded!
+
+          Your iOS IPA package was compiled and packaged successfully without signing restrictions.
+
+          #### How to Install on your iPhone:
+          1. **Download Artifact**: Scroll down to the **Artifacts** section below and download **`Chinta-iOS-IPA`**.
+          2. **Unzip**: Extract the zip archive to get `Chinta-iOS.ipa`.
+          3. **Install via Sideloading (Free Apple ID)**:
+             - **AltStore / SideStore**: AirDrop or send `Chinta-iOS.ipa` to your iPhone and install with AltStore.
+             - **Sideloadly** (Windows / macOS): Drag `Chinta-iOS.ipa` into Sideloadly, plug in your iPhone, and click Start.
+             - **TrollStore / Scarlet / Feather**: Open and install directly on iOS.
+          4. **Trust Certificate**: On your iPhone, navigate to **Settings → General → VPN & Device Management** and tap **Trust**.
+          EOF
+
+      - name: Create GitHub Release (Optional)
+        if: ${{ inputs.createRelease == true || startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.ipa
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
+          body: |
+            ## Distraction-Free iOS RSS & News Reader (.ipa)
+
+            ### Installation:
+            Download `Chinta-iOS.ipa` and install using AltStore, Sideloadly, or TrollStore.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
