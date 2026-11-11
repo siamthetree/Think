@@ -5,19 +5,13 @@ import {
   Bookmark,
   Share2,
   Tag as TagIcon,
-  CheckCircle2,
-  Eye,
-  EyeOff,
   X,
   Sparkles,
   ExternalLink,
   ChevronRight,
-  ArrowUp,
   Check,
-  Compass,
 } from 'lucide-react';
 import type { FeedItem, Tag, ReaderPreferences, ReaderTheme, ReaderFont, ReaderLineHeight } from '../types';
-import { formatRelativeTime } from '../utils/feedParser';
 import { sanitizeArticleHtml, blocksToHtml } from '../utils/sanitize';
 import { extractArticleWithFallback, summarizeArticleWithFallback, type ArticleSummaryResult } from '../utils/apiClient';
 import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
@@ -46,6 +40,39 @@ interface ReaderViewProps {
   ) => void;
 }
 
+/** Formats date into "NOV 7, 2026 AT 5:11 AM" */
+function formatEditorialTimestamp(pubDate: string, fallbackTimestamp: number): string {
+  const d = new Date(pubDate || fallbackTimestamp);
+  if (Number.isNaN(d.getTime())) return '';
+  const datePart = d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  const timePart = d.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+  return `${datePart} AT ${timePart}`.toUpperCase();
+}
+
+/** Extracts a concise subtitle/deck if distinct from the main title */
+function getEditorialSubtitle(summary?: string, title?: string): string | null {
+  if (!summary || /tap to load full story|full story loads in the app's reading mode/i.test(summary)) {
+    return null;
+  }
+  const clean = summary.replace(/\s+/g, ' ').trim();
+  if (!clean || clean === title) return null;
+  // Take first sentence or up to 120 chars for a clean newsletter-style standfirst
+  const firstSentenceMatch = clean.match(/^[^.!?]+[.!?]/);
+  const candidate = firstSentenceMatch ? firstSentenceMatch[0].trim() : clean;
+  if (candidate.length > 140) {
+    return `${candidate.slice(0, 135).trim()}…`;
+  }
+  return candidate;
+}
+
 export const ReaderView: React.FC<ReaderViewProps> = ({
   article,
   tags,
@@ -55,14 +82,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   onToggleBookmark,
   onToggleRead,
   onOpenTagManager,
-  onToggleOfflineCache,
   onNextArticle,
   onCacheExtractedArticle,
 }) => {
   const [showTypographyMenu, setShowTypographyMenu] = useState(false);
   const [scrollProgress, setScrollProgress] = useState(0);
-  const [focusMode, setFocusMode] = useState(preferences.distractionFree);
+  const [controlsVisible, setControlsVisible] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [faviconError, setFaviconError] = useState(false);
   const [extractedBlocks, setExtractedBlocks] = useState<
     { type: string; text?: string; src?: string; caption?: string }[] | null
   >(null);
@@ -78,6 +105,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [showSummary, setShowSummary] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const lastScrollTopRef = useRef(0);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -113,22 +141,29 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
-  // Handle scroll progress
+  // Handle scroll progress & auto-hide floating dock on downward scroll
   const handleScroll = () => {
     if (!containerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
     const scrollable = scrollHeight - clientHeight;
+
+    const delta = scrollTop - lastScrollTopRef.current;
+    if (scrollTop < 40) {
+      setControlsVisible(true);
+    } else if (delta > 8) {
+      setControlsVisible(false);
+      setShowTypographyMenu(false);
+    } else if (delta < -8) {
+      setControlsVisible(true);
+    }
+    lastScrollTopRef.current = scrollTop;
+
     if (scrollable <= 0) {
       setScrollProgress(0);
       return;
     }
     const progress = Math.min(100, Math.max(0, (scrollTop / scrollable) * 100));
     setScrollProgress(progress);
-  };
-
-  const scrollToTop = () => {
-    triggerHapticSelection();
-    containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleShare = async () => {
@@ -160,13 +195,16 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     showToast('Story link ready');
   };
 
-  // Reset per-article state when the story changes (Next Story reuses this component)
+  // Reset per-article state when the story changes
   useEffect(() => {
     setSummaryData(null);
     setShowSummary(false);
     setIsLoadingSummary(false);
     setExtractedBlocks(null);
     setScrollProgress(0);
+    setControlsVisible(true);
+    setFaviconError(false);
+    lastScrollTopRef.current = 0;
     containerRef.current?.scrollTo({ top: 0 });
   }, [article.id]);
 
@@ -232,177 +270,78 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [article.link]);
 
-  // Theme styles mapping (Warm Charcoal vs Pure Black OLED)
+  // Exact dark background matching the reference (#181818 warm charcoal dark)
   const getThemeClasses = (theme: ReaderTheme) => {
     switch (theme) {
       case 'oled':
-        return 'bg-[#090A0C] text-[#F3F4F6] selection:bg-neutral-800';
+        return 'bg-[#0C0C0C] text-[#E8E8E8] selection:bg-white/15';
       case 'slate':
       default:
-        return 'bg-[#121418] text-[#E2E8F0] selection:bg-[#252A34]';
+        return 'bg-[#181818] text-[#E6E6E6] selection:bg-white/15';
     }
   };
 
-  // Font family styles mapping
-  const getFontFamilyStyle = (font: ReaderFont) => {
+  // Body font family styles mapping (Headline always stays crisp editorial sans like the reference)
+  const getBodyFontFamilyStyle = (font: ReaderFont) => {
     switch (font) {
       case 'sans':
-        return { fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif" };
+        return { fontFamily: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif" };
       case 'mono':
         return { fontFamily: "'Space Mono', monospace, Courier" };
       case 'serif':
       default:
-        return { fontFamily: "'Lora', Georgia, serif" };
+        return { fontFamily: "'Lora', Georgia, Cambria, serif" };
     }
   };
 
-  // Line height styles mapping
-  const getLineHeightClass = (lh: ReaderLineHeight) => {
+  const getLineHeightStyle = (lh: ReaderLineHeight) => {
     switch (lh) {
       case 'normal':
-        return 'leading-normal';
+        return 1.56;
       case 'loose':
-        return 'leading-loose';
+        return 1.82;
       case 'relaxed':
       default:
-        return 'leading-relaxed';
+        return 1.68;
     }
   };
 
   const articleTags = tags.filter((t) => article.tags.includes(t.id));
+  const rawAuthor = (extractedMeta.author || article.author || '').trim();
+  const bylineText =
+    rawAuthor && rawAuthor.toLowerCase() !== article.feedTitle.toLowerCase()
+      ? `${article.feedTitle}, ${rawAuthor}`.toUpperCase()
+      : article.feedTitle.toUpperCase();
+
+  const subtitle = getEditorialSubtitle(article.summary, extractedMeta.title || article.title);
+  const sourceInitial = (article.feedTitle || 'N').trim().charAt(0).toUpperCase();
+  const authorInitial = rawAuthor ? rawAuthor.charAt(0).toUpperCase() : null;
+
+  let faviconUrl: string | undefined;
+  if (article.link && article.link.startsWith('http')) {
+    try {
+      const hostname = new URL(article.link).hostname;
+      if (hostname && !hostname.includes('localhost')) {
+        faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Body font size: default 19px for authentic editorial serif legibility
+  const effectiveBodySize = Math.max(16, preferences.fontSize + 1);
 
   return (
     <div
       className={`flex-1 flex flex-col h-full overflow-hidden relative reader-push-enter ${getThemeClasses(
         preferences.theme
       )}`}
-      style={{ transition: 'background-color 220ms ease, color 220ms ease' }}
+      style={{ transition: 'background-color 200ms ease, color 200ms ease' }}
     >
-      {/* Ultra-slim Apple Glowing Reading Progress Bar */}
-      <div
-        className="w-full absolute top-0 left-0 right-0 z-40 overflow-hidden pointer-events-none"
-        style={{ height: 2.5, background: 'rgba(255,255,255,0.06)' }}
-        role="progressbar"
-        aria-valuenow={Math.round(scrollProgress)}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
-        <div
-          className="h-full transition-all duration-75 ease-out"
-          style={{
-            width: `${scrollProgress}%`,
-            background: 'linear-gradient(90deg, #FF6719 0%, #FFA043 55%, #10B981 100%)',
-            boxShadow: '0 0 10px rgba(255, 103, 25, 0.75)',
-          }}
-        />
-      </div>
-
-      {/* Progressive Top Atmospheric Blur Mask */}
-      <div
-        className="top-progressive-blur pointer-events-none absolute inset-x-0 top-0 h-24 z-20"
-        aria-hidden="true"
-      />
-
-      {/* Floating Apple Liquid Glass Top Navigation Bar */}
-      <header
-        className={`absolute top-0 inset-x-0 z-30 pt-[max(env(safe-area-inset-top,0px),0.6rem)] px-3 pointer-events-none transition-all duration-300 ${
-          focusMode ? '-translate-y-16 opacity-0' : 'translate-y-0 opacity-100'
-        }`}
-      >
-        <div className="flex items-center justify-between gap-2 max-w-2xl mx-auto pointer-events-auto">
-          {/* Back Pill with Liquid Glass */}
-          <button
-            onClick={() => {
-              triggerHapticSelection();
-              onBack();
-            }}
-            aria-label="Back to Newsfeed"
-            className="liquid-glass-dock px-3 py-1.5 rounded-full flex items-center gap-1.5 text-xs font-medium text-stone-200 hover:text-white transition-all active:scale-95 shadow-lg group"
-          >
-            <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
-            <span className="text-[12px] font-sans font-medium tracking-tight">Feed</span>
-          </button>
-
-          {/* Center Publication Pill & Progress Indicator */}
-          <div className="liquid-glass-dock px-3.5 py-1.5 rounded-full flex items-center gap-2 max-w-[190px] shadow-lg min-w-0">
-            <span className="text-[11px] font-serif font-medium tracking-wide truncate text-stone-300">
-              {article.feedTitle}
-            </span>
-            {scrollProgress > 2 && (
-              <span className="text-[10px] font-mono font-semibold text-emerald-400 bg-emerald-950/60 px-1.5 py-0.2 rounded-full border border-emerald-500/25 shrink-0">
-                {Math.round(scrollProgress)}%
-              </span>
-            )}
-          </div>
-
-          {/* Right Liquid Glass Action Cluster */}
-          <div className="liquid-glass-dock p-1 rounded-full flex items-center gap-0.5 shadow-lg">
-            {/* AI Editorial Summary Toggle */}
-            <button
-              onClick={handleGenerateSummary}
-              aria-label={showSummary ? 'Hide article summary' : 'AI Editorial summary'}
-              title="Editorial AI summary & takeaways"
-              className={`p-1.5 rounded-full transition-all active:scale-90 ${
-                showSummary
-                  ? 'bg-emerald-500/25 text-emerald-300 ring-1 ring-emerald-500/50'
-                  : 'text-stone-300 hover:text-emerald-400 hover:bg-white/5'
-              }`}
-            >
-              <Sparkles
-                className={`w-3.5 h-3.5 ${
-                  isLoadingSummary ? 'animate-spin text-emerald-400' : 'text-emerald-400'
-                }`}
-              />
-            </button>
-
-            {/* Typography Customizer (Aa) */}
-            <button
-              onClick={() => {
-                triggerHapticSelection();
-                setShowTypographyMenu(!showTypographyMenu);
-              }}
-              aria-label="Appearance and typography settings"
-              className={`p-1.5 rounded-full transition-all active:scale-90 ${
-                showTypographyMenu
-                  ? 'bg-white/20 text-white ring-1 ring-white/30'
-                  : 'text-stone-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <Type className="w-3.5 h-3.5" />
-            </button>
-
-            {/* Bookmark Toggle */}
-            <button
-              onClick={() => {
-                triggerHapticSelection();
-                onToggleBookmark(article.id);
-                showToast(article.isBookmarked ? 'Removed from bookmarks' : 'Bookmarked story');
-              }}
-              aria-label={article.isBookmarked ? 'Remove bookmark' : 'Bookmark story'}
-              className="p-1.5 rounded-full text-stone-300 hover:text-amber-400 hover:bg-white/5 transition-all active:scale-90"
-            >
-              <Bookmark
-                className={`w-3.5 h-3.5 transition-colors ${
-                  article.isBookmarked ? 'fill-amber-400 text-amber-400 scale-105' : ''
-                }`}
-              />
-            </button>
-
-            {/* Share */}
-            <button
-              onClick={handleShare}
-              aria-label="Share story"
-              className="p-1.5 rounded-full text-stone-300 hover:text-white hover:bg-white/5 transition-all active:scale-90"
-            >
-              <Share2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      </header>
-
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in fade-in slide-in-from-top-3 duration-200">
+        <div className="absolute top-12 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in fade-in slide-in-from-top-3 duration-200">
           <div className="liquid-glass-dock px-3.5 py-1.5 rounded-full text-xs font-medium text-stone-100 flex items-center gap-1.5 shadow-2xl border border-white/20">
             <Check className="w-3.5 h-3.5 text-emerald-400" />
             <span>{toastMessage}</span>
@@ -413,23 +352,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       {/* Apple Liquid Glass Typography & Appearance Sheet */}
       {showTypographyMenu && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 pb-20 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
           onClick={() => setShowTypographyMenu(false)}
         >
           <div
             onClick={(e) => e.stopPropagation()}
             className="reader-liquid-card rounded-3xl p-5 w-full max-w-sm text-stone-100 shadow-2xl border border-white/20 animate-in zoom-in-95 duration-150"
           >
-            {/* Header */}
             <div className="flex items-center justify-between pb-3.5 mb-4 border-b border-white/10">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold uppercase tracking-wider text-stone-300">
-                  Reader Appearance
-                </span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/10 text-stone-400">
-                  iOS 26
-                </span>
-              </div>
+              <span className="text-xs font-semibold uppercase tracking-wider text-stone-300">
+                Reader Appearance
+              </span>
               <button
                 onClick={() => {
                   triggerHapticSelection();
@@ -444,20 +377,20 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
             {/* Dark Reading Theme Selector */}
             <div className="mb-4">
-              <span className="text-[11px] font-medium text-stone-400 block mb-2">Dark Atmosphere</span>
+              <span className="text-[11px] font-medium text-stone-400 block mb-2">Background Tone</span>
               <div className="grid grid-cols-2 gap-2 p-1 bg-black/40 border border-white/10 rounded-2xl">
                 {[
                   {
                     id: 'slate',
-                    name: 'Charcoal',
-                    preview: 'bg-[#181B20]',
-                    desc: 'Warm paper dark',
+                    name: 'Editorial Dark',
+                    preview: 'bg-[#181818]',
+                    desc: '#181818 Charcoal',
                   },
                   {
                     id: 'oled',
                     name: 'OLED Black',
-                    preview: 'bg-[#090A0C]',
-                    desc: 'Pure midnight',
+                    preview: 'bg-[#0C0C0C]',
+                    desc: 'True Pitch Dark',
                   },
                 ].map((t) => {
                   const isActive = preferences.theme === t.id;
@@ -470,14 +403,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       }}
                       className={`p-2 rounded-xl flex items-center gap-2 transition-all text-left ${
                         isActive
-                          ? 'liquid-glass-active-bubble ring-1 ring-emerald-500/80 shadow-md'
+                          ? 'liquid-glass-active-bubble ring-1 ring-white/30 shadow-md'
                           : 'opacity-65 hover:opacity-100'
                       }`}
                     >
                       <span
-                        className={`w-4 h-4 rounded-full border border-white/20 shrink-0 ${t.preview} ${
-                          isActive ? 'ring-2 ring-emerald-400' : ''
-                        }`}
+                        className={`w-4 h-4 rounded-full border border-white/25 shrink-0 ${t.preview}`}
                       />
                       <div className="min-w-0">
                         <span className="text-xs font-medium block truncate text-stone-200">
@@ -493,7 +424,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
             {/* Font Selector */}
             <div className="mb-4">
-              <span className="text-[11px] font-medium text-stone-400 block mb-2">Editorial Font</span>
+              <span className="text-[11px] font-medium text-stone-400 block mb-2">Body Font</span>
               <div className="grid grid-cols-3 gap-1.5 p-1 bg-black/40 border border-white/10 rounded-2xl">
                 {[
                   { id: 'serif', label: 'Serif', sample: 'Lora', style: { fontFamily: "'Lora', serif" } },
@@ -536,8 +467,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             {/* Font Size Steppers */}
             <div className="mb-4">
               <div className="flex items-center justify-between mb-1.5 text-[11px] font-medium text-stone-400">
-                <span>Text Scale</span>
-                <span className="font-mono text-emerald-400">{preferences.fontSize} px</span>
+                <span>Text Size</span>
+                <span className="font-mono text-stone-300">{effectiveBodySize} px</span>
               </div>
               <div className="flex items-center gap-2 p-1 bg-black/40 border border-white/10 rounded-2xl">
                 <button
@@ -571,7 +502,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </div>
 
             {/* Line Spacing */}
-            <div className="mb-4">
+            <div>
               <span className="text-[11px] font-medium text-stone-400 block mb-1.5">Line Spacing</span>
               <div className="grid grid-cols-3 gap-1 p-1 bg-black/40 border border-white/10 rounded-2xl">
                 {(['normal', 'relaxed', 'loose'] as ReaderLineHeight[]).map((lh) => {
@@ -595,150 +526,129 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 })}
               </div>
             </div>
-
-            {/* Distraction-Free Toggle in Sheet */}
-            <button
-              onClick={() => {
-                triggerHapticSelection();
-                const next = !focusMode;
-                setFocusMode(next);
-                onUpdatePreferences({ ...preferences, distractionFree: next });
-              }}
-              className="w-full py-2.5 px-3 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-between text-xs transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                {focusMode ? (
-                  <EyeOff className="w-4 h-4 text-emerald-400" />
-                ) : (
-                  <Eye className="w-4 h-4 text-stone-400" />
-                )}
-                <span>Full Focus Immersion</span>
-              </div>
-              <span
-                className={`text-[10px] px-2 py-0.5 rounded-full ${
-                  focusMode
-                    ? 'bg-emerald-500/20 text-emerald-300 font-semibold'
-                    : 'bg-white/10 text-stone-400'
-                }`}
-              >
-                {focusMode ? 'Active' : 'Off'}
-              </span>
-            </button>
           </div>
         </div>
       )}
 
-      {/* Main Scrollable Article Reading Canvas */}
+      {/* Main Scrollable Article Reading Canvas — Clean Top like Reference Screenshot */}
       <main
         ref={containerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-5 pt-20 pb-32 md:px-8 selection:text-current relative no-scrollbar"
+        onClick={() => {
+          // Tapping the reading canvas toggles the floating bottom liquid glass controls
+          if (!showTypographyMenu) {
+            setControlsVisible((v) => !v);
+          }
+        }}
+        className="flex-1 overflow-y-auto px-[20px] pt-[max(env(safe-area-inset-top,0px),1.5rem)] pb-32 md:px-8 relative no-scrollbar"
       >
-        <article className="max-w-[660px] mx-auto">
-          {/* Publication Kicker & Reading Time */}
-          <div className="flex items-center justify-between text-[11px] tracking-widest font-sans uppercase text-stone-400/80 mb-3.5">
-            <span className="font-semibold text-emerald-400/90">{article.feedTitle}</span>
-            <span className="font-mono text-stone-400">
-              {extractedMeta.readTimeMin || article.readTimeMin} min read
-            </span>
+        <article className="max-w-[640px] mx-auto">
+          {/* 1. Uppercase Kicker (Publication Name) */}
+          <div className="text-[12px] font-sans font-semibold uppercase tracking-[0.06em] text-[#9E9E9E] mb-2.5">
+            {article.feedTitle}
           </div>
 
-          {/* Article Title */}
+          {/* 2. Large Bold Sans-Serif Headline */}
           <h1
+            className="font-sans font-bold text-[#EDEDED] tracking-[-0.022em] leading-[1.14]"
             style={{
-              ...getFontFamilyStyle(preferences.font),
-              fontSize: `${Math.round(preferences.fontSize * 1.58)}px`,
-              lineHeight: 1.22,
-              textWrap: 'balance',
+              fontSize: 'clamp(27px, 7.2vw, 34px)',
             }}
-            className="font-bold tracking-tight text-stone-100 mb-4"
           >
             {extractedMeta.title || article.title}
           </h1>
 
-          {/* Byline & Date */}
-          <div className="flex items-center flex-wrap gap-2 text-xs text-stone-400/90 pb-5 mb-6 border-b border-white/10">
-            {(extractedMeta.author || article.author) && (
-              <>
-                <span className="font-medium text-stone-200">
-                  By {extractedMeta.author || article.author}
-                </span>
-                <span aria-hidden="true" className="opacity-40">
-                  ·
-                </span>
-              </>
-            )}
-            <span>
-              {new Date(article.pubDate).toLocaleDateString('en-US', {
-                month: 'long',
-                day: 'numeric',
-                year: 'numeric',
-              })}
-            </span>
-            <span aria-hidden="true" className="opacity-40">
-              ·
-            </span>
-            <span>{formatRelativeTime(article.timestamp)}</span>
-            {article.isOfflineCached && (
-              <>
-                <span aria-hidden="true" className="opacity-40">
-                  ·
-                </span>
-                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
-                  <CheckCircle2 className="w-3 h-3" />
-                  <span>Offline Ready</span>
-                </span>
-              </>
-            )}
-          </div>
-
-          {/* AI Editorial Summary Prompt Pill (if summary not open yet) */}
-          {!showSummary && (
-            <div className="mb-7">
-              <button
-                onClick={handleGenerateSummary}
-                className="w-full py-2.5 px-4 rounded-2xl liquid-glass-dock hover:bg-emerald-950/30 border border-emerald-500/25 text-emerald-300 text-xs font-medium flex items-center justify-between transition-all active:scale-[0.99] shadow-md group"
-              >
-                <div className="flex items-center gap-2.5">
-                  <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                    <Sparkles className="w-3 h-3 text-emerald-400 group-hover:scale-110 transition-transform" />
-                  </div>
-                  <span className="font-sans font-medium text-stone-200">
-                    AI Editorial Summary & Key Takeaways
-                  </span>
-                </div>
-                <span className="text-[11px] text-emerald-400 font-sans group-hover:translate-x-0.5 transition-transform">
-                  Generate →
-                </span>
-              </button>
-            </div>
+          {/* 3. Standfirst / Subtitle */}
+          {subtitle && (
+            <p className="font-sans font-normal text-[17px] leading-[1.42] text-[#9E9E9E] mt-3.5 mb-5">
+              {subtitle}
+            </p>
           )}
 
-          {/* Precise Editorial Summary Card (Liquid Glass with emerald highlights) */}
-          {showSummary && (
-            <aside className="mb-8 reader-liquid-card rounded-3xl p-4 sm:p-5 border border-emerald-500/35 shadow-2xl text-stone-200 animate-in fade-in slide-in-from-top-3 duration-200">
-              <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/10">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-7 h-7 rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shadow-xs">
-                    <Sparkles className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-serif font-bold text-sm text-stone-100 leading-tight">
-                      Editorial Executive Summary
-                    </h3>
-                    <p className="text-[10px] text-stone-400 font-sans">
-                      {summaryData?.provider === 'gemini'
-                        ? 'Synthesized via Gemini Intelligence'
-                        : 'Distilled by Editorial News Intelligence'}
-                    </p>
-                  </div>
-                </div>
+          {/* 4. Overlapping Circular Avatars + Reader Mark Row */}
+          <div
+            className={`flex items-center justify-between ${subtitle ? 'mt-5' : 'mt-6'} mb-3.5`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Left: Overlapping circular avatar stack */}
+            <div className="flex items-center -space-x-2">
+              {/* Primary Publication Circle */}
+              <div className="w-9 h-9 rounded-full ring-2 ring-[#181818] bg-[#D92323] text-white flex items-center justify-center font-serif font-bold text-lg overflow-hidden shrink-0 shadow-xs">
+                {faviconUrl && !faviconError ? (
+                  <img
+                    src={faviconUrl}
+                    alt={article.feedTitle}
+                    onError={() => setFaviconError(true)}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <span>{sourceInitial}</span>
+                )}
+              </div>
 
+              {/* Secondary Author / Editorial Circle */}
+              {authorInitial && (
+                <div className="w-9 h-9 rounded-full ring-2 ring-[#181818] bg-gradient-to-br from-[#4F5D73] to-[#2C3545] text-white flex items-center justify-center font-sans font-semibold text-xs shrink-0">
+                  {authorInitial}
+                </div>
+              )}
+
+              {/* Accent Brand Orb (Matches overlapping orange/gold circle in reference) */}
+              <div className="w-9 h-9 rounded-full ring-2 ring-[#181818] bg-gradient-to-br from-[#FF7A2F] to-[#E8521A] flex items-center justify-center shrink-0">
+                <span className="w-7 h-7 rounded-full border border-emerald-300/60" />
+              </div>
+            </div>
+
+            {/* Right: Reader Brand Mark / Quick Summary Trigger */}
+            <button
+              onClick={handleGenerateSummary}
+              title="Toggle AI Editorial Summary"
+              className="flex items-center gap-1.5 text-[#ECECEC] hover:opacity-80 transition-opacity active:scale-95"
+            >
+              <svg
+                width="13"
+                height="15"
+                viewBox="0 0 14 16"
+                fill="#FF6719"
+                aria-hidden="true"
+                className="shrink-0"
+              >
+                <path d="M0 0h14v2.2H0V0zm0 4.2h14v2.2H0V4.2zm0 4.2h14V16l-7-3.8L0 16V8.4z" />
+              </svg>
+              <span className="font-sans font-semibold text-[15px] tracking-[-0.02em] text-[#F2F2F2]">
+                reader
+              </span>
+            </button>
+          </div>
+
+          {/* 5. Uppercase Author Byline & Date-Time */}
+          <div className="mt-3">
+            <div className="text-[11.5px] font-sans font-bold uppercase tracking-[0.04em] text-[#DEDEDE] leading-snug">
+              {bylineText}
+            </div>
+            <div className="text-[11.5px] font-sans font-medium uppercase tracking-[0.04em] text-[#8E8E8E] mt-1">
+              {formatEditorialTimestamp(article.pubDate, article.timestamp)}
+            </div>
+          </div>
+
+          {/* 6. Thin Subtle Horizontal Divider */}
+          <div className="border-b border-[#2C2C2C] my-5" />
+
+          {/* Optional AI Editorial Summary Card (when toggled via the reader badge or dock) */}
+          {showSummary && (
+            <aside
+              onClick={(e) => e.stopPropagation()}
+              className="my-6 reader-liquid-card rounded-2xl p-4 sm:p-5 border border-white/15 shadow-2xl text-[#E6E6E6] animate-in fade-in slide-in-from-top-2 duration-200"
+            >
+              <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/10">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-[#FF6719]" />
+                  <h3 className="font-sans font-bold text-xs uppercase tracking-wider text-[#EDEDED]">
+                    Editorial Summary
+                  </h3>
+                </div>
                 <button
-                  onClick={() => {
-                    triggerHapticSelection();
-                    setShowSummary(false);
-                  }}
+                  onClick={() => setShowSummary(false)}
                   aria-label="Hide summary"
                   className="p-1 rounded-full text-stone-400 hover:text-stone-100 hover:bg-white/10 transition-colors"
                 >
@@ -747,61 +657,39 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               </div>
 
               {isLoadingSummary ? (
-                <div className="py-7 flex flex-col items-center justify-center space-y-2.5 text-xs text-stone-400 font-sans">
-                  <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                  <span className="text-[11px]">Synthesizing article insights and takeaways...</span>
+                <div className="py-6 flex items-center justify-center gap-2.5 text-xs text-[#9E9E9E] font-sans">
+                  <div className="w-4 h-4 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin" />
+                  <span>Distilling key points…</span>
                 </div>
               ) : summaryData ? (
-                <div className="space-y-3.5 text-xs font-sans leading-relaxed">
-                  {/* Executive Overview Container */}
-                  <div className="p-3.5 rounded-2xl bg-black/45 border border-white/10">
-                    <span className="text-[10px] uppercase tracking-wider font-semibold text-emerald-400 block mb-1">
-                      Overview
-                    </span>
-                    <p className="text-stone-200 font-serif text-[13.5px] leading-relaxed">
-                      {summaryData.executiveSummary}
-                    </p>
-                  </div>
-
-                  {/* Bulleted Key Takeaways */}
+                <div className="space-y-3 text-[14px] leading-relaxed">
+                  <p className="font-serif text-[#EAEAEA]">{summaryData.executiveSummary}</p>
                   {summaryData.keyTakeaways && summaryData.keyTakeaways.length > 0 && (
-                    <div>
-                      <span className="text-[10px] uppercase tracking-wider font-semibold text-stone-400 block mb-1.5">
-                        Key Points
-                      </span>
-                      <ul className="space-y-1.5 pl-1">
-                        {summaryData.keyTakeaways.map((point, i) => (
-                          <li key={i} className="flex items-start gap-2 text-stone-300">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 mt-1.5 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
-                            <span className="text-[12.5px]">{point}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Context Note */}
-                  {summaryData.context && (
-                    <div className="pt-2 border-t border-white/10 text-[11px] text-stone-400 italic">
-                      {summaryData.context}
-                    </div>
+                    <ul className="space-y-1.5 pt-2 border-t border-white/10 font-sans text-[13px] text-[#CFCFCF]">
+                      {summaryData.keyTakeaways.map((point, i) => (
+                        <li key={i} className="flex items-start gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#FF6719] shrink-0 mt-2" />
+                          <span>{point}</span>
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </div>
               ) : (
-                <p className="text-xs text-stone-400">Failed to generate summary. Please try again.</p>
+                <p className="text-xs text-[#9E9E9E]">Unable to generate summary right now.</p>
               )}
             </aside>
           )}
 
-          {/* Lead / Hero Image with Liquid Glass Border */}
+          {/* 7. Lead / Hero Image — Crisp Rectangular Edges Matching Reference */}
           {(extractedMeta.leadImage || article.imageUrl) && (
-            <figure className="mb-8 rounded-2xl overflow-hidden shadow-2xl border border-white/15 bg-black/30">
+            <figure className="my-6 overflow-hidden rounded-[2px] bg-[#222222]">
               <img
                 src={extractedMeta.leadImage || article.imageUrl}
                 alt={extractedMeta.title || article.title}
                 referrerPolicy="no-referrer"
                 loading="eager"
-                className="w-full h-auto max-h-[380px] object-cover"
+                className="w-full h-auto object-cover block"
                 onError={(e) => {
                   (e.target as HTMLElement).style.display = 'none';
                 }}
@@ -809,22 +697,30 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </figure>
           )}
 
-          {/* Article Text Content (Clean Editorial Reading Layout) */}
+          {/* Author Credit Attribution Line (matching "Marie Segger / Data journalist" style if author exists) */}
+          {rawAuthor && (
+            <div className="mb-6 font-serif text-[18px] leading-[1.45] text-[#E6E6E6]">
+              <div className="underline underline-offset-4 decoration-white/55">{rawAuthor}</div>
+              <div className="italic text-[#CFCFCF] text-[17px]">{article.feedTitle}</div>
+            </div>
+          )}
+
+          {/* 8. Article Body Copy — Clean Editorial Serif, Underlined Links, No Drop Cap */}
           <div
             style={{
-              ...getFontFamilyStyle(preferences.font),
-              fontSize: `${preferences.fontSize}px`,
+              ...getBodyFontFamilyStyle(preferences.font),
+              fontSize: `${effectiveBodySize}px`,
+              lineHeight: getLineHeightStyle(preferences.lineHeight),
             }}
-            className={`${getLineHeightClass(preferences.lineHeight)} space-y-6 text-stone-200`}
+            className="space-y-5 text-[#E6E6E6] tracking-[-0.003em]"
           >
-            {/* If rich extracted blocks are available, render them */}
             {extractedBlocks && extractedBlocks.length > 0 ? (
               extractedBlocks.map((block, idx) => {
                 if (block.type === 'h2' || block.type === 'h3') {
                   return (
                     <h2
                       key={idx}
-                      className="font-bold pt-4 text-xl tracking-tight text-stone-100 opacity-95"
+                      className="font-sans font-bold pt-4 text-[22px] tracking-tight text-[#F0F0F0] leading-snug"
                     >
                       {block.text}
                     </h2>
@@ -834,197 +730,202 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   return (
                     <blockquote
                       key={idx}
-                      className="py-3 px-4.5 my-5 border-l-2 border-emerald-400/80 bg-white/5 rounded-r-2xl italic text-stone-200 text-lg shadow-xs"
+                      className="py-1 pl-4 my-5 border-l-2 border-white/30 italic text-[#D0D0D0]"
                     >
-                      "{block.text}"
+                      {block.text}
                     </blockquote>
                   );
                 }
                 if (block.type === 'img' && block.src) {
                   return (
-                    <figure
-                      key={idx}
-                      className="my-6 rounded-2xl overflow-hidden border border-white/10 shadow-lg"
-                    >
+                    <figure key={idx} className="my-6 overflow-hidden rounded-[2px] bg-[#222222]">
                       <img
                         src={block.src}
                         alt=""
                         referrerPolicy="no-referrer"
-                        className="w-full h-auto object-cover"
+                        className="w-full h-auto object-cover block"
                       />
                       {block.caption && (
-                        <figcaption className="p-2.5 text-xs text-stone-400 italic font-sans bg-black/40">
+                        <figcaption className="pt-2 text-xs text-[#9E9E9E] font-sans">
                           {block.caption}
                         </figcaption>
                       )}
                     </figure>
                   );
                 }
-                // Paragraph with drop cap on the first paragraph
                 return (
-                  <p
-                    key={idx}
-                    className={
-                      idx === 0
-                        ? 'first-letter:text-4xl first-letter:font-bold first-letter:float-left first-letter:mr-2.5 first-letter:mt-0.5 first-letter:text-amber-500 text-stone-200/95'
-                        : 'text-stone-200/95'
-                    }
-                  >
+                  <p key={idx} className="text-[#E6E6E6]">
                     {block.text}
                   </p>
                 );
               })
             ) : article.contentHtml ? (
-              /* Zero-delay render of sanitized article HTML */
               <div
-                className="article-prose prose-stone max-w-none space-y-5 text-stone-200/95"
+                className="article-prose max-w-none"
                 dangerouslySetInnerHTML={{ __html: sanitizeArticleHtml(article.contentHtml) }}
               />
             ) : article.contentClean ? (
-              /* Clean content paragraphs */
-              <div className="space-y-4">
+              <div className="space-y-5">
                 {article.contentClean
                   .split(/\n+/)
                   .map((p) => p.trim())
                   .filter(Boolean)
                   .map((p, idx) => (
-                    <p
-                      key={idx}
-                      className={
-                        idx === 0
-                          ? 'first-letter:text-4xl first-letter:font-bold first-letter:float-left first-letter:mr-2.5 first-letter:mt-0.5 first-letter:text-amber-500 text-stone-200/95'
-                          : 'text-stone-200/95'
-                      }
-                    >
+                    <p key={idx} className="text-[#E6E6E6]">
                       {p}
                     </p>
                   ))}
               </div>
             ) : (
-              /* Fallback to story summary */
-              <p className="text-stone-200/95 leading-relaxed text-base">{article.summary}</p>
+              <p className="text-[#E6E6E6]">{article.summary}</p>
             )}
 
-            {/* Silent non-blocking background enrichment indicator */}
             {isLoadingExtraction && (
-              <div className="pt-2 pb-1 flex items-center gap-2 text-[11px] text-stone-400/60 font-sans">
-                <div className="w-2.5 h-2.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0" />
-                <span>Checking portal for full article text...</span>
+              <div className="pt-2 pb-1 flex items-center gap-2 text-[11px] text-[#8E8E8E] font-sans">
+                <div className="w-2.5 h-2.5 border-2 border-white/40 border-t-transparent rounded-full animate-spin shrink-0" />
+                <span>Loading full story…</span>
               </div>
             )}
           </div>
 
-          {/* Assigned Tags Section */}
-          <div className="mt-12 pt-6 border-t border-white/10">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-[11px] uppercase tracking-wider font-semibold text-stone-400 font-sans">
-                Story Tags
-              </span>
-              <button
-                onClick={() => {
-                  triggerHapticSelection();
-                  onOpenTagManager(article);
-                }}
-                aria-label="Edit story tags"
-                className="text-xs text-stone-300 hover:text-white underline transition-opacity"
-              >
-                + Edit Tags
-              </button>
-            </div>
-
+          {/* Footer: Story Tags & Original Link */}
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="mt-14 pt-6 border-t border-[#2C2C2C] flex flex-wrap items-center justify-between gap-4 text-xs text-[#9E9E9E] font-sans"
+          >
             <div className="flex flex-wrap items-center gap-2">
               {articleTags.map((tag) => (
                 <span
                   key={tag.id}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border border-white/15 bg-white/5 text-stone-200"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border border-white/15 bg-white/5 text-[#DEDEDE]"
                 >
                   <span
-                    className="w-2 h-2 rounded-full shrink-0"
+                    className="w-1.5 h-1.5 rounded-full shrink-0"
                     style={{ backgroundColor: tag.color }}
                   />
                   <span>{tag.name}</span>
                 </span>
               ))}
-
-              {articleTags.length === 0 && (
-                <span className="text-xs text-stone-500 italic">
-                  No tags assigned. Tap "Edit Tags" to organize your newsfeed.
-                </span>
-              )}
+              <button
+                onClick={() => {
+                  triggerHapticSelection();
+                  onOpenTagManager(article);
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-white/10 hover:border-white/25 text-[11px] text-[#9E9E9E] hover:text-white transition-colors"
+              >
+                <TagIcon className="w-3 h-3" />
+                <span>Tags</span>
+              </button>
             </div>
-          </div>
 
-          {/* Original Source Attribution Card */}
-          <div className="mt-8 p-4 rounded-2xl reader-liquid-card border border-white/15 text-xs text-stone-300">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <span className="font-semibold text-stone-100 block truncate">
-                  Original Publication
-                </span>
-                <span className="text-stone-400 truncate block text-[11px]">
-                  Reading mode archive from {article.feedTitle}
-                </span>
-              </div>
-              {article.link && article.link.startsWith('http') && (
-                <a
-                  href={article.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full liquid-glass-pill text-stone-100 text-xs font-medium hover:text-white transition-all active:scale-95 shadow-md"
-                >
-                  <ExternalLink className="w-3.5 h-3.5 text-stone-300" />
-                  <span>Open web</span>
-                </a>
-              )}
-            </div>
+            {article.link && article.link.startsWith('http') && (
+              <a
+                href={article.link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] text-[#9E9E9E] hover:text-white underline underline-offset-4 transition-colors"
+              >
+                <span>View original</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
           </div>
-
-          {/* Article End Padding */}
-          <div className="h-16" />
         </article>
       </main>
 
-      {/* Floating Bottom Liquid Glass Action Bar (Apple iOS 26 Capsule) */}
+      {/* Compact Apple Liquid Glass Floating Bottom Pill (Auto-hides on scroll down, tap screen to toggle) */}
       <footer
-        className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-30 pointer-events-auto transition-all duration-300 ${
-          focusMode ? 'translate-y-20 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'
+        className={`fixed bottom-[max(env(safe-area-inset-bottom,0px),1rem)] left-1/2 -translate-x-1/2 z-30 transition-all duration-300 ${
+          controlsVisible
+            ? 'translate-y-0 opacity-100 pointer-events-auto'
+            : 'translate-y-20 opacity-0 pointer-events-none'
         }`}
       >
-        <div className="liquid-glass-dock px-3 py-1.5 rounded-full flex items-center gap-3 shadow-2xl border border-white/20">
-          {/* Back button */}
+        <div className="liquid-glass-dock px-2.5 py-1.5 rounded-full flex items-center gap-1 shadow-2xl border border-white/20">
+          {/* Back to Feed */}
           <button
             onClick={() => {
               triggerHapticSelection();
               onBack();
             }}
-            className="flex items-center gap-1 text-xs font-medium text-stone-300 hover:text-white transition-colors active:scale-95 px-2 py-1 rounded-full"
+            aria-label="Back to Feed"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium text-stone-200 hover:text-white hover:bg-white/10 transition-all active:scale-95"
           >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Feed</span>
+            <ArrowLeft className="w-4 h-4" />
+            <span className="pr-0.5">Feed</span>
           </button>
 
-          <div className="w-px h-3.5 bg-white/20" />
+          <div className="w-px h-4 bg-white/15 mx-0.5" />
 
-          {/* Scroll to Top / Progress Indicator */}
+          {/* AI Summary */}
           <button
-            onClick={scrollToTop}
-            title="Scroll to top"
-            className="flex items-center gap-1 text-[11px] font-mono text-stone-300 hover:text-white transition-colors px-1.5 py-0.5 rounded-full active:scale-95"
+            onClick={handleGenerateSummary}
+            aria-label="AI Summary"
+            title="Editorial Summary"
+            className={`p-2 rounded-full transition-all active:scale-90 ${
+              showSummary
+                ? 'bg-white/20 text-[#FF6719]'
+                : 'text-stone-300 hover:text-white hover:bg-white/10'
+            }`}
           >
-            <ArrowUp className="w-3 h-3 text-stone-400" />
-            <span>{Math.round(scrollProgress)}%</span>
+            <Sparkles
+              className={`w-4 h-4 ${isLoadingSummary ? 'animate-spin text-[#FF6719]' : ''}`}
+            />
           </button>
 
-          {/* Next Article (if provided) */}
+          {/* Typography Settings (Aa) */}
+          <button
+            onClick={() => {
+              triggerHapticSelection();
+              setShowTypographyMenu(!showTypographyMenu);
+            }}
+            aria-label="Reader Appearance"
+            className={`p-2 rounded-full transition-all active:scale-90 ${
+              showTypographyMenu
+                ? 'bg-white/20 text-white'
+                : 'text-stone-300 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <Type className="w-4 h-4" />
+          </button>
+
+          {/* Bookmark */}
+          <button
+            onClick={() => {
+              triggerHapticSelection();
+              onToggleBookmark(article.id);
+              showToast(article.isBookmarked ? 'Removed bookmark' : 'Saved to bookmarks');
+            }}
+            aria-label="Bookmark"
+            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+          >
+            <Bookmark
+              className={`w-4 h-4 ${
+                article.isBookmarked ? 'fill-[#FF6719] text-[#FF6719]' : ''
+              }`}
+            />
+          </button>
+
+          {/* Share */}
+          <button
+            onClick={handleShare}
+            aria-label="Share"
+            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+          >
+            <Share2 className="w-4 h-4" />
+          </button>
+
+          {/* Next Story */}
           {onNextArticle && (
             <>
-              <div className="w-px h-3.5 bg-white/20" />
+              <div className="w-px h-4 bg-white/15 mx-0.5" />
               <button
                 onClick={() => {
                   triggerHapticSelection();
                   onNextArticle();
                 }}
-                className="flex items-center gap-1 text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors active:scale-95 px-2 py-1 rounded-full"
+                aria-label="Next Story"
+                className="flex items-center gap-0.5 px-2.5 py-1.5 rounded-full text-xs font-medium text-stone-200 hover:text-white hover:bg-white/10 transition-all active:scale-95"
               >
                 <span>Next</span>
                 <ChevronRight className="w-3.5 h-3.5" />
@@ -1033,21 +934,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           )}
         </div>
       </footer>
-
-      {/* Floating Focus Mode Mini Orb (Visible when focus mode is active to restore controls) */}
-      {focusMode && (
-        <button
-          onClick={() => {
-            triggerHapticSelection();
-            setFocusMode(false);
-          }}
-          aria-label="Exit distraction-free reading"
-          title="Exit distraction-free mode"
-          className="absolute bottom-5 right-5 p-3 rounded-full liquid-glass-dock text-stone-200 shadow-2xl border border-white/25 hover:scale-105 active:scale-95 transition-all z-40 animate-in fade-in"
-        >
-          <Eye className="w-4 h-4 text-emerald-400" />
-        </button>
-      )}
     </div>
   );
 };

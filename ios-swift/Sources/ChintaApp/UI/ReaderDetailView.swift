@@ -6,8 +6,13 @@ public struct ReaderDetailView: View {
     @Environment(\.displayMetrics) private var metrics
     
     @State private var fontSizeOffset: CGFloat = 0.0
-    @State private var isSepiaMode = false
-    @State private var showFormattingControls = false
+    @State private var isOledMode = false
+    
+    private var readerBackgroundColor: Color {
+        isOledMode
+            ? Color(red: 12 / 255, green: 12 / 255, blue: 12 / 255)
+            : Color(red: 24 / 255, green: 24 / 255, blue: 24 / 255) // #181818
+    }
     
     public init(article: FeedItem) {
         self.article = article
@@ -15,71 +20,121 @@ public struct ReaderDetailView: View {
     
     public var body: some View {
         ZStack(alignment: .bottom) {
-            (isSepiaMode ? Color(red: 0.96, green: 0.93, blue: 0.87) : Color.liquidBackgroundDark)
+            readerBackgroundColor
                 .ignoresSafeArea(.all)
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if let imageURL = article.imageURL {
-                        AsyncImage(url: imageURL) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(maxWidth: .infinity, maxHeight: metrics.tier == .compact ? 220 : 300)
-                                    .clipped()
-                            default:
-                                EmptyView()
-                            }
+                    VStack(alignment: .leading, spacing: 12) {
+                        // 1. Uppercase Kicker
+                        if let source = article.feed?.title {
+                            Text(source.uppercased())
+                                .font(.system(size: metrics.fontSize(base: 12), weight: .semibold))
+                                .foregroundStyle(Color(white: 0.62))
+                                .tracking(0.8)
                         }
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 14) {
+                        
+                        // 2. Bold Sans-Serif Headline
+                        Text(article.title)
+                            .font(.system(size: metrics.fontSize(base: 30) + fontSizeOffset, weight: .bold, design: .default))
+                            .foregroundStyle(Color(white: 0.93))
+                            .lineSpacing(2)
+                        
+                        // 3. Overlapping Circular Avatars + Reader Mark
                         HStack {
-                            if let source = article.feed?.title {
-                                Text(source)
-                                    .font(.system(size: metrics.fontSize(base: 12), weight: .bold))
-                                    .foregroundStyle(Color.emeraldBrand)
-                                    .textCase(.uppercase)
-                                    .tracking(1.0)
+                            HStack(spacing: -8) {
+                                Circle()
+                                    .fill(Color(red: 0.85, green: 0.14, blue: 0.14))
+                                    .frame(width: 36, height: 36)
+                                    .overlay(
+                                        Text(String((article.feed?.title ?? "N").prefix(1)).uppercased())
+                                            .font(.system(size: 17, weight: .bold, design: .serif))
+                                            .foregroundStyle(.white)
+                                    )
+                                    .overlay(Circle().stroke(readerBackgroundColor, lineWidth: 2))
+                                
+                                if let author = article.author, !author.isEmpty {
+                                    Circle()
+                                        .fill(Color(red: 0.31, green: 0.36, blue: 0.45))
+                                        .frame(width: 36, height: 36)
+                                        .overlay(
+                                            Text(String(author.prefix(1)).uppercased())
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(.white)
+                                        )
+                                        .overlay(Circle().stroke(readerBackgroundColor, lineWidth: 2))
+                                }
+                                
+                                Circle()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color(red: 1.0, green: 0.48, blue: 0.18), Color(red: 0.91, green: 0.32, blue: 0.10)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: 36, height: 36)
+                                    .overlay(Circle().stroke(readerBackgroundColor, lineWidth: 2))
                             }
                             
                             Spacer()
                             
-                            Text(article.publishedDate, style: .date)
-                                .font(.system(size: metrics.fontSize(base: 12)))
-                                .foregroundStyle(isSepiaMode ? Color.black.opacity(0.6) : Color.white.opacity(0.6))
+                            Text("reader")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color(white: 0.94))
+                        }
+                        .padding(.top, 8)
+                        
+                        // 4. Uppercase Byline & Timestamp
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(bylineUppercased)
+                                .font(.system(size: 11.5, weight: .bold))
+                                .foregroundStyle(Color(white: 0.87))
+                                .tracking(0.5)
+                            
+                            Text(formattedTimestampUppercased)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(Color(white: 0.56))
+                                .tracking(0.5)
+                        }
+                        .padding(.top, 4)
+                        
+                        // 5. Thin Divider
+                        Rectangle()
+                            .fill(Color(white: 0.17))
+                            .frame(height: 1)
+                            .padding(.vertical, 12)
+                        
+                        // 6. Rectangular Hero Image
+                        if let imageURL = article.imageURL {
+                            AsyncImage(url: imageURL) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxWidth: .infinity)
+                                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                                        .padding(.bottom, 12)
+                                default:
+                                    EmptyView()
+                                }
+                            }
                         }
                         
-                        Text(article.title)
-                            .font(.system(size: metrics.fontSize(base: 26) + fontSizeOffset, weight: .bold, design: .serif))
-                            .foregroundStyle(isSepiaMode ? Color.black.opacity(0.9) : Color.white)
-                            .lineSpacing(4)
-                        
-                        if let author = article.author, !author.isEmpty {
-                            Text("By \(author)")
-                                .font(.system(size: metrics.fontSize(base: 13), weight: .medium))
-                                .foregroundStyle(isSepiaMode ? Color.black.opacity(0.6) : Color.white.opacity(0.6))
-                        }
-                        
-                        Divider()
-                            .background(Color.white.opacity(0.15))
-                            .padding(.vertical, 8)
-                        
+                        // 7. Editorial Serif Body Copy
                         Text(cleanBodyContent)
-                            .font(.system(size: metrics.fontSize(base: 17) + fontSizeOffset, weight: .regular, design: .serif))
-                            .foregroundStyle(isSepiaMode ? Color(red: 0.15, green: 0.13, blue: 0.10) : Color(white: 0.90))
+                            .font(.system(size: metrics.fontSize(base: 19) + fontSizeOffset, weight: .regular, design: .serif))
+                            .foregroundStyle(Color(white: 0.90))
                             .lineSpacing(8)
                     }
                     .padding(.horizontal, metrics.horizontalGutter)
-                    .padding(.top, 20)
+                    .padding(.top, max(metrics.safeAreaInsets.top, 20))
                     .padding(.bottom, metrics.floatingBarHeight + max(metrics.safeAreaInsets.bottom, 24) + 40)
                 }
             }
             .scrollIndicators(.hidden)
             
-            topFloatingNav
             bottomReaderDock
         }
         .onAppear {
@@ -87,19 +142,37 @@ public struct ReaderDetailView: View {
         }
     }
     
-    // MARK: - Top Floating Glass Nav
-    private var topFloatingNav: some View {
-        VStack {
+    // MARK: - Bottom Reader Floating Dock
+    private var bottomReaderDock: some View {
+        LiquidGlassFloatingBar {
             HStack {
                 Button(action: { dismiss() }) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: metrics.iconSize(base: 15), weight: .semibold))
-                        .foregroundStyle(isSepiaMode ? Color.black : Color.white)
-                        .frame(width: metrics.iconSize(base: 38), height: metrics.iconSize(base: 38))
-                        .liquidGlass(cornerRadius: 19, opacity: 0.85)
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                        Text("Feed")
+                    }
+                    .font(.system(size: metrics.iconSize(base: 14), weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .foregroundStyle(Color.white)
                 }
                 
-                Spacer()
+                Button(action: {
+                    if fontSizeOffset > -4 { fontSizeOffset -= 2 }
+                }) {
+                    Image(systemName: "textformat.size.smaller")
+                        .font(.system(size: metrics.iconSize(base: 15), weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .foregroundStyle(Color.white)
+                }
+                
+                Button(action: {
+                    if fontSizeOffset < 8 { fontSizeOffset += 2 }
+                }) {
+                    Image(systemName: "textformat.size.larger")
+                        .font(.system(size: metrics.iconSize(base: 15), weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .foregroundStyle(Color.white)
+                }
                 
                 Button(action: {
                     withAnimation {
@@ -108,61 +181,34 @@ public struct ReaderDetailView: View {
                 }) {
                     Image(systemName: article.isStarred ? "bookmark.fill" : "bookmark")
                         .font(.system(size: metrics.iconSize(base: 15), weight: .semibold))
-                        .foregroundStyle(article.isStarred ? Color.amber : (isSepiaMode ? Color.black : Color.white))
-                        .frame(width: metrics.iconSize(base: 38), height: metrics.iconSize(base: 38))
-                        .liquidGlass(cornerRadius: 19, opacity: 0.85)
-                }
-            }
-            .padding(.horizontal, metrics.horizontalGutter)
-            .padding(.top, max(metrics.safeAreaInsets.top, 12))
-            
-            Spacer()
-        }
-    }
-    
-    // MARK: - Bottom Reader Floating Dock
-    private var bottomReaderDock: some View {
-        LiquidGlassFloatingBar {
-            HStack {
-                Button(action: {
-                    if fontSizeOffset > -4 { fontSizeOffset -= 2 }
-                }) {
-                    Image(systemName: "textformat.size.smaller")
-                        .font(.system(size: metrics.iconSize(base: 16), weight: .semibold))
                         .frame(maxWidth: .infinity)
-                        .foregroundStyle(isSepiaMode ? Color.black : Color.white)
-                }
-                
-                Button(action: {
-                    if fontSizeOffset < 8 { fontSizeOffset += 2 }
-                }) {
-                    Image(systemName: "textformat.size.larger")
-                        .font(.system(size: metrics.iconSize(base: 16), weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .foregroundStyle(isSepiaMode ? Color.black : Color.white)
-                }
-                
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        isSepiaMode.toggle()
-                    }
-                }) {
-                    Image(systemName: isSepiaMode ? "moon.stars.fill" : "sun.max.fill")
-                        .font(.system(size: metrics.iconSize(base: 16), weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .foregroundStyle(isSepiaMode ? Color.black : Color.white)
+                        .foregroundStyle(article.isStarred ? Color.orange : Color.white)
                 }
                 
                 if let link = article.link {
                     ShareLink(item: link) {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: metrics.iconSize(base: 16), weight: .semibold))
+                            .font(.system(size: metrics.iconSize(base: 15), weight: .semibold))
                             .frame(maxWidth: .infinity)
-                            .foregroundStyle(isSepiaMode ? Color.black : Color.white)
+                            .foregroundStyle(Color.white)
                     }
                 }
             }
         }
+    }
+    
+    private var bylineUppercased: String {
+        let feedTitle = article.feed?.title ?? "News"
+        if let author = article.author, !author.isEmpty, author.lowercased() != feedTitle.lowercased() {
+            return "\(feedTitle), \(author)".uppercased()
+        }
+        return feedTitle.uppercased()
+    }
+    
+    private var formattedTimestampUppercased: String {
+        let df = DateFormatter()
+        df.dateFormat = "MMM d, yyyy 'AT' h:mm a"
+        return df.string(from: article.publishedDate).uppercased()
     }
     
     private var cleanBodyContent: String {

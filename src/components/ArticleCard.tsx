@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Bookmark,
   Share2,
@@ -12,6 +12,8 @@ import type { FeedItem } from '../types';
 import { formatRelativeTime } from '../utils/feedParser';
 import { SourceAvatar } from './SourceAvatar';
 import { triggerHapticSelection } from '../utils/haptics';
+import { isPlaceholderSummary } from '../utils/storage';
+import { extractArticleWithFallback } from '../utils/apiClient';
 
 interface ArticleCardProps {
   article: FeedItem;
@@ -53,6 +55,41 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const [likePopping, setLikePopping] = useState(false);
   const [cardPressed, setCardPressed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
+
+  const initialCleanSummary =
+    article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
+  const [extractedSummary, setExtractedSummary] = useState<string>(initialCleanSummary);
+  const [extractedImage, setExtractedImage] = useState<string | undefined>(article.imageUrl);
+
+  useEffect(() => {
+    const clean =
+      article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
+    setExtractedSummary(clean);
+    setExtractedImage(article.imageUrl);
+
+    if (!clean && article.link && article.link.startsWith('http')) {
+      let cancelled = false;
+      extractArticleWithFallback(article.link)
+        .then((res) => {
+          if (cancelled || !res.success) return;
+          const firstParagraph = res.blocks?.find(
+            (b) => b.type === 'p' && b.text && b.text.trim().length > 30 && b.text.trim() !== article.title
+          )?.text;
+          if (firstParagraph) {
+            setExtractedSummary(firstParagraph.trim().slice(0, 260));
+          }
+          if (!article.imageUrl && res.leadImage) {
+            setExtractedImage(res.leadImage);
+          }
+        })
+        .catch(() => {
+          // ignore
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [article.id, article.summary, article.link, article.imageUrl, article.title]);
 
   const handleLike = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -150,7 +187,12 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     );
   }
 
-  const hasCover = Boolean(article.imageUrl && !imageFailed);
+  const coverUrl = article.imageUrl || extractedImage;
+  const hasCover = Boolean(coverUrl && !imageFailed);
+  const displaySummary =
+    article.summary && !isPlaceholderSummary(article.summary)
+      ? article.summary
+      : extractedSummary;
 
   return (
     <article
@@ -213,7 +255,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       </h2>
 
       {/* 3. Subtitle / Excerpt: Clean Editorial Prose */}
-      {article.summary && (
+      {displaySummary && (
         <p
           className={`font-sans text-[14px] leading-relaxed line-clamp-2 sm:line-clamp-3 mb-3 ${
             article.isRead
@@ -221,7 +263,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
               : 'text-stone-600 dark:text-stone-300'
           }`}
         >
-          {article.summary}
+          {displaySummary}
         </p>
       )}
 
@@ -229,7 +271,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       {hasCover && (
         <div className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 shadow-xs">
           <img
-            src={article.imageUrl}
+            src={coverUrl}
             alt={article.title}
             referrerPolicy="no-referrer"
             loading="lazy"

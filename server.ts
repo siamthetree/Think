@@ -450,14 +450,26 @@ function parseHtmlPortalToFeed(
     seenUrls.add(fullUrl);
     seenTitles.add(title.toLowerCase());
 
-    const imageUrl = extractHeroImage({}, innerHtml, feedInfo.url);
-    const pMatch = innerHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-    const pText = pMatch ? stripHtml(pMatch[1]) : '';
-    const sectionName = segments[0] ? segments[0].replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'News';
+    const matchIndex = match.index ?? 0;
+    const matchEnd = matchIndex + match[0].length;
+    const beforeWindow = htmlString.slice(Math.max(0, matchIndex - 500), matchIndex);
+    const afterWindow = htmlString
+      .slice(matchEnd, matchEnd + 900)
+      .split(/<\/article>|<article\b|<h[1-4]\b/i)[0] || '';
+
+    const imageUrl =
+      extractHeroImage({}, innerHtml, feedInfo.url) ||
+      extractHeroImage({}, beforeWindow.split(/<article\b|<li\b/i).pop() || '', feedInfo.url);
+
+    const pMatch =
+      innerHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
+      afterWindow.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
+      afterWindow.match(/<(?:div|span)[^>]+class=["'][^"']*(?:summary|excerpt|intro|lead|desc|sub-title|sort-dec)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|span)>/i);
+    const pText = pMatch ? stripHtml(pMatch[1]).replace(/\s+/g, ' ').trim() : '';
     const summary =
       pText && pText !== title && pText.length > 20
-        ? pText.slice(0, 240)
-        : `${feedTitle} · ${sectionName} — Tap to load full story directly from the article URL in clean distraction-free Reader View.`;
+        ? pText.slice(0, 260)
+        : '';
 
     const timestamp = now - items.length * 60 * 1000;
     const id = `${feedInfo.id}_${encodeURIComponent(fullUrl.slice(-70))}`;
@@ -472,13 +484,13 @@ function parseHtmlPortalToFeed(
       pubDate: new Date(timestamp).toISOString(),
       timestamp,
       summary,
-      contentHtml: `<p>${summary}</p>`,
+      contentHtml: summary ? `<p>${summary}</p>` : '',
       contentClean: '',
       imageUrl,
       tags: [...(feedInfo.defaultTags || [])],
       isRead: false,
       isBookmarked: false,
-      isOfflineCached: true,
+      isOfflineCached: false,
       readTimeMin: 3,
     });
   }
@@ -727,6 +739,7 @@ async function loadPortalOrRssFeed(
 
   let fetchedHtml = '';
   let fetchedUrl = url;
+  const htmlDiscoveredCandidates: string[] = [];
 
   // Step 1: Try fetching the given URL directly
   try {
@@ -740,21 +753,51 @@ async function loadPortalOrRssFeed(
       }
     }
 
-    // If HTML, save it for direct HTML portal scraping if no RSS link exists
+    // If HTML, inspect <link> and <a> tags for RSS/Atom feeds and save HTML for direct fallback
     if (contentType.includes('html') || text.includes('<html') || text.includes('<!DOCTYPE')) {
       fetchedHtml = text;
       const $ = cheerio.load(text);
-      const rssLink = $('link[type="application/rss+xml"], link[type="application/atom+xml"]')
-        .first()
-        .attr('href');
-      if (rssLink) {
+
+      $('link[type*="rss"], link[type*="atom"], link[type*="xml"], link[rel="alternate"]').each(
+        (_, el) => {
+          const href = $(el).attr('href');
+          const type = ($(el).attr('type') || '').toLowerCase();
+          if (
+            href &&
+            (type.includes('rss') ||
+              type.includes('atom') ||
+              type.includes('xml') ||
+              /(rss|feed|atom|\.xml)/i.test(href))
+          ) {
+            try {
+              const resolved = new URL(href, fetchedUrl).href;
+              if (!htmlDiscoveredCandidates.includes(resolved)) {
+                htmlDiscoveredCandidates.push(resolved);
+              }
+            } catch {}
+          }
+        }
+      );
+
+      $('a[href]').each((_, el) => {
+        const href = $(el).attr('href') || '';
+        if (/(\/rss\b|\/feed\b|\.rss\b|rss\.xml|feed\.xml|atom\.xml|index\.xml|\?feed=rss)/i.test(href)) {
+          try {
+            const resolved = new URL(href, fetchedUrl).href;
+            if (!htmlDiscoveredCandidates.includes(resolved) && htmlDiscoveredCandidates.length < 8) {
+              htmlDiscoveredCandidates.push(resolved);
+            }
+          } catch {}
+        }
+      });
+
+      for (const candidate of htmlDiscoveredCandidates) {
         try {
-          const resolvedLink = new URL(rssLink, fetchedUrl).href;
-          const { text: feedText } = await fetchWithUserAgent(resolvedLink, 5500);
+          const { text: feedText } = await fetchWithUserAgent(candidate, 4500);
           if (isXmlFeedContent(feedText)) {
-            const parsed = parseXmlFeed(feedText, { ...feedInfo, url: resolvedLink });
+            const parsed = parseXmlFeed(feedText, { ...feedInfo, url: candidate });
             if (parsed.items.length > 0) {
-              return { ...parsed, resolvedUrl: resolvedLink, sourceMode: 'rss' };
+              return { ...parsed, resolvedUrl: candidate, sourceMode: 'rss' };
             }
           }
         } catch {}
@@ -764,27 +807,129 @@ async function loadPortalOrRssFeed(
     // Will continue to candidate paths and domain fallback
   }
 
-  // Step 2: Check common RSS endpoints (/rss.xml, /feed) only if user gave a root domain
+  // Step 2: Try different RSS/Atom URL combinations for blogs and newspapers
   let parsedTarget: URL | null = null;
   try {
     parsedTarget = new URL(url);
   } catch {}
 
-  if (parsedTarget && (parsedTarget.pathname === '/' || parsedTarget.pathname === '')) {
+  if (parsedTarget) {
     const cleanBase = url.replace(/\/+$/, '');
-    const candidatePaths = [`${cleanBase}/rss.xml`, `${cleanBase}/feed`];
+    const origin = parsedTarget.origin;
+    const pathClean = parsedTarget.pathname.replace(/\/+$/, '');
+    const comboSet = new Set<string>();
 
-    for (const candidate of candidatePaths) {
-      try {
-        const { text } = await fetchWithUserAgent(candidate, 4500);
-        if (isXmlFeedContent(text)) {
-          const parsed = parseXmlFeed(text, { ...feedInfo, url: candidate });
-          if (parsed.items.length > 0) {
-            return { ...parsed, resolvedUrl: candidate, sourceMode: 'rss' };
-          }
-        }
-      } catch {}
+    // Medium special pattern: medium.com/@user -> medium.com/feed/@user
+    if (parsedTarget.hostname.includes('medium.com') && pathClean && !pathClean.startsWith('/feed')) {
+      comboSet.add(`${origin}/feed${pathClean}`);
     }
+
+    const suffixes = [
+      '/feed',
+      '/rss',
+      '/rss.xml',
+      '/feed.xml',
+      '/atom.xml',
+      '/index.xml',
+      '/?feed=rss2',
+      '/feeds/posts/default?alt=rss',
+    ];
+
+    for (const suffix of suffixes) {
+      comboSet.add(`${cleanBase}${suffix}`);
+    }
+    if (cleanBase !== origin) {
+      for (const suffix of suffixes) {
+        comboSet.add(`${origin}${suffix}`);
+      }
+    }
+    comboSet.add(`${origin}/news/rss.xml`);
+    comboSet.add(`${origin}/top-news/rss.xml`);
+    comboSet.add(`${origin}/blog/feed`);
+    comboSet.add(`${origin}/blog/rss.xml`);
+
+    // Remove URLs we already checked in Step 1
+    comboSet.delete(url);
+    comboSet.delete(fetchedUrl);
+    for (const seen of htmlDiscoveredCandidates) comboSet.delete(seen);
+
+    const candidateList = Array.from(comboSet);
+    const batchSize = 4;
+    for (let i = 0; i < candidateList.length; i += batchSize) {
+      const batch = candidateList.slice(i, i + batchSize);
+      const found = await Promise.all(
+        batch.map(async (candidate) => {
+          try {
+            const { text } = await fetchWithUserAgent(candidate, 3500);
+            if (isXmlFeedContent(text)) {
+              const parsed = parseXmlFeed(text, { ...feedInfo, url: candidate });
+              if (parsed.items.length > 0) {
+                return { ...parsed, resolvedUrl: candidate, sourceMode: 'rss' as const };
+              }
+            }
+          } catch {}
+          return null;
+        })
+      );
+      const match = found.find(Boolean);
+      if (match) {
+        return match;
+      }
+    }
+  }
+
+  // Helper to enrich portal/index items that lack a real news summary by reading og:description or first <p>
+  async function enrichMissingSummaries(items: FeedItem[], maxEnrich = 12): Promise<FeedItem[]> {
+    const targets = items
+      .slice(0, maxEnrich)
+      .filter((it) => !it.summary || it.summary.length < 30 || it.summary.toLowerCase() === it.title.toLowerCase());
+    if (targets.length === 0) return items;
+
+    const concurrency = 4;
+    for (let i = 0; i < targets.length; i += concurrency) {
+      const batch = targets.slice(i, i + concurrency);
+      await Promise.all(
+        batch.map(async (item) => {
+          if (!item.link || !item.link.startsWith('http')) return;
+          try {
+            const { text } = await fetchWithUserAgent(item.link, 3000);
+            const $ = cheerio.load(text);
+            const metaDesc =
+              $('meta[property="og:description"]').attr('content') ||
+              $('meta[name="description"]').attr('content') ||
+              $('meta[name="twitter:description"]').attr('content') ||
+              '';
+            let cleanDesc = stripHtml(metaDesc).replace(/\s+/g, ' ').trim();
+            if (!cleanDesc || cleanDesc.length < 25 || cleanDesc === item.title) {
+              $('article p, main p, .article-content p, .story-content p, p').each((_, el) => {
+                if (cleanDesc && cleanDesc.length >= 35) return;
+                const candidate = $(el).text().replace(/\s+/g, ' ').trim();
+                if (candidate.length >= 45 && candidate !== item.title) {
+                  cleanDesc = candidate;
+                }
+              });
+            }
+            if (cleanDesc && cleanDesc.length >= 25 && cleanDesc !== item.title) {
+              item.summary = cleanDesc.slice(0, 260);
+              if (!item.contentHtml) {
+                item.contentHtml = `<p>${item.summary}</p>`;
+              }
+            }
+            if (!item.imageUrl) {
+              const ogImg =
+                $('meta[property="og:image"]').attr('content') ||
+                $('meta[name="twitter:image"]').attr('content');
+              if (ogImg) {
+                item.imageUrl = resolveUrl(ogImg, item.link);
+              }
+            }
+          } catch {
+            // Ignore per-article timeout
+          }
+        })
+      );
+    }
+    return items;
   }
 
   // Step 3: Direct HTML Portal Scraping! (For portals without RSS URL like bdnews24.com, thefinancialexpress.com.bd, etc.)
@@ -794,6 +939,7 @@ async function loadPortalOrRssFeed(
       url: fetchedUrl,
     });
     if (htmlParsed.items.length > 0) {
+      await enrichMissingSummaries(htmlParsed.items, 12);
       return {
         ...htmlParsed,
         resolvedUrl: url,
@@ -823,12 +969,22 @@ async function loadPortalOrRssFeed(
           feedInfo.title && feedInfo.title !== 'Newspaper Feed' && feedInfo.title !== 'RSS Feed'
             ? feedInfo.title
             : hostname;
-        const cleanedItems = parsed.items.map((item) => ({
-          ...item,
-          feedTitle: cleanFeedTitle,
-          title: item.title.replace(/\s+-\s+[^-]+$/, '').trim() || item.title,
-          contentClean: '', // Trigger full extraction when opened
-        }));
+        const cleanedItems = parsed.items.map((item) => {
+          const cleanTitle = item.title.replace(/\s+-\s+[^-]+$/, '').trim() || item.title;
+          // Google News RSS descriptions often just repeat the headline + source name
+          const rawSum = (item.summary || '').replace(/\s+-\s+[^-]+$/, '').trim();
+          const hasDistinctSummary =
+            rawSum.length > 35 &&
+            rawSum.toLowerCase() !== cleanTitle.toLowerCase() &&
+            !cleanTitle.toLowerCase().includes(rawSum.toLowerCase().slice(0, 30));
+          return {
+            ...item,
+            feedTitle: cleanFeedTitle,
+            title: cleanTitle,
+            summary: hasDistinctSummary ? item.summary : '',
+            contentClean: '', // Trigger full extraction when opened
+          };
+        });
 
         if (cleanedItems.length > 0) {
           return {
@@ -913,6 +1069,7 @@ app.get('/api/rss', async (req: Request, res: Response) => {
       feedTitle: result.feedTitle,
       items: result.items,
       resolvedUrl: result.resolvedUrl,
+      resolvedFeedUrl: result.resolvedUrl,
       sourceMode: result.sourceMode,
     });
   } catch (err: any) {

@@ -382,17 +382,29 @@ export function parseHtmlPortalToFeed(
     seenUrls.add(fullUrl);
     seenTitles.add(title.toLowerCase());
 
-    // Extract image if inside the anchor
-    const imageUrl = extractHeroImage({}, innerHtml, feedInfo.url);
+    // Look at surrounding sibling HTML around the anchor for image or summary paragraph
+    const matchIndex = match.index ?? 0;
+    const matchEnd = matchIndex + match[0].length;
+    const beforeWindow = htmlString.slice(Math.max(0, matchIndex - 500), matchIndex);
+    const afterWindow = htmlString
+      .slice(matchEnd, matchEnd + 900)
+      .split(/<\/article>|<article\b|<h[1-4]\b/i)[0] || '';
 
-    // Build a clean summary from category/path or inner paragraph text
-    const pMatch = innerHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-    const pText = pMatch ? stripHtml(pMatch[1]) : '';
-    const sectionName = segments[0] ? segments[0].replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'News';
+    // Extract image if inside the anchor or immediately preceding in the same card
+    const imageUrl =
+      extractHeroImage({}, innerHtml, feedInfo.url) ||
+      extractHeroImage({}, beforeWindow.split(/<article\b|<li\b/i).pop() || '', feedInfo.url);
+
+    // Extract real news summary from inner paragraph or sibling paragraph/excerpt right after </a>
+    const pMatch =
+      innerHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
+      afterWindow.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
+      afterWindow.match(/<(?:div|span)[^>]+class=["'][^"']*(?:summary|excerpt|intro|lead|desc|sub-title|sort-dec)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|span)>/i);
+    const pText = pMatch ? stripHtml(pMatch[1]).replace(/\s+/g, ' ').trim() : '';
     const summary =
       pText && pText !== title && pText.length > 20
-        ? pText.slice(0, 240)
-        : `${feedTitle} · ${sectionName} — Full story loads in the app's reading mode.`;
+        ? pText.slice(0, 260)
+        : '';
 
     const timestamp = now - items.length * 60 * 1000;
     const id = `${feedInfo.id}_${encodeURIComponent(fullUrl.slice(-70))}`;
@@ -408,13 +420,13 @@ export function parseHtmlPortalToFeed(
       timestamp,
       summary,
       // Keep contentClean short so ReaderView automatically triggers /api/extract on open!
-      contentHtml: `<p>${summary}</p>`,
+      contentHtml: summary ? `<p>${summary}</p>` : '',
       contentClean: '',
       imageUrl,
       tags: [...(feedInfo.defaultTags || [])],
       isRead: false,
       isBookmarked: false,
-      isOfflineCached: true,
+      isOfflineCached: false,
       readTimeMin: 3,
     });
   }

@@ -165,17 +165,31 @@ export function saveFeedsToStorage(feeds: Feed[]): void {
   }
 }
 
+const PLACEHOLDER_SUMMARY_RE = /tap to load full story|full story loads in the app's reading mode/i;
+
+export function isPlaceholderSummary(text?: string): boolean {
+  if (!text) return false;
+  return PLACEHOLDER_SUMMARY_RE.test(text);
+}
+
 export function loadArticlesFromStorage(): FeedItem[] {
   const stored = readArray<FeedItem>(STORAGE_KEYS.ARTICLES);
   if (!stored) return [];
   return stored
     .filter((a) => a && typeof a.id === 'string' && !LEGACY_DEMO_ID.test(a.id))
-    .map((a) => ({
-      ...a,
-      tags: Array.isArray(a.tags) ? a.tags : [],
-      // Older versions marked every story as cached. Only stories with a real body count.
-      isOfflineCached: Boolean(a.isOfflineCached) && hasFullBody(a),
-    }));
+    .map((a) => {
+      const cleanSummary = isPlaceholderSummary(a.summary) ? '' : a.summary;
+      const cleanHtml =
+        a.contentHtml && isPlaceholderSummary(a.contentHtml) ? '' : a.contentHtml;
+      return {
+        ...a,
+        summary: cleanSummary,
+        contentHtml: cleanHtml,
+        tags: Array.isArray(a.tags) ? a.tags : [],
+        // Older versions marked every story as cached. Only stories with a real body count.
+        isOfflineCached: Boolean(a.isOfflineCached) && hasFullBody(a),
+      };
+    });
 }
 
 export function saveArticlesToStorage(articles: FeedItem[]): void {

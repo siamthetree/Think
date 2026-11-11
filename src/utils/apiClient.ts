@@ -188,13 +188,17 @@ async function fetchFeedOnDevice(params: {
     } catch {}
   }
 
+  const isXmlString = (s: string) => {
+    const t = s.trim();
+    return (
+      t.startsWith('<?xml') ||
+      t.startsWith('<rss') ||
+      t.startsWith('<feed') ||
+      /<rss[\s>]|<feed[\s>]|<channel[\s>]/i.test(t.slice(0, 1200))
+    );
+  };
+
   const rawText = await fetchRawUrlClientSide(params.url);
-  const trimmed = rawText.trim();
-  const isXml =
-    trimmed.startsWith('<?xml') ||
-    trimmed.startsWith('<rss') ||
-    trimmed.startsWith('<feed') ||
-    /<rss[\s>]|<feed[\s>]|<channel[\s>]/i.test(trimmed.slice(0, 1200));
 
   const feedInfo = {
     id: params.feedId,
@@ -203,13 +207,81 @@ async function fetchFeedOnDevice(params: {
     defaultTags: params.tags,
   };
 
-  if (isXml) {
-    return parseXmlFeed(rawText, feedInfo);
+  if (isXmlString(rawText)) {
+    const parsed = parseXmlFeed(rawText, feedInfo);
+    return { ...parsed, resolvedFeedUrl: params.url };
   }
 
+  // Website URL given: 1) Check <link> tags in HTML for RSS/Atom feed
+  const candidateSet = new Set<string>();
+  const linkTagMatches = [
+    ...rawText.matchAll(
+      /<link[^>]+(?:type=["']application\/(?:rss|atom)\+xml["']|rel=["']alternate["'])[^>]*>/gi
+    ),
+  ];
+  for (const m of linkTagMatches) {
+    const tag = m[0];
+    if (!/(rss|atom|xml|feed)/i.test(tag)) continue;
+    const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
+    if (hrefMatch?.[1]) {
+      const resolved = resolveUrl(hrefMatch[1], params.url);
+      if (resolved) candidateSet.add(resolved);
+    }
+  }
+
+  // 2) Add standard RSS/Atom path combinations for blogs & newspapers
+  try {
+    const parsedTarget = new URL(params.url);
+    const cleanBase = params.url.replace(/\/+$/, '');
+    const origin = parsedTarget.origin;
+    const pathClean = parsedTarget.pathname.replace(/\/+$/, '');
+
+    if (parsedTarget.hostname.includes('medium.com') && pathClean && !pathClean.startsWith('/feed')) {
+      candidateSet.add(`${origin}/feed${pathClean}`);
+    }
+
+    const suffixes = [
+      '/feed',
+      '/rss',
+      '/rss.xml',
+      '/feed.xml',
+      '/atom.xml',
+      '/index.xml',
+      '/?feed=rss2',
+      '/feeds/posts/default?alt=rss',
+    ];
+    for (const s of suffixes) candidateSet.add(`${cleanBase}${s}`);
+    if (cleanBase !== origin) {
+      for (const s of suffixes) candidateSet.add(`${origin}${s}`);
+    }
+    candidateSet.delete(params.url);
+  } catch {}
+
+  const candidates = Array.from(candidateSet).slice(0, 10);
+  for (let i = 0; i < candidates.length; i += 4) {
+    const batch = candidates.slice(i, i + 4);
+    const results = await Promise.all(
+      batch.map(async (candidateUrl) => {
+        try {
+          const text = await fetchRawUrlClientSide(candidateUrl);
+          if (isXmlString(text)) {
+            const parsed = parseXmlFeed(text, { ...feedInfo, url: candidateUrl });
+            if (parsed.items.length > 0) {
+              return { ...parsed, resolvedFeedUrl: candidateUrl };
+            }
+          }
+        } catch {}
+        return null;
+      })
+    );
+    const match = results.find(Boolean);
+    if (match) return match;
+  }
+
+  // 3) If RSS feed is not found, use the website URL directly
   const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
   if (scraped.items.length > 0) {
-    return scraped;
+    return { ...scraped, resolvedFeedUrl: params.url };
   }
 
   throw new Error('No articles found for this source');

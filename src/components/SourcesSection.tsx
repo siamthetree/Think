@@ -7,6 +7,7 @@ import {
   Check,
   Folder,
   FolderPlus,
+  FolderInput,
   ChevronRight,
   ChevronDown,
   X,
@@ -26,6 +27,7 @@ interface SourcesSectionProps {
   onSelectSource: (feed: Feed) => void;
   onSelectFolder: (folderName: string) => void;
   onCreateFolder: (folderName: string) => void;
+  onMoveFeedToFolder: (feedId: string, folderName: string) => void;
   onRefreshFeed: (feed: Feed) => Promise<void>;
   onRefreshAll: () => Promise<void>;
   onDeleteFeed: (feedId: string) => void;
@@ -47,6 +49,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   onSelectSource,
   onSelectFolder,
   onCreateFolder,
+  onMoveFeedToFolder,
   onRefreshFeed,
   onRefreshAll,
   onDeleteFeed,
@@ -55,24 +58,27 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [isNewFolderOpen, setIsNewFolderOpen] = useState(false);
   const [inputUrl, setInputUrl] = useState('');
   const [inputTitle, setInputTitle] = useState('');
-  const [selectedFolderForNew, setSelectedFolderForNew] = useState<string>(
-    folders[0] || 'Bangladesh'
-  );
-  const [isCreatingNewFolder, setIsCreatingNewFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null);
 
-  // Combine persisted folders + any categories present on feeds
+  // Source currently being moved between folders
+  const [movingFeed, setMovingFeed] = useState<Feed | null>(null);
+  const [moveNewFolderName, setMoveNewFolderName] = useState('');
+  const [isCreatingFolderInMove, setIsCreatingFolderInMove] = useState(false);
+
+  // All named folders (persisted folders + any non-empty categories on feeds)
   const allFolders = useMemo(() => {
-    const set = new Set<string>(folders);
+    const set = new Set<string>();
+    for (const folder of folders) {
+      if (folder && folder.trim()) set.add(folder.trim());
+    }
     for (const f of feeds) {
       if (f.category && f.category.trim()) {
         set.add(f.category.trim());
-      } else {
-        set.add('General');
       }
     }
     return Array.from(set);
@@ -101,20 +107,25 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     return counts;
   }, [articles]);
 
-  // Group filtered feeds by folder
+  // Uncategorized sources (not assigned to any folder)
+  const uncategorizedFeeds = useMemo(() => {
+    return filteredFeeds.filter((f) => !f.category || !f.category.trim());
+  }, [filteredFeeds]);
+
+  // Group categorized feeds by folder
   const groupedByFolder = useMemo(() => {
     const map = new Map<string, Feed[]>();
     for (const folder of allFolders) {
       map.set(folder, []);
     }
     for (const feed of filteredFeeds) {
-      const folder = feed.category?.trim() || 'General';
+      const folder = feed.category?.trim();
+      if (!folder) continue;
       if (!map.has(folder)) {
         map.set(folder, []);
       }
       map.get(folder)!.push(feed);
     }
-    // When searching, hide empty folders; otherwise show all folders that have feeds or were explicitly created
     return Array.from(map.entries()).filter(
       ([, list]) => list.length > 0 || (!searchQuery.trim() && folders.length > 0)
     );
@@ -159,18 +170,21 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     onDeleteFeed(feed.id);
   };
 
+  const handleOpenMoveMenu = (e: React.MouseEvent, feed: Feed) => {
+    e.stopPropagation();
+    triggerHapticSelection();
+    setMovingFeed(feed);
+    setIsCreatingFolderInMove(false);
+    setMoveNewFolderName('');
+  };
+
+  // Add source without forcing any categorization or folder
   const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const rawUrl = inputUrl.trim();
     if (!rawUrl) return;
 
     triggerHapticSelection();
-
-    let targetFolder = selectedFolderForNew.trim() || 'Bangladesh';
-    if (isCreatingNewFolder && newFolderName.trim()) {
-      targetFolder = newFolderName.trim();
-      onCreateFolder(targetFolder);
-    }
 
     const formattedUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
     let cleanTitle = inputTitle.trim();
@@ -187,17 +201,106 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
       title: cleanTitle,
       url: formattedUrl,
       siteUrl: formattedUrl,
-      category: targetFolder,
-      defaultTags: ['tag_bd'],
+      category: '',
+      defaultTags: [],
       unreadCount: 0,
     });
 
     setInputUrl('');
     setInputTitle('');
-    setNewFolderName('');
-    setIsCreatingNewFolder(false);
     setIsAddOpen(false);
     triggerHapticComplete();
+  };
+
+  const handleCreateFolderSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newFolderName.trim();
+    if (!trimmed) return;
+    triggerHapticComplete();
+    onCreateFolder(trimmed);
+    setNewFolderName('');
+    setIsNewFolderOpen(false);
+  };
+
+  const renderSourceRow = (feed: Feed, indented = false) => {
+    const isSelected = selectedFeedId === feed.id;
+    const unread = unreadCountByFeed[feed.id] || 0;
+    const isThisRefreshing = refreshingFeedId === feed.id;
+
+    return (
+      <div
+        key={feed.id}
+        onClick={() => handleSelectFeed(feed)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleSelectFeed(feed);
+          }
+        }}
+        className={`px-3.5 py-2.5 flex items-center justify-between gap-2 cursor-pointer select-none transition-colors ${
+          isSelected
+            ? 'bg-[#FF6719]/8 dark:bg-[#FF6719]/12'
+            : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
+        }`}
+      >
+        <div className={`flex items-center gap-3 min-w-0 flex-1 ${indented ? 'pl-2' : ''}`}>
+          <SourceAvatar name={feed.title} url={feed.url} size="sm" />
+          <div className="min-w-0 flex-1">
+            <span className="font-serif font-medium text-sm text-stone-900 dark:text-stone-100 truncate block">
+              {feed.title}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          {unread > 0 && (
+            <span className="text-[11px] font-mono tabular-nums text-stone-400 dark:text-stone-500 mr-1">
+              {unread}
+            </span>
+          )}
+
+          {/* Move to Folder button */}
+          <button
+            type="button"
+            onClick={(e) => handleOpenMoveMenu(e, feed)}
+            title="Move source to another folder"
+            aria-label={`Move ${feed.title} to folder`}
+            className="p-1.5 rounded-lg text-stone-400 hover:text-[#FF6719] dark:hover:text-[#FF6719] transition-colors"
+          >
+            <FolderInput className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Refresh single source */}
+          <button
+            type="button"
+            onClick={(e) => handleSingleRefresh(e, feed)}
+            disabled={isThisRefreshing || isOffline}
+            title="Refresh source"
+            aria-label={`Refresh ${feed.title}`}
+            className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${isThisRefreshing ? 'animate-spin text-[#FF6719]' : ''}`}
+            />
+          </button>
+
+          {/* Remove source */}
+          <button
+            type="button"
+            onClick={(e) => handleDelete(e, feed)}
+            title="Remove source"
+            aria-label={`Remove ${feed.title}`}
+            className="p-1.5 rounded-lg text-stone-300 hover:text-red-500 dark:text-stone-600 dark:hover:text-red-400 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+
+          {isSelected && <Check className="w-4 h-4 text-[#FF6719] shrink-0" />}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -222,7 +325,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
           </div>
 
           {/* Top-Right: Floating 3D Liquid Glass Action Pill */}
-          <div className="liquid-glass-pill h-12 px-2.5 rounded-full flex items-center gap-1.5">
+          <div className="liquid-glass-pill h-12 px-2.5 rounded-full flex items-center gap-1">
             <button
               type="button"
               onClick={() => {
@@ -234,7 +337,27 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
               title="Refresh all"
               className="w-9 h-9 flex items-center justify-center rounded-full text-stone-800 dark:text-white transition-transform disabled:opacity-40 active:scale-90"
             >
-              <RefreshCw className={`w-4 h-4 stroke-[2] ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`} />
+              <RefreshCw
+                className={`w-4 h-4 stroke-[2] ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`}
+              />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                triggerHapticSelection();
+                setIsNewFolderOpen(!isNewFolderOpen);
+                setIsAddOpen(false);
+              }}
+              aria-label="Create new folder"
+              title="New Folder"
+              className={`w-9 h-9 flex items-center justify-center rounded-full transition-all active:scale-90 ${
+                isNewFolderOpen
+                  ? 'bg-[#FF6719] text-white shadow-sm'
+                  : 'text-stone-800 dark:text-white'
+              }`}
+            >
+              <FolderPlus className="w-4 h-4 stroke-[2]" />
             </button>
 
             <button
@@ -242,16 +365,21 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
               onClick={() => {
                 triggerHapticSelection();
                 setIsAddOpen(!isAddOpen);
+                setIsNewFolderOpen(false);
               }}
-              aria-label="Add source or folder"
-              title="Add source or folder"
+              aria-label="Add source"
+              title="Add source"
               className={`w-9 h-9 flex items-center justify-center rounded-full transition-all active:scale-90 ${
                 isAddOpen
                   ? 'bg-[#FF6719] text-white shadow-sm'
                   : 'text-stone-800 dark:text-white'
               }`}
             >
-              {isAddOpen ? <X className="w-4 h-4 stroke-[2.2]" /> : <Plus className="w-4 h-4 stroke-[2.4]" />}
+              {isAddOpen ? (
+                <X className="w-4 h-4 stroke-[2.2]" />
+              ) : (
+                <Plus className="w-4 h-4 stroke-[2.4]" />
+              )}
             </button>
           </div>
         </div>
@@ -280,7 +408,46 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
 
       {/* Main Scrollable Folder & Source List */}
       <div className="flex-1 overflow-y-auto px-4 py-2 pb-28 space-y-3.5 no-scrollbar">
-        {/* Collapsible Add Source + Folder Creation Card */}
+        {/* Create Folder Form */}
+        {isNewFolderOpen && (
+          <form
+            onSubmit={handleCreateFolderSubmit}
+            className="p-3.5 rounded-2xl liquid-glass border border-[#FF6719]/30 shadow-sm space-y-2.5 animate-in fade-in slide-in-from-top-1 duration-150"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-stone-900 dark:text-stone-100">
+                Create Folder
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsNewFolderOpen(false)}
+                className="text-[11px] text-stone-400 hover:text-stone-600 dark:hover:text-stone-200"
+              >
+                Cancel
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                required
+                autoFocus
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                placeholder="Folder name (e.g. Tech, Opinion)..."
+                className="flex-1 px-3 py-2 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-stone-200/80 dark:border-white/[0.08] text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+              />
+              <button
+                type="submit"
+                disabled={!newFolderName.trim()}
+                className="px-4 py-2 bg-[#FF6719] hover:bg-[#FF5500] text-white rounded-xl text-xs font-semibold disabled:opacity-40 transition-all shadow-xs"
+              >
+                Create
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Add Source Card — Does NOT force any categorization or folder */}
         {isAddOpen && (
           <form
             onSubmit={handleAddSubmit}
@@ -288,7 +455,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
           >
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-stone-900 dark:text-stone-100">
-                Add News Source
+                Add Newspaper or Blog
               </span>
               <button
                 type="button"
@@ -306,7 +473,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                 autoFocus
                 value={inputUrl}
                 onChange={(e) => setInputUrl(e.target.value)}
-                placeholder="Website or RSS URL (e.g. bdnews24.com)"
+                placeholder="Website or RSS URL (e.g. economist.com or bdnews24.com)"
                 className="w-full px-3 py-2 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-stone-200/80 dark:border-white/[0.08] text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
               />
 
@@ -319,70 +486,25 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
               />
             </div>
 
-            {/* Folder Selection & New Folder Creation */}
-            <div className="space-y-2 pt-0.5">
-              <div className="flex items-center justify-between">
-                <label className="text-[11px] font-medium text-stone-500 dark:text-stone-400 flex items-center gap-1.5">
-                  <Folder className="w-3.5 h-3.5 text-[#FF6719]" />
-                  <span>Folder</span>
-                </label>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHapticSelection();
-                    setIsCreatingNewFolder(!isCreatingNewFolder);
-                  }}
-                  className="text-[11px] font-semibold text-[#FF6719] flex items-center gap-1 hover:opacity-80"
-                >
-                  <FolderPlus className="w-3 h-3" />
-                  <span>{isCreatingNewFolder ? 'Choose Existing' : '+ New Folder'}</span>
-                </button>
-              </div>
-
-              {isCreatingNewFolder ? (
-                <input
-                  type="text"
-                  required
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  placeholder="Enter new folder name (e.g. Tech, Politics)..."
-                  className="w-full px-3 py-2 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-[#FF6719]/50 text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
-                />
-              ) : (
-                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
-                  {allFolders.map((folder) => {
-                    const isPicked = selectedFolderForNew === folder;
-                    return (
-                      <button
-                        key={folder}
-                        type="button"
-                        onClick={() => {
-                          triggerHapticSelection();
-                          setSelectedFolderForNew(folder);
-                        }}
-                        className={`px-2.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap shrink-0 transition-all ${
-                          isPicked
-                            ? 'bg-[#FF6719] text-white font-semibold shadow-xs'
-                            : 'bg-stone-200/70 dark:bg-white/[0.06] text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
-                        }`}
-                      >
-                        {folder}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            <p className="text-[11px] text-stone-500 dark:text-stone-400 leading-snug">
+              Searches automatically for an RSS feed across URL combinations; if none is found, the website URL is added directly.
+            </p>
 
             <button
               type="submit"
-              disabled={!inputUrl.trim() || (isCreatingNewFolder && !newFolderName.trim())}
+              disabled={!inputUrl.trim()}
               className="w-full py-2.5 bg-[#FF6719] hover:bg-[#FF5500] text-white rounded-xl text-xs font-semibold disabled:opacity-40 transition-all shadow-xs active:scale-[0.98]"
             >
-              Add Source to {isCreatingNewFolder ? newFolderName.trim() || 'New Folder' : selectedFolderForNew}
+              Add Source
             </button>
           </form>
+        )}
+
+        {/* Uncategorized Sources (Added without forced folder categorization) */}
+        {uncategorizedFeeds.length > 0 && (
+          <section className="rounded-2xl liquid-glass overflow-hidden divide-y divide-stone-200/40 dark:divide-white/[0.05]">
+            {uncategorizedFeeds.map((feed) => renderSourceRow(feed, false))}
+          </section>
         )}
 
         {/* Folders & Their Sources */}
@@ -465,88 +587,11 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
               {/* Sources Inside Folder */}
               {!isCollapsed && (
                 <div className="divide-y divide-stone-200/40 dark:divide-white/[0.05]">
-                  {folderFeeds.map((feed) => {
-                    const isSelected = selectedFeedId === feed.id;
-                    const unread = unreadCountByFeed[feed.id] || 0;
-                    const isThisRefreshing = refreshingFeedId === feed.id;
-
-                    return (
-                      <div
-                        key={feed.id}
-                        onClick={() => handleSelectFeed(feed)}
-                        role="button"
-                        tabIndex={0}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            handleSelectFeed(feed);
-                          }
-                        }}
-                        className={`px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer select-none transition-colors ${
-                          isSelected
-                            ? 'bg-[#FF6719]/8 dark:bg-[#FF6719]/12'
-                            : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3 min-w-0 flex-1 pl-2">
-                          <SourceAvatar name={feed.title} url={feed.url} size="sm" />
-                          <span className="font-serif font-medium text-sm text-stone-900 dark:text-stone-100 truncate">
-                            {feed.title}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {unread > 0 && (
-                            <span className="text-[11px] font-mono tabular-nums text-stone-400 dark:text-stone-500 mr-1">
-                              {unread}
-                            </span>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={(e) => handleSingleRefresh(e, feed)}
-                            disabled={isThisRefreshing || isOffline}
-                            title="Refresh source"
-                            aria-label={`Refresh ${feed.title}`}
-                            className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                          >
-                            <RefreshCw
-                              className={`w-3.5 h-3.5 ${
-                                isThisRefreshing ? 'animate-spin text-[#FF6719]' : ''
-                              }`}
-                            />
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={(e) => handleDelete(e, feed)}
-                            title="Remove source"
-                            aria-label={`Remove ${feed.title}`}
-                            className="p-1.5 rounded-lg text-stone-300 hover:text-red-500 dark:text-stone-600 dark:hover:text-red-400 transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-
-                          {isSelected && <Check className="w-4 h-4 text-[#FF6719] shrink-0" />}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {folderFeeds.map((feed) => renderSourceRow(feed, true))}
 
                   {folderFeeds.length === 0 && (
-                    <div className="px-4 py-3 text-xs text-stone-400 flex items-center justify-between">
-                      <span>Empty folder</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedFolderForNew(folderName);
-                          setIsCreatingNewFolder(false);
-                          setIsAddOpen(true);
-                        }}
-                        className="text-[#FF6719] font-medium hover:underline"
-                      >
-                        + Add source here
-                      </button>
+                    <div className="px-4 py-3 text-xs text-stone-400">
+                      Empty folder — tap the folder icon on any source to move it here.
                     </div>
                   )}
                 </div>
@@ -555,7 +600,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
           );
         })}
 
-        {groupedByFolder.length === 0 && (
+        {groupedByFolder.length === 0 && uncategorizedFeeds.length === 0 && (
           <div className="py-12 text-center text-xs text-stone-400">
             No matching sources found.
           </div>
@@ -575,6 +620,125 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Liquid Glass Modal to Move a Source from One Folder to Another */}
+      {movingFeed && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setMovingFeed(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xs liquid-glass rounded-3xl p-4 shadow-2xl border border-white/30 dark:border-white/15 text-stone-900 dark:text-stone-100 space-y-3 animate-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-center justify-between pb-2.5 border-b border-stone-200/60 dark:border-white/10">
+              <div className="min-w-0 pr-2">
+                <span className="text-[11px] uppercase tracking-wider font-semibold text-stone-400 block">
+                  Move Source
+                </span>
+                <span className="font-serif font-semibold text-sm truncate block">
+                  {movingFeed.title}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMovingFeed(null)}
+                className="p-1 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1.5 max-h-60 overflow-y-auto no-scrollbar">
+              {/* Option: No Folder (Uncategorized) */}
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHapticComplete();
+                  onMoveFeedToFolder(movingFeed.id, '');
+                  setMovingFeed(null);
+                }}
+                className={`w-full px-3 py-2 rounded-xl text-xs flex items-center justify-between transition-colors ${
+                  !movingFeed.category?.trim()
+                    ? 'bg-[#FF6719]/15 text-[#FF6719] font-semibold'
+                    : 'hover:bg-stone-200/60 dark:hover:bg-white/[0.06] text-stone-600 dark:text-stone-300'
+                }`}
+              >
+                <span>No Folder (Uncategorized)</span>
+                {!movingFeed.category?.trim() && <Check className="w-3.5 h-3.5 text-[#FF6719]" />}
+              </button>
+
+              {/* Existing Folders */}
+              {allFolders.map((folder) => {
+                const isCurrent = (movingFeed.category?.trim() || '') === folder;
+                return (
+                  <button
+                    key={folder}
+                    type="button"
+                    onClick={() => {
+                      triggerHapticComplete();
+                      onMoveFeedToFolder(movingFeed.id, folder);
+                      setMovingFeed(null);
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl text-xs flex items-center justify-between transition-colors ${
+                      isCurrent
+                        ? 'bg-[#FF6719]/15 text-[#FF6719] font-semibold'
+                        : 'hover:bg-stone-200/60 dark:hover:bg-white/[0.06] text-stone-800 dark:text-stone-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <Folder className="w-3.5 h-3.5 text-[#FF6719] shrink-0" />
+                      <span className="truncate">{folder}</span>
+                    </div>
+                    {isCurrent && <Check className="w-3.5 h-3.5 text-[#FF6719] shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Option to create a new folder and move into it */}
+            <div className="pt-2 border-t border-stone-200/60 dark:border-white/10">
+              {isCreatingFolderInMove ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!moveNewFolderName.trim()) return;
+                    triggerHapticComplete();
+                    onMoveFeedToFolder(movingFeed.id, moveNewFolderName.trim());
+                    setMovingFeed(null);
+                  }}
+                  className="flex items-center gap-1.5"
+                >
+                  <input
+                    type="text"
+                    autoFocus
+                    value={moveNewFolderName}
+                    onChange={(e) => setMoveNewFolderName(e.target.value)}
+                    placeholder="New folder name..."
+                    className="flex-1 px-2.5 py-1.5 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-[#FF6719]/50 text-stone-900 dark:text-stone-100 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!moveNewFolderName.trim()}
+                    className="px-3 py-1.5 bg-[#FF6719] text-white rounded-xl text-xs font-semibold disabled:opacity-40"
+                  >
+                    Move
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsCreatingFolderInMove(true)}
+                  className="w-full py-1.5 text-xs font-semibold text-[#FF6719] flex items-center justify-center gap-1.5 hover:opacity-80"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                  <span>+ Move to New Folder</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -180,19 +180,24 @@ export default function App() {
         tags: feed.defaultTags || [],
       });
       if (data && Array.isArray(data.items)) {
-        if (data.resolvedFeedUrl && data.resolvedFeedUrl !== feed.url) {
-          setFeeds((prev) =>
-            prev.map((f) =>
-              f.id === feed.id
-                ? {
-                    ...f,
-                    url: data.resolvedFeedUrl!,
-                    title: f.title === 'Newspaper Feed' && data.feedTitle ? data.feedTitle : f.title,
-                  }
-                : f
-            )
-          );
-        }
+        const discoveredUrl = data.resolvedFeedUrl;
+        setFeeds((prev) =>
+          prev.map((f) => {
+            if (f.id !== feed.id) return f;
+            const looksLikeRawDomain =
+              f.title === 'Newspaper Feed' ||
+              f.title === 'Newspaper Source' ||
+              /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(f.title.trim());
+            return {
+              ...f,
+              url: discoveredUrl || f.url,
+              title:
+                looksLikeRawDomain && data.feedTitle && data.feedTitle !== 'RSS Feed'
+                  ? data.feedTitle
+                  : f.title,
+            };
+          })
+        );
         return data.items.map((item) => ({
           ...item,
           feedId: feed.id,
@@ -279,7 +284,7 @@ export default function App() {
     setCurrentTab('stories');
     setIsHeaderVisible(true);
 
-    const folderFeeds = feeds.filter((f) => (f.category?.trim() || 'General') === folderName);
+    const folderFeeds = feeds.filter((f) => (f.category?.trim() || '') === folderName);
     if (isOffline || folderFeeds.length === 0) {
       if (isOffline) notify(`Offline mode: Showing cached stories in ${folderName}`);
       return;
@@ -310,6 +315,22 @@ export default function App() {
     const trimmed = folderName.trim();
     if (!trimmed) return;
     setFolders((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+  };
+
+  const handleMoveFeedToFolder = (feedId: string, folderName: string) => {
+    const target = folderName.trim();
+    if (target) {
+      setFolders((prev) => (prev.includes(target) ? prev : [...prev, target]));
+    }
+    const targetFeed = feeds.find((f) => f.id === feedId);
+    setFeeds((prev) =>
+      prev.map((f) => (f.id === feedId ? { ...f, category: target } : f))
+    );
+    notify(
+      target
+        ? `Moved "${targetFeed?.title || 'Source'}" to ${target}`
+        : `Moved "${targetFeed?.title || 'Source'}" out of folder`
+    );
   };
 
   // Refresh active source, active folder, or all sources if triggered from top bar
@@ -739,7 +760,7 @@ export default function App() {
   const selectedFolderFeedIds = useMemo(() => {
     if (!selectedFolder) return null;
     return feeds
-      .filter((f) => (f.category?.trim() || 'General') === selectedFolder)
+      .filter((f) => (f.category?.trim() || '') === selectedFolder)
       .map((f) => f.id);
   }, [feeds, selectedFolder]);
 
@@ -1202,6 +1223,7 @@ export default function App() {
               onSelectSource={(feed) => handleSelectSource(feed)}
               onSelectFolder={(folderName) => handleSelectFolder(folderName)}
               onCreateFolder={(folderName) => handleCreateFolder(folderName)}
+              onMoveFeedToFolder={handleMoveFeedToFolder}
               onRefreshFeed={async (feed) => {
                 await handleSelectSource(feed);
               }}
@@ -1282,6 +1304,7 @@ export default function App() {
         tags={tags}
         folders={folders}
         onCreateFolder={handleCreateFolder}
+        onMoveFeedToFolder={handleMoveFeedToFolder}
         onAddFeed={handleAddFeed}
         onDeleteFeed={handleDeleteFeed}
         onImportOPML={handleImportOPML}

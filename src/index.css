@@ -851,23 +851,44 @@
 /* ─────────────────────────────────────────────────────────────
    ARTICLE PROSE BODY in reader
 ───────────────────────────────────────────────────────────── */
-.article-prose p { margin-bottom: 1.2em; }
-.article-prose h2 { font-weight: 700; font-size: 1.25em; margin: 1.6em 0 0.6em; }
-.article-prose h3 { font-weight: 600; font-size: 1.1em; margin: 1.4em 0 0.5em; }
+.article-prose p {
+  margin-bottom: 1.35em;
+  color: #E6E6E6;
+}
+.article-prose h2 {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 1.3em;
+  color: #F0F0F0;
+  margin: 1.7em 0 0.65em;
+  letter-spacing: -0.015em;
+}
+.article-prose h3 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 1.12em;
+  color: #ECECEC;
+  margin: 1.4em 0 0.5em;
+}
 .article-prose blockquote {
-  padding: 0.75em 1.25em;
-  border-left: 2.5px solid var(--accent);
-  opacity: 0.85;
+  padding: 0.5em 1.15em;
+  border-left: 2px solid rgba(255, 255, 255, 0.28);
+  color: #CFCFCF;
   font-style: italic;
   margin: 1.5em 0;
 }
 .article-prose img {
   width: 100%;
   height: auto;
-  border-radius: 10px;
-  margin: 1em 0;
+  border-radius: 2px;
+  margin: 1.25em 0;
 }
-.article-prose a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.article-prose a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.55);
+  text-underline-offset: 4px;
+}
 
 /* ─────────────────────────────────────────────────────────────
    SEARCH INPUT — smooth reveal animation
