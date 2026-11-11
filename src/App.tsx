@@ -240,6 +240,24 @@ export default function App() {
     return [...additions, ...refreshed].sort((a, b) => b.timestamp - a.timestamp);
   };
 
+  // Listen for background startup feed updates so articles stream into the feed seamlessly
+  useEffect(() => {
+    const handleBackgroundStorageUpdate = () => {
+      const latestArticles = loadArticlesFromStorage();
+      const latestFeeds = loadFeedsFromStorage();
+      setArticles((prev) => mergeFeedItems(prev, latestArticles));
+      setFeeds((prev) => {
+        const byId = new Map(latestFeeds.map((f) => [f.id, f]));
+        return prev.map((f) => byId.get(f.id) || f);
+      });
+    };
+
+    window.addEventListener('chinta:storage-updated', handleBackgroundStorageUpdate);
+    return () => {
+      window.removeEventListener('chinta:storage-updated', handleBackgroundStorageUpdate);
+    };
+  }, []);
+
   // Click handler for a specific source: selects only that source and loads its feed
   const handleSelectSource = async (feed: Feed) => {
     triggerHapticSelection();

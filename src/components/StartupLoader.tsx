@@ -14,12 +14,16 @@ import {
 import { blocksToHtml } from '../utils/sanitize';
 
 // ─── Constants ──────────────────────────────────────────────
-/** Total visible time for the banner (ms) */
-const BANNER_HOLD_MS = 3000;
+/** Grapheme clusters for "চিন্তা-Think" so Bengali conjuncts/vowel marks never split mid-character */
+const TYPEWRITER_GRAPHEMES = ['চি', 'ন্তা', '-', 'T', 'h', 'i', 'n', 'k'] as const;
+/** Delay before typewriter starts (after main statement entrance begins) */
+const TYPEWRITER_START_DELAY_MS = 480;
+/** Per-character typing interval (ms) */
+const TYPEWRITER_STEP_MS = 135;
+/** Brief pause after the final character is shown before exiting to the feed */
+const POST_TYPING_PAUSE_MS = 260;
 /** Duration of the exit animation (must match CSS .splash-exit keyframe duration) */
 const BANNER_EXIT_ANIM_MS = 540;
-/** How long to wait for feeds before showing the app anyway */
-const REFRESH_BUDGET_MS = 6000;
 /** Max articles to prefetch full content for during startup */
 const PREFETCH_LIMIT = 12;
 /** Minimum re-open interval before we silently refresh in background */
@@ -27,6 +31,12 @@ const RESUME_DEBOUNCE_MS = 90_000; // 90 s
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function notifyStorageUpdated(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('chinta:storage-updated'));
+  }
 }
 
 async function runPool<T>(
@@ -74,9 +84,8 @@ function mergeItems(previous: FeedItem[], incoming: FeedItem[]): FeedItem[] {
 
 async function refreshStartupContent(): Promise<void> {
   const feeds          = loadFeedsFromStorage();
-  const storedArticles = loadArticlesFromStorage();
-  const incoming: FeedItem[] = [];
-  const updatedFeeds  = [...feeds];
+  let merged           = loadArticlesFromStorage();
+  const updatedFeeds   = [...feeds];
 
   await runPool(feeds, 8, async (feed) => {
     try {
@@ -86,25 +95,27 @@ async function refreshStartupContent(): Promise<void> {
         title:  feed.title,
         tags:   feed.defaultTags || [],
       });
-      incoming.push(
-        ...data.items.map((item) => ({
-          ...item,
-          feedId:    feed.id,
-          feedTitle: data.feedTitle || feed.title,
-        }))
-      );
+      const feedItems = data.items.map((item) => ({
+        ...item,
+        feedId:    feed.id,
+        feedTitle: data.feedTitle || feed.title,
+      }));
       if (data.resolvedFeedUrl && data.resolvedFeedUrl !== feed.url) {
         const idx = updatedFeeds.findIndex((f) => f.id === feed.id);
         if (idx >= 0) updatedFeeds[idx] = { ...updatedFeeds[idx], url: data.resolvedFeedUrl };
+        saveFeedsToStorage(updatedFeeds);
+      }
+      if (feedItems.length > 0) {
+        merged = mergeItems(merged, feedItems);
+        saveArticlesToStorage(merged);
+        notifyStorageUpdated();
       }
     } catch (err) {
       console.warn(`[ZenFeed] startup sync failed for ${feed.title}:`, err);
     }
   });
 
-  let merged = incoming.length > 0 ? mergeItems(storedArticles, incoming) : storedArticles;
-
-  // Prefetch full article bodies for the freshest items that only have teasers
+  // Prefetch full article bodies in the background for the freshest items that only have teasers
   const candidates = merged
     .filter((a) => a.link.startsWith('http') && (!hasFullBody(a) || !a.imageUrl))
     .sort((a, b) => b.timestamp - a.timestamp)
@@ -128,6 +139,8 @@ async function refreshStartupContent(): Promise<void> {
           cachedAt:        contentClean.length >= 800 ? Date.now() : a.cachedAt,
         }
       );
+      saveArticlesToStorage(merged);
+      notifyStorageUpdated();
     } catch {
       // skip — will be fetched lazily when user opens the article
     }
@@ -135,17 +148,18 @@ async function refreshStartupContent(): Promise<void> {
 
   saveFeedsToStorage(updatedFeeds);
   saveArticlesToStorage(merged);
+  notifyStorageUpdated();
 }
 
 // ─── SplashScreen component ──────────────────────────────────────────────────
 interface SplashProps {
-  /** 0–100 progress for the bottom loader bar */
-  progress: number;
+  /** Currently typed substring of "চিন্তা-Think" */
+  typedText: string;
   /** 'enter' | 'hold' | 'exit' | 'gone' */
   phase: 'enter' | 'hold' | 'exit' | 'gone';
 }
 
-const SplashScreen: React.FC<SplashProps> = ({ progress, phase }) => {
+const SplashScreen: React.FC<SplashProps> = ({ typedText, phase }) => {
   if (phase === 'gone') return null;
 
   return (
@@ -156,23 +170,21 @@ const SplashScreen: React.FC<SplashProps> = ({ progress, phase }) => {
       {/* Ambient background glow */}
       <div className="splash-glow" aria-hidden="true" />
 
-      {/* Central Statement */}
+      {/* Central Statement + Typewriter Signature Below */}
       <div className="relative z-10 px-6 max-w-lg text-center flex flex-col items-center justify-center">
         <h1
           className="splash-bengali-title font-serif"
           style={{ fontFamily: "'Noto Serif Bengali', 'Lora', Georgia, serif" }}
         >
-          চলুন চিন্তা করি শেয়ারে
+          চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।
         </h1>
-      </div>
 
-      {/* Bottom progress pill */}
-      <div className="splash-loader-wrap">
-        <div className="splash-progress-track">
-          <div
-            className="splash-progress-fill"
-            style={{ width: `${progress}%` }}
-          />
+        <div
+          className="splash-typewriter font-serif"
+          style={{ fontFamily: "'Noto Serif Bengali', 'Lora', Georgia, serif" }}
+        >
+          <span>{typedText}</span>
+          <span className="splash-typewriter-cursor" aria-hidden="true" />
         </div>
       </div>
     </div>
@@ -187,9 +199,8 @@ interface StartupLoaderProps {
 type SplashPhase = 'enter' | 'hold' | 'exit' | 'gone';
 
 export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
-  const [splashPhase,    setSplashPhase]    = useState<SplashPhase>('enter');
-  const [progress,       setProgress]       = useState(0);
-  const [contentVersion, setContentVersion] = useState(0);
+  const [splashPhase, setSplashPhase] = useState<SplashPhase>('enter');
+  const [typedCount,  setTypedCount]  = useState(0);
 
   const mountedRef        = useRef(true);
   const hasRunSplashRef   = useRef(false);
@@ -198,67 +209,51 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
 
   /**
    * Full startup sequence:
-   *   1. Begin banner (enter animation already playing via CSS)
-   *   2. Kick off background refresh immediately
-   *   3. Animate progress bar along a natural curve
-   *   4. After BANNER_HOLD_MS, play exit animation
-   *   5. After exit animation completes, remove banner from DOM
+   *   1. Begin banner (enter animation playing via CSS)
+   *   2. Kick off background news fetching immediately (streaming updates to feed)
+   *   3. Type "চিন্তা-Think" character-by-character below the main statement
+   *   4. As soon as the full "চিন্তা-Think" text is shown, trigger exit animation and show feed
+   *   5. Meanwhile background fetching continues seamlessly
    */
   const runStartup = useCallback(async (showBanner: boolean) => {
-    if (refreshRunningRef.current) return;
-    refreshRunningRef.current = true;
-
-    if (showBanner) {
-      setSplashPhase('enter');
-      setProgress(0);
+    // Always kick off background news fetching if not already running
+    if (!refreshRunningRef.current) {
+      refreshRunningRef.current = true;
+      void refreshStartupContent()
+        .catch((err) => console.warn('[ZenFeed] startup refresh error:', err))
+        .finally(() => {
+          refreshRunningRef.current = false;
+        });
     }
 
-    // Kick off network refresh in parallel — no awaiting here
-    let refreshDone = false;
-    const refreshTask = refreshStartupContent()
-      .catch((err) => console.warn('[ZenFeed] startup refresh error:', err))
-      .finally(() => {
-        refreshDone = true;
-        if (mountedRef.current) setContentVersion((v) => v + 1);
-        refreshRunningRef.current = false;
-      });
-
     if (!showBanner) {
-      // Background re-open — just refresh silently
-      await Promise.race([refreshTask, wait(REFRESH_BUDGET_MS)]);
       return;
     }
 
-    // ── Animate progress bar across the banner hold duration ──
-    // Curve: fast start, slow in middle (like iOS progress indicators)
-    // 0ms→400ms: 0→55%  |  400ms→1500ms: 55→80%  |  1500ms→2800ms: 80→97%
-    const progressTimers: ReturnType<typeof setTimeout>[] = [];
-    const scheduleProgress = (pct: number, delay: number) =>
-      progressTimers.push(setTimeout(() => { if (mountedRef.current) setProgress(pct); }, delay));
+    setSplashPhase('enter');
+    setTypedCount(0);
 
-    scheduleProgress(55, 320);
-    scheduleProgress(72, 800);
-    scheduleProgress(85, 1400);
-    scheduleProgress(93, 2200);
-    scheduleProgress(100, BANNER_HOLD_MS - 100);
+    // Let the main Bengali statement animate in first
+    await wait(TYPEWRITER_START_DELAY_MS);
 
-    // Hold the banner for 3 seconds (regardless of network speed)
-    await wait(BANNER_HOLD_MS);
+    // Type "চিন্তা-Think" grapheme by grapheme
+    for (let i = 1; i <= TYPEWRITER_GRAPHEMES.length; i++) {
+      if (!mountedRef.current) return;
+      setTypedCount(i);
+      await wait(TYPEWRITER_STEP_MS);
+    }
 
-    // Trigger exit animation
+    // Brief hold so the completed "চিন্তা-Think" text registers clearly
+    await wait(POST_TYPING_PAUSE_MS);
+
+    // Trigger exit animation to reveal the feed immediately while news keeps fetching
     if (mountedRef.current) setSplashPhase('exit');
 
-    // Wait for exit animation to finish before removing from DOM
     await wait(BANNER_EXIT_ANIM_MS);
 
     if (mountedRef.current) {
       setSplashPhase('gone');
-      // Clear timers defensively
-      progressTimers.forEach(clearTimeout);
     }
-
-    // Don't block the UI — let refresh finish in background
-    await Promise.race([refreshTask, wait(REFRESH_BUDGET_MS)]);
   }, []);
 
   // ── Initial mount ──
@@ -292,6 +287,8 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
     };
   }, [runStartup]);
 
+  const typedText = TYPEWRITER_GRAPHEMES.slice(0, typedCount).join('');
+
   return (
     <div className="relative h-full w-full overflow-hidden">
       {/* App content — always mounted, animates in as splash exits */}
@@ -299,11 +296,11 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
         className={splashPhase === 'gone' ? 'app-shell-ready h-full' : 'h-full'}
         style={{ visibility: splashPhase === 'enter' ? 'hidden' : 'visible' }}
       >
-        {React.cloneElement(children, { key: contentVersion })}
+        {children}
       </div>
 
       {/* Splash banner — rendered on top */}
-      <SplashScreen phase={splashPhase} progress={progress} />
+      <SplashScreen phase={splashPhase} typedText={typedText} />
     </div>
   );
 };

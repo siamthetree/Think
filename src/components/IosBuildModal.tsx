@@ -103,8 +103,12 @@ jobs:
           cd build_ipa
           zip -r -q "../\${IPA_NAME}.ipa" Payload/
           cd ..
-          cp "\${IPA_NAME}.ipa" "Chinta-iOS.ipa"
-          cp "\${IPA_NAME}.ipa" "PaperPress-iOS.ipa"
+          if [ "\${IPA_NAME}.ipa" != "Chinta-iOS.ipa" ]; then
+            cp "\${IPA_NAME}.ipa" "Chinta-iOS.ipa"
+          fi
+          if [ "\${IPA_NAME}.ipa" != "PaperPress-iOS.ipa" ]; then
+            cp "\${IPA_NAME}.ipa" "PaperPress-iOS.ipa"
+          fi
 
       - name: Upload IPA Artifact to GitHub Actions
         uses: actions/upload-artifact@v4
