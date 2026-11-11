@@ -14,23 +14,105 @@ import {
 import { blocksToHtml } from '../utils/sanitize';
 
 // ─── Constants ──────────────────────────────────────────────
-/** Grapheme clusters for "চিন্তা-Think" so Bengali conjuncts/vowel marks never split mid-character */
-const TYPEWRITER_GRAPHEMES = ['চি', 'ন্তা', '-', 'T', 'h', 'i', 'n', 'k'] as const;
-/** Delay before typewriter starts (after main statement entrance begins) */
-const TYPEWRITER_START_DELAY_MS = 480;
-/** Per-character typing interval (ms) */
-const TYPEWRITER_STEP_MS = 135;
-/** Brief pause after the final character is shown before exiting to the feed */
-const POST_TYPING_PAUSE_MS = 260;
+/**
+ * Pre-segmented Bengali grapheme clusters for Line 1 & Line 2 of:
+ * "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।"
+ * Pre-segmenting guarantees vowel signs (ু, ে, া, ি) and conjuncts (ন্তা) never split mid-character.
+ */
+const HEADLINE_LINE1_GRAPHEMES = [
+  'চ', 'লু', 'ন', ' ',
+  'দে', 'শ', 'টা', ' ',
+  'ঘু', 'রি', ' ',
+  'শে', 'য়া', 'রে', ',',
+] as const;
+
+const HEADLINE_LINE2_GRAPHEMES = [
+  'চি', 'ন্তা', ' ',
+  'ক', 'রি', ' ',
+  'এ', 'ক', 'সা', 'থে', '।',
+] as const;
+
+const TOTAL_HEADLINE_GRAPHEMES =
+  HEADLINE_LINE1_GRAPHEMES.length + HEADLINE_LINE2_GRAPHEMES.length;
+
+/** Grapheme clusters for "চিন্তা-Think" below the main statement */
+const SUBTITLE_GRAPHEMES = ['চি', 'ন্তা', '-', 'T', 'h', 'i', 'n', 'k'] as const;
+
+/** Brief initial settle before typing starts (ms) */
+const INITIAL_START_DELAY_MS = 60;
+/** Fast typing speed for the main Bengali headline (ms per grapheme) */
+const HEADLINE_STEP_MS = 24;
+/** Crisp, smooth typing speed for "চিন্তা-Think" — slightly slower than headline but never sluggish */
+const SUBTITLE_STEP_MS = 55;
+/** Tiny frame hold once "চিন্তা-Think" is fully shown before opening the feed (ms) */
+const POST_TYPING_PAUSE_MS = 80;
 /** Duration of the exit animation (must match CSS .splash-exit keyframe duration) */
-const BANNER_EXIT_ANIM_MS = 540;
-/** Max articles to prefetch full content for during startup */
-const PREFETCH_LIMIT = 12;
+const BANNER_EXIT_ANIM_MS = 240;
+/** Max articles to prefetch full content for in background */
+const PREFETCH_LIMIT = 4;
 /** Minimum re-open interval before we silently refresh in background */
 const RESUME_DEBOUNCE_MS = 90_000; // 90 s
+/** Session key to prevent splash loop if iOS WKWebView ever reloads */
+const SPLASH_SESSION_KEY = 'chinta_splash_completed_v2';
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function hasSplashAlreadyRunInSession(): boolean {
+  try {
+    return sessionStorage.getItem(SPLASH_SESSION_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markSplashRunInSession(): void {
+  try {
+    sessionStorage.setItem(SPLASH_SESSION_KEY, '1');
+  } catch {
+    // ignore storage errors in private mode
+  }
+}
+
+/**
+ * Drives a step counter from 1..totalSteps using performance.now() + setTimeout(16)
+ * so it works reliably even when iOS throttles requestAnimationFrame during launch.
+ */
+function runSmoothTypewriter(
+  totalSteps: number,
+  stepMs: number,
+  isMounted: () => boolean,
+  onStep: (count: number) => void
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (totalSteps <= 0 || !isMounted()) {
+      resolve();
+      return;
+    }
+    const startTime = performance.now();
+    let lastCount = 0;
+
+    const tick = () => {
+      if (!isMounted()) {
+        resolve();
+        return;
+      }
+      const elapsed = performance.now() - startTime;
+      const nextCount = Math.min(totalSteps, Math.floor(elapsed / stepMs) + 1);
+      if (nextCount !== lastCount) {
+        lastCount = nextCount;
+        onStep(nextCount);
+      }
+      if (nextCount >= totalSteps) {
+        resolve();
+        return;
+      }
+      setTimeout(tick, 16);
+    };
+
+    tick();
+  });
 }
 
 function notifyStorageUpdated(): void {
@@ -49,7 +131,11 @@ async function runPool<T>(
     Array.from({ length: Math.min(limit, queue.length) }, async () => {
       while (queue.length > 0) {
         const item = queue.shift();
-        if (item !== undefined) await job(item);
+        if (item !== undefined) {
+          await job(item);
+          // Yield briefly between tasks so iOS WebView memory and UI stay responsive
+          await wait(40);
+        }
       }
     })
   );
@@ -83,11 +169,12 @@ function mergeItems(previous: FeedItem[], incoming: FeedItem[]): FeedItem[] {
 }
 
 async function refreshStartupContent(): Promise<void> {
-  const feeds          = loadFeedsFromStorage();
-  let merged           = loadArticlesFromStorage();
-  const updatedFeeds   = [...feeds];
+  const feeds        = loadFeedsFromStorage();
+  let merged         = loadArticlesFromStorage();
+  const updatedFeeds = [...feeds];
 
-  await runPool(feeds, 8, async (feed) => {
+  // Use gentle concurrency (2 at a time) so iPhone WKWebView never spikes memory
+  await runPool(feeds, 2, async (feed) => {
     try {
       const data = await fetchFeedWithFallback({
         url:    feed.url,
@@ -115,13 +202,13 @@ async function refreshStartupContent(): Promise<void> {
     }
   });
 
-  // Prefetch full article bodies in the background for the freshest items that only have teasers
+  // Prefetch full article bodies gently (1 at a time) for top stories
   const candidates = merged
     .filter((a) => a.link.startsWith('http') && (!hasFullBody(a) || !a.imageUrl))
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, PREFETCH_LIMIT);
 
-  await runPool(candidates, 6, async (article) => {
+  await runPool(candidates, 1, async (article) => {
     try {
       const extracted = await extractArticleWithFallback(article.link);
       if (!extracted.success || !extracted.blocks?.length) return;
@@ -153,14 +240,33 @@ async function refreshStartupContent(): Promise<void> {
 
 // ─── SplashScreen component ──────────────────────────────────────────────────
 interface SplashProps {
-  /** Currently typed substring of "চিন্তা-Think" */
-  typedText: string;
+  /** Number of graphemes typed in the main Bengali statement */
+  headlineCount: number;
+  /** Number of graphemes typed in "চিন্তা-Think" */
+  subtitleCount: number;
   /** 'enter' | 'hold' | 'exit' | 'gone' */
   phase: 'enter' | 'hold' | 'exit' | 'gone';
 }
 
-const SplashScreen: React.FC<SplashProps> = ({ typedText, phase }) => {
+const SplashScreen: React.FC<SplashProps> = ({
+  headlineCount,
+  subtitleCount,
+  phase,
+}) => {
   if (phase === 'gone') return null;
+
+  const line1Len = HEADLINE_LINE1_GRAPHEMES.length;
+  const line1Count = Math.min(headlineCount, line1Len);
+  const line2Count = Math.max(0, headlineCount - line1Len);
+
+  const line1Text = HEADLINE_LINE1_GRAPHEMES.slice(0, line1Count).join('');
+  const line2Text = HEADLINE_LINE2_GRAPHEMES.slice(0, line2Count).join('');
+  const subtitleText = SUBTITLE_GRAPHEMES.slice(0, subtitleCount).join('');
+
+  const isTypingHeadline = headlineCount < TOTAL_HEADLINE_GRAPHEMES && subtitleCount === 0;
+  const isCursorOnLine1 = isTypingHeadline && headlineCount <= line1Len;
+  const isCursorOnLine2 = isTypingHeadline && headlineCount > line1Len;
+  const isCursorOnSubtitle = !isTypingHeadline;
 
   return (
     <div
@@ -176,15 +282,28 @@ const SplashScreen: React.FC<SplashProps> = ({ typedText, phase }) => {
           className="splash-bengali-title font-serif"
           style={{ fontFamily: "'Noto Serif Bengali', 'Lora', Georgia, serif" }}
         >
-          চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।
+          <span className="splash-bengali-line">
+            <span>{line1Text}</span>
+            {isCursorOnLine1 && (
+              <span className="splash-typewriter-cursor" aria-hidden="true" />
+            )}
+          </span>
+          <span className="splash-bengali-line">
+            <span>{line2Text}</span>
+            {isCursorOnLine2 && (
+              <span className="splash-typewriter-cursor" aria-hidden="true" />
+            )}
+          </span>
         </h1>
 
         <div
           className="splash-typewriter font-serif"
           style={{ fontFamily: "'Noto Serif Bengali', 'Lora', Georgia, serif" }}
         >
-          <span>{typedText}</span>
-          <span className="splash-typewriter-cursor" aria-hidden="true" />
+          <span>{subtitleText}</span>
+          {isCursorOnSubtitle && (
+            <span className="splash-typewriter-cursor" aria-hidden="true" />
+          )}
         </div>
       </div>
     </div>
@@ -199,72 +318,111 @@ interface StartupLoaderProps {
 type SplashPhase = 'enter' | 'hold' | 'exit' | 'gone';
 
 export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
-  const [splashPhase, setSplashPhase] = useState<SplashPhase>('enter');
-  const [typedCount,  setTypedCount]  = useState(0);
+  const alreadyShown = hasSplashAlreadyRunInSession();
+  const [splashPhase,   setSplashPhase]   = useState<SplashPhase>(alreadyShown ? 'gone' : 'enter');
+  const [headlineCount, setHeadlineCount] = useState(alreadyShown ? TOTAL_HEADLINE_GRAPHEMES : 0);
+  const [subtitleCount, setSubtitleCount] = useState(alreadyShown ? SUBTITLE_GRAPHEMES.length : 0);
 
   const mountedRef        = useRef(true);
-  const hasRunSplashRef   = useRef(false);
+  const hasRunSplashRef   = useRef(alreadyShown);
   const lastResumeRef     = useRef(0);
   const refreshRunningRef = useRef(false);
 
+  const triggerBackgroundRefresh = useCallback(() => {
+    if (refreshRunningRef.current) return;
+    refreshRunningRef.current = true;
+    void refreshStartupContent()
+      .catch((err) => console.warn('[ZenFeed] startup refresh error:', err))
+      .finally(() => {
+        refreshRunningRef.current = false;
+      });
+  }, []);
+
   /**
    * Full startup sequence:
-   *   1. Begin banner (enter animation playing via CSS)
-   *   2. Kick off background news fetching immediately (streaming updates to feed)
-   *   3. Type "চিন্তা-Think" character-by-character below the main statement
-   *   4. As soon as the full "চিন্তা-Think" text is shown, trigger exit animation and show feed
-   *   5. Meanwhile background fetching continues seamlessly
+   *   1. Mark session splash started so it can never loop on iPhone WebView reloads
+   *   2. Fast typewriter for "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।" (24ms/grapheme)
+   *   3. Immediately upon completion, crisp typewriter for "চিন্তা-Think" (55ms/grapheme)
+   *   4. The instant "চিন্তা-Think" arrives on screen fully, exit banner and open feed
+   *   5. Run background news fetching without blocking or crashing the WebView
    */
   const runStartup = useCallback(async (showBanner: boolean) => {
-    // Always kick off background news fetching if not already running
-    if (!refreshRunningRef.current) {
-      refreshRunningRef.current = true;
-      void refreshStartupContent()
-        .catch((err) => console.warn('[ZenFeed] startup refresh error:', err))
-        .finally(() => {
-          refreshRunningRef.current = false;
-        });
-    }
-
     if (!showBanner) {
+      triggerBackgroundRefresh();
       return;
     }
 
+    // Mark immediately so even if iOS WKWebView reloads, it won't loop the banner
+    markSplashRunInSession();
+
     setSplashPhase('enter');
-    setTypedCount(0);
+    setHeadlineCount(0);
+    setSubtitleCount(0);
 
-    // Let the main Bengali statement animate in first
-    await wait(TYPEWRITER_START_DELAY_MS);
+    // Start background feed fetch after a short delay so 100% of CPU is free for silky typing
+    const bgTimer = setTimeout(() => {
+      if (mountedRef.current) triggerBackgroundRefresh();
+    }, 500);
 
-    // Type "চিন্তা-Think" grapheme by grapheme
-    for (let i = 1; i <= TYPEWRITER_GRAPHEMES.length; i++) {
+    // Hard safety timer: guarantee the app opens within 1.85s even if timers are throttled
+    const safetyTimer = setTimeout(() => {
+      if (mountedRef.current) {
+        setHeadlineCount(TOTAL_HEADLINE_GRAPHEMES);
+        setSubtitleCount(SUBTITLE_GRAPHEMES.length);
+        setSplashPhase('gone');
+      }
+    }, 1850);
+
+    try {
+      await wait(INITIAL_START_DELAY_MS);
+
+      // Stage 1: Fast typewriter for "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।"
+      await runSmoothTypewriter(
+        TOTAL_HEADLINE_GRAPHEMES,
+        HEADLINE_STEP_MS,
+        () => mountedRef.current,
+        (count) => setHeadlineCount(count)
+      );
+
       if (!mountedRef.current) return;
-      setTypedCount(i);
-      await wait(TYPEWRITER_STEP_MS);
+
+      // Stage 2: Immediately type "চিন্তা-Think" below
+      await runSmoothTypewriter(
+        SUBTITLE_GRAPHEMES.length,
+        SUBTITLE_STEP_MS,
+        () => mountedRef.current,
+        (count) => setSubtitleCount(count)
+      );
+
+      if (!mountedRef.current) return;
+
+      // Open the app as soon as "চিন্তা-Think" arrives on screen fully
+      await wait(POST_TYPING_PAUSE_MS);
+
+      if (mountedRef.current) setSplashPhase('exit');
+
+      await wait(BANNER_EXIT_ANIM_MS);
+
+      if (mountedRef.current) {
+        setSplashPhase('gone');
+      }
+    } finally {
+      clearTimeout(safetyTimer);
+      // Ensure background refresh is running
+      triggerBackgroundRefresh();
+      void bgTimer;
     }
-
-    // Brief hold so the completed "চিন্তা-Think" text registers clearly
-    await wait(POST_TYPING_PAUSE_MS);
-
-    // Trigger exit animation to reveal the feed immediately while news keeps fetching
-    if (mountedRef.current) setSplashPhase('exit');
-
-    await wait(BANNER_EXIT_ANIM_MS);
-
-    if (mountedRef.current) {
-      setSplashPhase('gone');
-    }
-  }, []);
+  }, [triggerBackgroundRefresh]);
 
   // ── Initial mount ──
   useEffect(() => {
     mountedRef.current = true;
     lastResumeRef.current = Date.now();
 
-    const isFirstLoad = !hasRunSplashRef.current;
+    const shouldShowBanner = !hasRunSplashRef.current;
     hasRunSplashRef.current = true;
 
-    void runStartup(isFirstLoad);
+    void runStartup(shouldShowBanner);
 
     // ── App resume handlers (silent background refresh) ──
     const handleResume = () => {
@@ -287,20 +445,19 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
     };
   }, [runStartup]);
 
-  const typedText = TYPEWRITER_GRAPHEMES.slice(0, typedCount).join('');
-
   return (
     <div className="relative h-full w-full overflow-hidden">
-      {/* App content — always mounted, animates in as splash exits */}
-      <div
-        className={splashPhase === 'gone' ? 'app-shell-ready h-full' : 'h-full'}
-        style={{ visibility: splashPhase === 'enter' ? 'hidden' : 'visible' }}
-      >
+      {/* App content — always mounted and rendered underneath so transition is instant */}
+      <div className={splashPhase === 'gone' ? 'app-shell-ready h-full' : 'h-full'}>
         {children}
       </div>
 
       {/* Splash banner — rendered on top */}
-      <SplashScreen phase={splashPhase} typedText={typedText} />
+      <SplashScreen
+        phase={splashPhase}
+        headlineCount={headlineCount}
+        subtitleCount={subtitleCount}
+      />
     </div>
   );
 };

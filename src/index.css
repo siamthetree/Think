@@ -106,7 +106,7 @@
 
 /* Exit: gentle blur + scale up + fade — exactly like iOS app launch reversal */
 .splash-exit {
-  animation: splashExit 540ms var(--decelerate) both;
+  animation: splashExit 240ms var(--decelerate) both;
   pointer-events: none;
 }
 
@@ -175,51 +175,35 @@
 
 /* Bengali Statement on Splash Screen */
 .splash-bengali-title {
-  animation: splashTitleIn 750ms 120ms var(--spring-soft) both;
-  font-size: clamp(26px, 6.8vw, 38px);
+  font-size: clamp(24px, 6.2vw, 35px);
   font-weight: 700;
   color: #F8FAFC;
   letter-spacing: -0.015em;
-  line-height: 1.35;
+  line-height: 1.42;
   text-align: center;
-  text-wrap: balance;
   text-shadow: 0 4px 24px rgba(0, 0, 0, 0.6);
+  min-height: calc(2 * 1.42em);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
-@keyframes splashTitleIn {
-  from {
-    opacity: 0;
-    transform: translateY(14px) translateZ(0);
-    filter: blur(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) translateZ(0);
-    filter: blur(0);
-  }
-}
-
-.splash-tagline {
-  animation: splashTitleIn 700ms 260ms var(--spring-soft) both;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 400;
-  color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 0.04em;
-  text-align: center;
-  margin-top: 8px;
-  text-transform: uppercase;
+.splash-bengali-line {
+  display: block;
+  min-height: 1.42em;
+  white-space: nowrap;
 }
 
 .splash-typewriter {
-  margin-top: 22px;
-  min-height: 28px;
+  margin-top: 20px;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: clamp(16px, 4.2vw, 20px);
   font-weight: 600;
-  color: rgba(248, 250, 252, 0.86);
+  color: rgba(248, 250, 252, 0.88);
   letter-spacing: 0.04em;
   text-shadow: 0 2px 16px rgba(0, 0, 0, 0.5);
 }
@@ -227,8 +211,9 @@
 .splash-typewriter-cursor {
   display: inline-block;
   width: 2px;
-  height: 1.05em;
+  height: 0.95em;
   margin-left: 3px;
+  vertical-align: -0.1em;
   border-radius: 1px;
   background: #FF6719;
   box-shadow: 0 0 8px rgba(255, 103, 25, 0.85);

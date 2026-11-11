@@ -24,6 +24,17 @@ interface ArticleCardProps {
   onOpenTagManager?: (article: FeedItem, e: React.MouseEvent) => void;
 }
 
+// Sequential queue for card-level summary extraction so we never flood iOS WKWebView memory
+let cardExtractionChain: Promise<void> = Promise.resolve();
+function enqueueCardExtraction<T>(task: () => Promise<T>): Promise<T> {
+  const next = cardExtractionChain.then(task, task);
+  cardExtractionChain = next.then(
+    () => new Promise((r) => setTimeout(r, 120)),
+    () => new Promise((r) => setTimeout(r, 120))
+  );
+  return next;
+}
+
 export const ArticleCard: React.FC<ArticleCardProps> = ({
   article,
   viewMode = 'magazine',
@@ -69,22 +80,22 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
 
     if (!clean && article.link && article.link.startsWith('http')) {
       let cancelled = false;
-      extractArticleWithFallback(article.link)
-        .then((res) => {
-          if (cancelled || !res.success) return;
-          const firstParagraph = res.blocks?.find(
-            (b) => b.type === 'p' && b.text && b.text.trim().length > 30 && b.text.trim() !== article.title
-          )?.text;
-          if (firstParagraph) {
-            setExtractedSummary(firstParagraph.trim().slice(0, 260));
-          }
-          if (!article.imageUrl && res.leadImage) {
-            setExtractedImage(res.leadImage);
-          }
-        })
-        .catch(() => {
-          // ignore
-        });
+      enqueueCardExtraction(async () => {
+        if (cancelled) return;
+        const res = await extractArticleWithFallback(article.link);
+        if (cancelled || !res.success) return;
+        const firstParagraph = res.blocks?.find(
+          (b) => b.type === 'p' && b.text && b.text.trim().length > 30 && b.text.trim() !== article.title
+        )?.text;
+        if (firstParagraph) {
+          setExtractedSummary(firstParagraph.trim().slice(0, 260));
+        }
+        if (!article.imageUrl && res.leadImage) {
+          setExtractedImage(res.leadImage);
+        }
+      }).catch(() => {
+        // ignore
+      });
       return () => {
         cancelled = true;
       };

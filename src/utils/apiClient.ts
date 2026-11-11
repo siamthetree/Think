@@ -212,8 +212,8 @@ async function fetchFeedOnDevice(params: {
     return { ...parsed, resolvedFeedUrl: params.url };
   }
 
-  // Website URL given: 1) Check <link> tags in HTML for RSS/Atom feed
-  const candidateSet = new Set<string>();
+  // Website URL given: 1) Check <link> tags in HTML for RSS/Atom feed (at most 2 discovered tags)
+  const linkCandidates: string[] = [];
   const linkTagMatches = [
     ...rawText.matchAll(
       /<link[^>]+(?:type=["']application\/(?:rss|atom)\+xml["']|rel=["']alternate["'])[^>]*>/gi
@@ -225,11 +225,32 @@ async function fetchFeedOnDevice(params: {
     const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
     if (hrefMatch?.[1]) {
       const resolved = resolveUrl(hrefMatch[1], params.url);
-      if (resolved) candidateSet.add(resolved);
+      if (resolved && resolved !== params.url && !linkCandidates.includes(resolved)) {
+        linkCandidates.push(resolved);
+      }
     }
   }
 
-  // 2) Add standard RSS/Atom path combinations for blogs & newspapers
+  for (const candidateUrl of linkCandidates.slice(0, 2)) {
+    try {
+      const text = await fetchRawUrlClientSide(candidateUrl);
+      if (isXmlString(text)) {
+        const parsed = parseXmlFeed(text, { ...feedInfo, url: candidateUrl });
+        if (parsed.items.length > 0) {
+          return { ...parsed, resolvedFeedUrl: candidateUrl };
+        }
+      }
+    } catch {}
+  }
+
+  // 2) Parse direct portal HTML immediately if it already contains news articles (avoids 10 extra requests per portal on iOS)
+  const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
+  if (scraped.items.length >= 3) {
+    return { ...scraped, resolvedFeedUrl: params.url };
+  }
+
+  // 3) If HTML portal didn't yield articles, probe common RSS path combinations sequentially
+  const probeCandidates: string[] = [];
   try {
     const parsedTarget = new URL(params.url);
     const cleanBase = params.url.replace(/\/+$/, '');
@@ -237,49 +258,28 @@ async function fetchFeedOnDevice(params: {
     const pathClean = parsedTarget.pathname.replace(/\/+$/, '');
 
     if (parsedTarget.hostname.includes('medium.com') && pathClean && !pathClean.startsWith('/feed')) {
-      candidateSet.add(`${origin}/feed${pathClean}`);
+      probeCandidates.push(`${origin}/feed${pathClean}`);
     }
 
-    const suffixes = [
-      '/feed',
-      '/rss',
-      '/rss.xml',
-      '/feed.xml',
-      '/atom.xml',
-      '/index.xml',
-      '/?feed=rss2',
-      '/feeds/posts/default?alt=rss',
-    ];
-    for (const s of suffixes) candidateSet.add(`${cleanBase}${s}`);
-    if (cleanBase !== origin) {
-      for (const s of suffixes) candidateSet.add(`${origin}${s}`);
+    const suffixes = ['/feed', '/rss.xml', '/rss', '/atom.xml', '/?feed=rss2'];
+    for (const s of suffixes) {
+      const u = `${cleanBase}${s}`;
+      if (!probeCandidates.includes(u)) probeCandidates.push(u);
     }
-    candidateSet.delete(params.url);
   } catch {}
 
-  const candidates = Array.from(candidateSet).slice(0, 10);
-  for (let i = 0; i < candidates.length; i += 4) {
-    const batch = candidates.slice(i, i + 4);
-    const results = await Promise.all(
-      batch.map(async (candidateUrl) => {
-        try {
-          const text = await fetchRawUrlClientSide(candidateUrl);
-          if (isXmlString(text)) {
-            const parsed = parseXmlFeed(text, { ...feedInfo, url: candidateUrl });
-            if (parsed.items.length > 0) {
-              return { ...parsed, resolvedFeedUrl: candidateUrl };
-            }
-          }
-        } catch {}
-        return null;
-      })
-    );
-    const match = results.find(Boolean);
-    if (match) return match;
+  for (const candidateUrl of probeCandidates.slice(0, 4)) {
+    try {
+      const text = await fetchRawUrlClientSide(candidateUrl);
+      if (isXmlString(text)) {
+        const parsed = parseXmlFeed(text, { ...feedInfo, url: candidateUrl });
+        if (parsed.items.length > 0) {
+          return { ...parsed, resolvedFeedUrl: candidateUrl };
+        }
+      }
+    } catch {}
   }
 
-  // 3) If RSS feed is not found, use the website URL directly
-  const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
   if (scraped.items.length > 0) {
     return { ...scraped, resolvedFeedUrl: params.url };
   }
