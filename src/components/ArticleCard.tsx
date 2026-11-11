@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Bookmark,
   Share2,
@@ -13,7 +13,6 @@ import { formatRelativeTime } from '../utils/feedParser';
 import { SourceAvatar } from './SourceAvatar';
 import { triggerHapticSelection } from '../utils/haptics';
 import { isPlaceholderSummary } from '../utils/storage';
-import { extractArticleWithFallback } from '../utils/apiClient';
 
 interface ArticleCardProps {
   article: FeedItem;
@@ -22,17 +21,6 @@ interface ArticleCardProps {
   onToggleBookmark: (id: string, e: React.MouseEvent) => void;
   onToggleRead: (id: string, e: React.MouseEvent) => void;
   onOpenTagManager?: (article: FeedItem, e: React.MouseEvent) => void;
-}
-
-// Sequential queue for card-level summary extraction so we never flood iOS WKWebView memory
-let cardExtractionChain: Promise<void> = Promise.resolve();
-function enqueueCardExtraction<T>(task: () => Promise<T>): Promise<T> {
-  const next = cardExtractionChain.then(task, task);
-  cardExtractionChain = next.then(
-    () => new Promise((r) => setTimeout(r, 120)),
-    () => new Promise((r) => setTimeout(r, 120))
-  );
-  return next;
 }
 
 export const ArticleCard: React.FC<ArticleCardProps> = ({
@@ -67,40 +55,9 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const [cardPressed, setCardPressed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
 
-  const initialCleanSummary =
+  const extractedSummary =
     article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
-  const [extractedSummary, setExtractedSummary] = useState<string>(initialCleanSummary);
-  const [extractedImage, setExtractedImage] = useState<string | undefined>(article.imageUrl);
-
-  useEffect(() => {
-    const clean =
-      article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
-    setExtractedSummary(clean);
-    setExtractedImage(article.imageUrl);
-
-    if (!clean && article.link && article.link.startsWith('http')) {
-      let cancelled = false;
-      enqueueCardExtraction(async () => {
-        if (cancelled) return;
-        const res = await extractArticleWithFallback(article.link);
-        if (cancelled || !res.success) return;
-        const firstParagraph = res.blocks?.find(
-          (b) => b.type === 'p' && b.text && b.text.trim().length > 30 && b.text.trim() !== article.title
-        )?.text;
-        if (firstParagraph) {
-          setExtractedSummary(firstParagraph.trim().slice(0, 260));
-        }
-        if (!article.imageUrl && res.leadImage) {
-          setExtractedImage(res.leadImage);
-        }
-      }).catch(() => {
-        // ignore
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
-  }, [article.id, article.summary, article.link, article.imageUrl, article.title]);
+  const extractedImage = article.imageUrl;
 
   const handleLike = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -214,12 +171,14 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       className={`article-card group cursor-pointer px-4 sm:px-5 pt-4 pb-3.5 border-b border-stone-200/70 dark:border-white/[0.08] select-none ${
         article.isRead ? 'feed-row-read opacity-85' : ''
       }`}
-      style={{
-        transform: cardPressed ? 'scale(0.985) translateZ(0)' : 'scale(1) translateZ(0)',
-        transition: cardPressed
-          ? 'transform 90ms cubic-bezier(0.4,0,1,1)'
-          : 'transform 380ms cubic-bezier(0.175,0.885,0.32,1.275)',
-      }}
+      style={
+        cardPressed
+          ? {
+              transform: 'scale(0.985)',
+              transition: 'transform 90ms cubic-bezier(0.4,0,1,1)',
+            }
+          : undefined
+      }
     >
       {/* 1. Publisher Header Row */}
       <div className="flex items-center justify-between mb-2">
@@ -286,7 +245,8 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
             alt={article.title}
             referrerPolicy="no-referrer"
             loading="lazy"
-            className="w-full h-full object-cover group-hover:scale-[1.015] transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
+            decoding="async"
+            className="w-full h-full object-cover"
             onError={() => setImageFailed(true)}
           />
         </div>

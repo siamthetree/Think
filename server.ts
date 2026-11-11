@@ -40,9 +40,10 @@ function calculateReadTime(text: string): number {
 
 function stripHtml(html: string): string {
   if (!html) return '';
-  return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+  const capped = html.length > 150000 ? html.slice(0, 150000) : html;
+  return capped
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -652,6 +653,10 @@ async function fetchWithUserAgent(
         return { text, contentType, finalUrl: res.url || targetUrl };
       }
       lastError = new Error(`HTTP error ${res.status}: ${res.statusText}`);
+      // Do not retry 404 Not Found with other User-Agents
+      if (res.status === 404 || res.status === 410) {
+        break;
+      }
     } catch (err: any) {
       lastError = err;
     } finally {
@@ -690,7 +695,7 @@ async function loadPortalOrRssFeed(
       const r2jUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(
         'https://www.tbsnews.net/top-news/rss.xml'
       )}`;
-      const r2jRes = await fetch(r2jUrl, { signal: AbortSignal.timeout(6500) });
+      const r2jRes = await fetch(r2jUrl, { signal: AbortSignal.timeout(5500) });
       if (r2jRes.ok) {
         const r2jData = await r2jRes.json();
         if (r2jData.status === 'ok' && Array.isArray(r2jData.items) && r2jData.items.length > 0) {
@@ -743,7 +748,7 @@ async function loadPortalOrRssFeed(
 
   // Step 1: Try fetching the given URL directly
   try {
-    const { text, contentType, finalUrl } = await fetchWithUserAgent(url);
+    const { text, contentType, finalUrl } = await fetchWithUserAgent(url, 6000);
     fetchedUrl = finalUrl;
 
     if (isXmlFeedContent(text)) {
@@ -771,7 +776,7 @@ async function loadPortalOrRssFeed(
           ) {
             try {
               const resolved = new URL(href, fetchedUrl).href;
-              if (!htmlDiscoveredCandidates.includes(resolved)) {
+              if (!htmlDiscoveredCandidates.includes(resolved) && htmlDiscoveredCandidates.length < 4) {
                 htmlDiscoveredCandidates.push(resolved);
               }
             } catch {}
@@ -784,7 +789,7 @@ async function loadPortalOrRssFeed(
         if (/(\/rss\b|\/feed\b|\.rss\b|rss\.xml|feed\.xml|atom\.xml|index\.xml|\?feed=rss)/i.test(href)) {
           try {
             const resolved = new URL(href, fetchedUrl).href;
-            if (!htmlDiscoveredCandidates.includes(resolved) && htmlDiscoveredCandidates.length < 8) {
+            if (!htmlDiscoveredCandidates.includes(resolved) && htmlDiscoveredCandidates.length < 4) {
               htmlDiscoveredCandidates.push(resolved);
             }
           } catch {}
@@ -793,7 +798,7 @@ async function loadPortalOrRssFeed(
 
       for (const candidate of htmlDiscoveredCandidates) {
         try {
-          const { text: feedText } = await fetchWithUserAgent(candidate, 4500);
+          const { text: feedText } = await fetchWithUserAgent(candidate, 3000);
           if (isXmlFeedContent(feedText)) {
             const parsed = parseXmlFeed(feedText, { ...feedInfo, url: candidate });
             if (parsed.items.length > 0) {
@@ -807,7 +812,23 @@ async function loadPortalOrRssFeed(
     // Will continue to candidate paths and domain fallback
   }
 
-  // Step 2: Try different RSS/Atom URL combinations for blogs and newspapers
+  // Step 2: If the fetched HTML portal already has articles (e.g. bdnews24.com, thefinancialexpress.com.bd), return them fast!
+  let htmlParsedFallback: { feedTitle: string; items: FeedItem[] } | null = null;
+  if (fetchedHtml) {
+    htmlParsedFallback = parseHtmlPortalToFeed(fetchedHtml, {
+      ...feedInfo,
+      url: fetchedUrl,
+    });
+    if (htmlParsedFallback.items.length >= 4) {
+      return {
+        ...htmlParsedFallback,
+        resolvedUrl: url,
+        sourceMode: 'direct_html',
+      };
+    }
+  }
+
+  // Step 3: Try common RSS/Atom URL combinations for blogs and websites where HTML scraping didn't find enough items
   let parsedTarget: URL | null = null;
   try {
     parsedTarget = new URL(url);
@@ -819,15 +840,14 @@ async function loadPortalOrRssFeed(
     const pathClean = parsedTarget.pathname.replace(/\/+$/, '');
     const comboSet = new Set<string>();
 
-    // Medium special pattern: medium.com/@user -> medium.com/feed/@user
     if (parsedTarget.hostname.includes('medium.com') && pathClean && !pathClean.startsWith('/feed')) {
       comboSet.add(`${origin}/feed${pathClean}`);
     }
 
     const suffixes = [
       '/feed',
-      '/rss',
       '/rss.xml',
+      '/rss',
       '/feed.xml',
       '/atom.xml',
       '/index.xml',
@@ -839,28 +859,23 @@ async function loadPortalOrRssFeed(
       comboSet.add(`${cleanBase}${suffix}`);
     }
     if (cleanBase !== origin) {
-      for (const suffix of suffixes) {
+      for (const suffix of suffixes.slice(0, 4)) {
         comboSet.add(`${origin}${suffix}`);
       }
     }
-    comboSet.add(`${origin}/news/rss.xml`);
-    comboSet.add(`${origin}/top-news/rss.xml`);
-    comboSet.add(`${origin}/blog/feed`);
-    comboSet.add(`${origin}/blog/rss.xml`);
 
-    // Remove URLs we already checked in Step 1
     comboSet.delete(url);
     comboSet.delete(fetchedUrl);
     for (const seen of htmlDiscoveredCandidates) comboSet.delete(seen);
 
-    const candidateList = Array.from(comboSet);
+    const candidateList = Array.from(comboSet).slice(0, 8);
     const batchSize = 4;
     for (let i = 0; i < candidateList.length; i += batchSize) {
       const batch = candidateList.slice(i, i + batchSize);
       const found = await Promise.all(
         batch.map(async (candidate) => {
           try {
-            const { text } = await fetchWithUserAgent(candidate, 3500);
+            const { text } = await fetchWithUserAgent(candidate, 2500);
             if (isXmlFeedContent(text)) {
               const parsed = parseXmlFeed(text, { ...feedInfo, url: candidate });
               if (parsed.items.length > 0) {
@@ -878,74 +893,12 @@ async function loadPortalOrRssFeed(
     }
   }
 
-  // Helper to enrich portal/index items that lack a real news summary by reading og:description or first <p>
-  async function enrichMissingSummaries(items: FeedItem[], maxEnrich = 12): Promise<FeedItem[]> {
-    const targets = items
-      .slice(0, maxEnrich)
-      .filter((it) => !it.summary || it.summary.length < 30 || it.summary.toLowerCase() === it.title.toLowerCase());
-    if (targets.length === 0) return items;
-
-    const concurrency = 4;
-    for (let i = 0; i < targets.length; i += concurrency) {
-      const batch = targets.slice(i, i + concurrency);
-      await Promise.all(
-        batch.map(async (item) => {
-          if (!item.link || !item.link.startsWith('http')) return;
-          try {
-            const { text } = await fetchWithUserAgent(item.link, 3000);
-            const $ = cheerio.load(text);
-            const metaDesc =
-              $('meta[property="og:description"]').attr('content') ||
-              $('meta[name="description"]').attr('content') ||
-              $('meta[name="twitter:description"]').attr('content') ||
-              '';
-            let cleanDesc = stripHtml(metaDesc).replace(/\s+/g, ' ').trim();
-            if (!cleanDesc || cleanDesc.length < 25 || cleanDesc === item.title) {
-              $('article p, main p, .article-content p, .story-content p, p').each((_, el) => {
-                if (cleanDesc && cleanDesc.length >= 35) return;
-                const candidate = $(el).text().replace(/\s+/g, ' ').trim();
-                if (candidate.length >= 45 && candidate !== item.title) {
-                  cleanDesc = candidate;
-                }
-              });
-            }
-            if (cleanDesc && cleanDesc.length >= 25 && cleanDesc !== item.title) {
-              item.summary = cleanDesc.slice(0, 260);
-              if (!item.contentHtml) {
-                item.contentHtml = `<p>${item.summary}</p>`;
-              }
-            }
-            if (!item.imageUrl) {
-              const ogImg =
-                $('meta[property="og:image"]').attr('content') ||
-                $('meta[name="twitter:image"]').attr('content');
-              if (ogImg) {
-                item.imageUrl = resolveUrl(ogImg, item.link);
-              }
-            }
-          } catch {
-            // Ignore per-article timeout
-          }
-        })
-      );
-    }
-    return items;
-  }
-
-  // Step 3: Direct HTML Portal Scraping! (For portals without RSS URL like bdnews24.com, thefinancialexpress.com.bd, etc.)
-  if (fetchedHtml) {
-    const htmlParsed = parseHtmlPortalToFeed(fetchedHtml, {
-      ...feedInfo,
-      url: fetchedUrl,
-    });
-    if (htmlParsed.items.length > 0) {
-      await enrichMissingSummaries(htmlParsed.items, 12);
-      return {
-        ...htmlParsed,
-        resolvedUrl: url,
-        sourceMode: 'direct_html',
-      };
-    }
+  if (htmlParsedFallback && htmlParsedFallback.items.length > 0) {
+    return {
+      ...htmlParsedFallback,
+      resolvedUrl: url,
+      sourceMode: 'direct_html',
+    };
   }
 
   // Step 4: Fallback for Cloudflare-protected Bangladeshi portals (e.g., tbsnews.net, dhakatribune.com, jugantor.com)

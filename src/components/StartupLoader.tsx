@@ -1,17 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { FeedItem } from '../types';
-import {
-  fetchFeedWithFallback,
-  extractArticleWithFallback,
-} from '../utils/apiClient';
-import {
-  hasFullBody,
-  loadArticlesFromStorage,
-  loadFeedsFromStorage,
-  saveArticlesToStorage,
-  saveFeedsToStorage,
-} from '../utils/storage';
-import { blocksToHtml } from '../utils/sanitize';
+import type { Feed, FeedItem } from '../types';
+import { fetchFeedWithFallback } from '../utils/apiClient';
+import { loadFeedsFromStorage } from '../utils/storage';
 
 // ─── Constants ──────────────────────────────────────────────
 /**
@@ -40,44 +30,60 @@ const SUBTITLE_GRAPHEMES = ['চি', 'ন্তা', '-', 'T', 'h', 'i', 'n', '
 
 /** Brief initial settle before typing starts (ms) */
 const INITIAL_START_DELAY_MS = 60;
-/** Fast typing speed for the main Bengali headline (ms per grapheme) */
-const HEADLINE_STEP_MS = 24;
-/** Crisp, smooth typing speed for "চিন্তা-Think" — slightly slower than headline but never sluggish */
-const SUBTITLE_STEP_MS = 55;
-/** Tiny frame hold once "চিন্তা-Think" is fully shown before opening the feed (ms) */
-const POST_TYPING_PAUSE_MS = 80;
+/**
+ * Two-stage typewriter + 2-second reading hold:
+ * - Main statement (26 graphemes × 48ms = ~1,248ms)
+ * - "চিন্তা-Think" (8 graphemes × 75ms = ~600ms)
+ * - Hold after all text is shown = 2,000ms (2 full seconds so user can read what is written)
+ * Meanwhile, the first priority news sources load in parallel during this ~3.85s window.
+ */
+const HEADLINE_STEP_MS = 48;
+const SUBTITLE_STEP_MS = 75;
+/** Hold the banner for 2 full seconds after all text is typed so the user can read it */
+const BANNER_HOLD_AFTER_TEXT_MS = 2000;
 /** Duration of the exit animation (must match CSS .splash-exit keyframe duration) */
-const BANNER_EXIT_ANIM_MS = 240;
-/** Max articles to prefetch full content for in background */
-const PREFETCH_LIMIT = 4;
+const BANNER_EXIT_ANIM_MS = 220;
+/** Calm settle window after the home page opens before background feeds resume fetching */
+const POST_OPEN_CALM_WINDOW_MS = 2500;
+/** Pause between individual background feed fetches so the main thread stays completely smooth */
+const BACKGROUND_FEED_STEP_DELAY_MS = 800;
 /** Minimum re-open interval before we silently refresh in background */
-const RESUME_DEBOUNCE_MS = 90_000; // 90 s
-/** Session key to prevent splash loop if iOS WKWebView ever reloads */
-const SPLASH_SESSION_KEY = 'chinta_splash_completed_v2';
+const RESUME_DEBOUNCE_MS = 120_000; // 120 s
+/**
+ * Persistent localStorage timestamp guard:
+ * On iOS WKWebView, if a process reload ever occurs within 12 seconds,
+ * localStorage survives (unlike sessionStorage) and prevents the banner from ever looping.
+ */
+const SPLASH_GUARD_STORAGE_KEY = 'chinta_last_splash_timestamp_v3';
+const SPLASH_RELOAD_LOOP_WINDOW_MS = 12_000;
 
 function wait(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function hasSplashAlreadyRunInSession(): boolean {
+function shouldSkipSplashFromReloadLoop(): boolean {
   try {
-    return sessionStorage.getItem(SPLASH_SESSION_KEY) === '1';
+    const raw = localStorage.getItem(SPLASH_GUARD_STORAGE_KEY);
+    if (!raw) return false;
+    const lastTs = Number(raw);
+    if (!Number.isFinite(lastTs)) return false;
+    return Date.now() - lastTs < SPLASH_RELOAD_LOOP_WINDOW_MS;
   } catch {
     return false;
   }
 }
 
-function markSplashRunInSession(): void {
+function recordSplashStartedTimestamp(): void {
   try {
-    sessionStorage.setItem(SPLASH_SESSION_KEY, '1');
+    localStorage.setItem(SPLASH_GUARD_STORAGE_KEY, String(Date.now()));
   } catch {
-    // ignore storage errors in private mode
+    // ignore storage errors
   }
 }
 
 /**
  * Drives a step counter from 1..totalSteps using performance.now() + setTimeout(16)
- * so it works reliably even when iOS throttles requestAnimationFrame during launch.
+ * so it never stutters or drops steps on iOS.
  */
 function runSmoothTypewriter(
   totalSteps: number,
@@ -115,127 +121,123 @@ function runSmoothTypewriter(
   });
 }
 
-function notifyStorageUpdated(): void {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('chinta:storage-updated'));
-  }
-}
-
-async function runPool<T>(
-  items: T[],
-  limit: number,
-  job: (item: T) => Promise<void>
-): Promise<void> {
-  const queue = [...items];
-  await Promise.all(
-    Array.from({ length: Math.min(limit, queue.length) }, async () => {
-      while (queue.length > 0) {
-        const item = queue.shift();
-        if (item !== undefined) {
-          await job(item);
-          // Yield briefly between tasks so iOS WebView memory and UI stay responsive
-          await wait(40);
-        }
-      }
+function dispatchIncomingArticles(
+  items: FeedItem[],
+  resolvedFeeds: Array<{ id: string; url: string }>
+): void {
+  if (typeof window === 'undefined') return;
+  if (items.length === 0 && resolvedFeeds.length === 0) return;
+  window.dispatchEvent(
+    new CustomEvent('chinta:incoming-articles', {
+      detail: { items, resolvedFeeds },
     })
   );
 }
 
-function mergeItems(previous: FeedItem[], incoming: FeedItem[]): FeedItem[] {
-  const byId   = new Map(incoming.map((i) => [i.id,   i]));
-  const byLink = new Map(incoming.map((i) => [i.link, i]));
-  const seen   = new Set<string>();
-
-  const refreshed = previous.map((article) => {
-    const latest = byId.get(article.id) || byLink.get(article.link);
-    if (!latest) return article;
-    seen.add(latest.id);
-    return {
-      ...latest,
-      isRead:          article.isRead,
-      isBookmarked:    article.isBookmarked,
-      isOfflineCached: article.isOfflineCached || latest.isOfflineCached,
-      contentHtml:     hasFullBody(article) && !hasFullBody(latest) ? article.contentHtml : latest.contentHtml,
-      contentClean:    hasFullBody(article) && !hasFullBody(latest) ? article.contentClean : latest.contentClean,
-      cachedAt:        article.cachedAt,
-      tags:            article.tags.length > 0 ? article.tags : latest.tags,
-    };
+async function fetchSingleFeedItems(feed: Feed): Promise<{
+  items: FeedItem[];
+  resolvedFeed?: { id: string; url: string };
+}> {
+  const data = await fetchFeedWithFallback({
+    url:    feed.url,
+    feedId: feed.id,
+    title:  feed.title,
+    tags:   feed.defaultTags || [],
   });
-
-  const additions = incoming.filter(
-    (i) => !seen.has(i.id) && !previous.some((a) => a.link === i.link)
-  );
-  return [...additions, ...refreshed].sort((a, b) => b.timestamp - a.timestamp);
+  const items = data.items.map((item) => ({
+    ...item,
+    feedId:    feed.id,
+    feedTitle: data.feedTitle || feed.title,
+  }));
+  const resolvedFeed =
+    data.resolvedFeedUrl && data.resolvedFeedUrl !== feed.url
+      ? { id: feed.id, url: data.resolvedFeedUrl }
+      : undefined;
+  return { items, resolvedFeed };
 }
 
-async function refreshStartupContent(): Promise<void> {
-  const feeds        = loadFeedsFromStorage();
-  let merged         = loadArticlesFromStorage();
-  const updatedFeeds = [...feeds];
+/**
+ * Two-phase memory-safe news loader:
+ * - Phase 1 (During Banner): Fetches the first 3 fast XML/RSS feeds in parallel while the banner is
+ *   typing and holding for 2 seconds. Buffers the articles in memory and flushes them in a SINGLE
+ *   in-memory event right before the banner exits so the home page opens with loaded news and zero re-render storm.
+ * - Phase 2 (Background): Waits 2.5 seconds after the home page opens so iOS WebKit finishes compositing,
+ *   then fetches remaining sources gently one-by-one (800ms apart).
+ */
+function startPhasedStartupSync(waitForBannerOpenPromise?: Promise<void>): {
+  flushPriorityBatch: () => void;
+  fullSyncDone: Promise<void>;
+} {
+  const feeds = loadFeedsFromStorage();
 
-  // Use gentle concurrency (2 at a time) so iPhone WKWebView never spikes memory
-  await runPool(feeds, 2, async (feed) => {
-    try {
-      const data = await fetchFeedWithFallback({
-        url:    feed.url,
-        feedId: feed.id,
-        title:  feed.title,
-        tags:   feed.defaultTags || [],
-      });
-      const feedItems = data.items.map((item) => ({
-        ...item,
-        feedId:    feed.id,
-        feedTitle: data.feedTitle || feed.title,
-      }));
-      if (data.resolvedFeedUrl && data.resolvedFeedUrl !== feed.url) {
-        const idx = updatedFeeds.findIndex((f) => f.id === feed.id);
-        if (idx >= 0) updatedFeeds[idx] = { ...updatedFeeds[idx], url: data.resolvedFeedUrl };
-        saveFeedsToStorage(updatedFeeds);
-      }
-      if (feedItems.length > 0) {
-        merged = mergeItems(merged, feedItems);
-        saveArticlesToStorage(merged);
-        notifyStorageUpdated();
-      }
-    } catch (err) {
-      console.warn(`[ZenFeed] startup sync failed for ${feed.title}:`, err);
-    }
+  // Prioritize fast XML/RSS feeds first so initial stories load within 1–2 seconds during the banner
+  const sortedFeeds = [...feeds].sort((a, b) => {
+    const aFast = /(\.xml|\/feed|\/rss)/i.test(a.url) ? 0 : 1;
+    const bFast = /(\.xml|\/feed|\/rss)/i.test(b.url) ? 0 : 1;
+    return aFast - bFast;
   });
 
-  // Prefetch full article bodies gently (1 at a time) for top stories
-  const candidates = merged
-    .filter((a) => a.link.startsWith('http') && (!hasFullBody(a) || !a.imageUrl))
-    .sort((a, b) => b.timestamp - a.timestamp)
-    .slice(0, PREFETCH_LIMIT);
+  const priorityFeeds = sortedFeeds.slice(0, 3);
+  const backgroundFeeds = sortedFeeds.slice(3);
 
-  await runPool(candidates, 1, async (article) => {
-    try {
-      const extracted = await extractArticleWithFallback(article.link);
-      if (!extracted.success || !extracted.blocks?.length) return;
-      const contentClean = extracted.blocks.map((b) => b.text || '').filter(Boolean).join('\n\n');
-      const contentHtml  = blocksToHtml(extracted.blocks);
-      merged = merged.map((a) =>
-        a.id !== article.id ? a : {
-          ...a,
-          contentClean:    contentClean.length > (a.contentClean?.length ?? 0) ? contentClean : a.contentClean,
-          contentHtml:     contentHtml.length  > (a.contentHtml?.length  ?? 0) ? contentHtml  : a.contentHtml,
-          imageUrl:        a.imageUrl || extracted.leadImage,
-          author:          a.author   || extracted.author,
-          readTimeMin:     extracted.readTimeMin || a.readTimeMin,
-          isOfflineCached: contentClean.length >= 800 || a.isOfflineCached,
-          cachedAt:        contentClean.length >= 800 ? Date.now() : a.cachedAt,
+  let bufferedItems: FeedItem[] = [];
+  let bufferedResolved: Array<{ id: string; url: string }> = [];
+  let priorityFlushed = false;
+
+  const flushPriorityBatch = () => {
+    priorityFlushed = true;
+    if (bufferedItems.length > 0 || bufferedResolved.length > 0) {
+      const itemsToSend = bufferedItems;
+      const resolvedToSend = bufferedResolved;
+      bufferedItems = [];
+      bufferedResolved = [];
+      dispatchIncomingArticles(itemsToSend, resolvedToSend);
+    }
+  };
+
+  const fullSyncDone = (async () => {
+    // Phase 1: Fetch priority feeds in parallel while the banner is displayed
+    await Promise.allSettled(
+      priorityFeeds.map(async (feed) => {
+        try {
+          const { items, resolvedFeed } = await fetchSingleFeedItems(feed);
+          if (priorityFlushed) {
+            // If this priority feed finished after the banner already opened, dispatch gently
+            dispatchIncomingArticles(items, resolvedFeed ? [resolvedFeed] : []);
+          } else {
+            if (items.length > 0) bufferedItems.push(...items);
+            if (resolvedFeed) bufferedResolved.push(resolvedFeed);
+          }
+        } catch (err) {
+          console.warn(`[Chinta] priority startup sync failed for ${feed.title}:`, err);
         }
-      );
-      saveArticlesToStorage(merged);
-      notifyStorageUpdated();
-    } catch {
-      // skip — will be fetched lazily when user opens the article
-    }
-  });
+      })
+    );
 
-  saveFeedsToStorage(updatedFeeds);
-  saveArticlesToStorage(merged);
-  notifyStorageUpdated();
+    // Ensure any remaining buffered priority items are flushed
+    flushPriorityBatch();
+
+    // Wait until the startup banner has completely exited and the home screen has settled
+    if (waitForBannerOpenPromise) {
+      await waitForBannerOpenPromise;
+    }
+    await wait(POST_OPEN_CALM_WINDOW_MS);
+
+    // Phase 2: Fetch remaining feeds sequentially one-by-one in the background
+    for (const feed of backgroundFeeds) {
+      try {
+        const { items, resolvedFeed } = await fetchSingleFeedItems(feed);
+        if (items.length > 0 || resolvedFeed) {
+          dispatchIncomingArticles(items, resolvedFeed ? [resolvedFeed] : []);
+        }
+      } catch (err) {
+        console.warn(`[Chinta] background sync failed for ${feed.title}:`, err);
+      }
+      await wait(BACKGROUND_FEED_STEP_DELAY_MS);
+    }
+  })();
+
+  return { flushPriorityBatch, fullSyncDone };
 }
 
 // ─── SplashScreen component ──────────────────────────────────────────────────
@@ -318,65 +320,63 @@ interface StartupLoaderProps {
 type SplashPhase = 'enter' | 'hold' | 'exit' | 'gone';
 
 export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
-  const alreadyShown = hasSplashAlreadyRunInSession();
-  const [splashPhase,   setSplashPhase]   = useState<SplashPhase>(alreadyShown ? 'gone' : 'enter');
-  const [headlineCount, setHeadlineCount] = useState(alreadyShown ? TOTAL_HEADLINE_GRAPHEMES : 0);
-  const [subtitleCount, setSubtitleCount] = useState(alreadyShown ? SUBTITLE_GRAPHEMES.length : 0);
+  const skipSplash = shouldSkipSplashFromReloadLoop();
+  const [splashPhase,   setSplashPhase]   = useState<SplashPhase>(skipSplash ? 'gone' : 'enter');
+  const [headlineCount, setHeadlineCount] = useState(skipSplash ? TOTAL_HEADLINE_GRAPHEMES : 0);
+  const [subtitleCount, setSubtitleCount] = useState(skipSplash ? SUBTITLE_GRAPHEMES.length : 0);
 
   const mountedRef        = useRef(true);
-  const hasRunSplashRef   = useRef(alreadyShown);
+  const hasRunSplashRef   = useRef(skipSplash);
   const lastResumeRef     = useRef(0);
   const refreshRunningRef = useRef(false);
 
-  const triggerBackgroundRefresh = useCallback(() => {
-    if (refreshRunningRef.current) return;
+  const startSyncIfIdle = useCallback((waitForBannerOpenPromise?: Promise<void>) => {
+    if (refreshRunningRef.current) return null;
     refreshRunningRef.current = true;
-    void refreshStartupContent()
-      .catch((err) => console.warn('[ZenFeed] startup refresh error:', err))
+    const sync = startPhasedStartupSync(waitForBannerOpenPromise);
+    void sync.fullSyncDone
+      .catch((err) => console.warn('[Chinta] startup sync error:', err))
       .finally(() => {
         refreshRunningRef.current = false;
       });
+    return sync;
   }, []);
 
   /**
-   * Full startup sequence:
-   *   1. Mark session splash started so it can never loop on iPhone WebView reloads
-   *   2. Fast typewriter for "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।" (24ms/grapheme)
-   *   3. Immediately upon completion, crisp typewriter for "চিন্তা-Think" (55ms/grapheme)
-   *   4. The instant "চিন্তা-Think" arrives on screen fully, exit banner and open feed
-   *   5. Run background news fetching without blocking or crashing the WebView
+   * Startup sequence:
+   *   1. Immediately kick off Phase 1 priority news fetch in parallel with the banner
+   *   2. Type "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।" smoothly (~1.25s)
+   *   3. Immediately type "চিন্তা-Think" below it (~0.60s)
+   *   4. Hold the completed banner text on screen for 2 full seconds (2000ms) so the user can read it
+   *   5. Flush the first loaded news batch in a single update and open the feed smoothly
+   *   6. After a 2.5s calm window on the home screen, fetch remaining sources one-by-one in the background
    */
-  const runStartup = useCallback(async (showBanner: boolean) => {
-    if (!showBanner) {
-      triggerBackgroundRefresh();
-      return;
-    }
+  const runInitialBannerAndSync = useCallback(async () => {
+    recordSplashStartedTimestamp();
 
-    // Mark immediately so even if iOS WKWebView reloads, it won't loop the banner
-    markSplashRunInSession();
+    let notifyBannerOpened!: () => void;
+    const bannerOpenedPromise = new Promise<void>((resolve) => {
+      notifyBannerOpened = resolve;
+    });
 
-    setSplashPhase('enter');
-    setHeadlineCount(0);
-    setSubtitleCount(0);
+    // Start loading the first few news sources immediately while the banner is showing
+    const sync = startSyncIfIdle(bannerOpenedPromise);
 
-    // Start background feed fetch after a short delay so 100% of CPU is free for silky typing
-    const bgTimer = setTimeout(() => {
-      if (mountedRef.current) triggerBackgroundRefresh();
-    }, 500);
-
-    // Hard safety timer: guarantee the app opens within 1.85s even if timers are throttled
+    // Hard safety timer: guarantee the banner always exits by 5.2s (after typing + 2s hold) even if a timer stalls
     const safetyTimer = setTimeout(() => {
+      sync?.flushPriorityBatch();
+      notifyBannerOpened();
       if (mountedRef.current) {
         setHeadlineCount(TOTAL_HEADLINE_GRAPHEMES);
         setSubtitleCount(SUBTITLE_GRAPHEMES.length);
         setSplashPhase('gone');
       }
-    }, 1850);
+    }, 5200);
 
     try {
       await wait(INITIAL_START_DELAY_MS);
 
-      // Stage 1: Fast typewriter for "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।"
+      // Stage 1: Faster typewriter for "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।" (~1.25s)
       await runSmoothTypewriter(
         TOTAL_HEADLINE_GRAPHEMES,
         HEADLINE_STEP_MS,
@@ -386,7 +386,7 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
 
       if (!mountedRef.current) return;
 
-      // Stage 2: Immediately type "চিন্তা-Think" below
+      // Stage 2: Immediately type "চিন্তা-Think" (~0.60s) with zero pause in between
       await runSmoothTypewriter(
         SUBTITLE_GRAPHEMES.length,
         SUBTITLE_STEP_MS,
@@ -396,41 +396,45 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
 
       if (!mountedRef.current) return;
 
-      // Open the app as soon as "চিন্তা-Think" arrives on screen fully
-      await wait(POST_TYPING_PAUSE_MS);
+      // Stage 3: Hold the full text on the banner for 2 full seconds so the user can read what is written
+      setSplashPhase('hold');
+      await wait(BANNER_HOLD_AFTER_TEXT_MS);
+
+      if (!mountedRef.current) return;
+
+      // Flush the loaded first batch of news once right before the banner exits
+      sync?.flushPriorityBatch();
+      await wait(40);
 
       if (mountedRef.current) setSplashPhase('exit');
 
       await wait(BANNER_EXIT_ANIM_MS);
-
-      if (mountedRef.current) {
-        setSplashPhase('gone');
-      }
+      if (mountedRef.current) setSplashPhase('gone');
     } finally {
       clearTimeout(safetyTimer);
-      // Ensure background refresh is running
-      triggerBackgroundRefresh();
-      void bgTimer;
+      notifyBannerOpened();
     }
-  }, [triggerBackgroundRefresh]);
+  }, [startSyncIfIdle]);
 
   // ── Initial mount ──
   useEffect(() => {
     mountedRef.current = true;
     lastResumeRef.current = Date.now();
 
-    const shouldShowBanner = !hasRunSplashRef.current;
-    hasRunSplashRef.current = true;
+    if (!hasRunSplashRef.current) {
+      hasRunSplashRef.current = true;
+      void runInitialBannerAndSync();
+    } else {
+      startSyncIfIdle();
+    }
 
-    void runStartup(shouldShowBanner);
-
-    // ── App resume handlers (silent background refresh) ──
+    // ── App resume handlers (silent background refresh only — never touches splashPhase) ──
     const handleResume = () => {
       if (document.visibilityState !== 'visible') return;
       const now = Date.now();
       if (now - lastResumeRef.current < RESUME_DEBOUNCE_MS) return;
       lastResumeRef.current = now;
-      void runStartup(false);
+      startSyncIfIdle();
     };
 
     document.addEventListener('visibilitychange', handleResume);
@@ -443,11 +447,11 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
       window.removeEventListener('pageshow', handleResume);
       window.removeEventListener('focus',    handleResume);
     };
-  }, [runStartup]);
+  }, [runInitialBannerAndSync, startSyncIfIdle]);
 
   return (
     <div className="relative h-full w-full overflow-hidden">
-      {/* App content — always mounted and rendered underneath so transition is instant */}
+      {/* App content — always mounted underneath so loaded articles are visible the instant splash exits */}
       <div className={splashPhase === 'gone' ? 'app-shell-ready h-full' : 'h-full'}>
         {children}
       </div>
@@ -461,3 +465,4 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
     </div>
   );
 };
+

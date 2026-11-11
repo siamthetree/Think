@@ -44,9 +44,10 @@ export function decodeHtmlEntities(text: string): string {
 
 export function stripHtml(html: string): string {
   if (!html) return '';
-  const withoutTags = html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+  const capped = html.length > 120000 ? html.slice(0, 120000) : html;
+  const withoutTags = capped
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ');
   return decodeHtmlEntities(withoutTags).replace(/\s+/g, ' ').trim();
 }
@@ -294,8 +295,14 @@ export function parseHtmlPortalToFeed(
   const items: FeedItem[] = [];
   const now = Date.now();
 
-  // Match all <a> tags in HTML
-  const anchorMatches = [...htmlString.matchAll(/<a\s+([^>]+)>([\s\S]*?)<\/a>/gi)];
+  // Bound HTML size and strip script/style/svg blocks so regex matching never lags on mobile Safari/WKWebView
+  const cleanPortalHtml = (htmlString.length > 350000 ? htmlString.slice(0, 350000) : htmlString)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, ' ');
+
+  // Match <a> tags in HTML with bounded inner content
+  const anchorMatches = [...cleanPortalHtml.matchAll(/<a\s+([^>]{1,600})>([\s\S]{1,1800}?)<\/a>/gi)];
 
   for (const match of anchorMatches) {
     if (items.length >= 30) break;
@@ -385,8 +392,8 @@ export function parseHtmlPortalToFeed(
     // Look at surrounding sibling HTML around the anchor for image or summary paragraph
     const matchIndex = match.index ?? 0;
     const matchEnd = matchIndex + match[0].length;
-    const beforeWindow = htmlString.slice(Math.max(0, matchIndex - 500), matchIndex);
-    const afterWindow = htmlString
+    const beforeWindow = cleanPortalHtml.slice(Math.max(0, matchIndex - 500), matchIndex);
+    const afterWindow = cleanPortalHtml
       .slice(matchEnd, matchEnd + 900)
       .split(/<\/article>|<article\b|<h[1-4]\b/i)[0] || '';
 

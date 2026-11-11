@@ -113,13 +113,11 @@
 @keyframes splashExit {
   from {
     opacity: 1;
-    transform: scale(1) translateZ(0);
-    filter: blur(0px);
+    transform: scale(1);
   }
   to {
     opacity: 0;
-    transform: scale(1.055) translateZ(0);
-    filter: blur(12px);
+    transform: scale(1.03);
   }
 }
 
@@ -232,19 +230,15 @@
 
 /* When the splash exits, the app content zooms in naturally */
 .app-shell-ready {
-  animation: appShellReveal 500ms 100ms var(--spring-soft) both;
+  animation: appShellReveal 320ms var(--spring-soft) both;
 }
 
 @keyframes appShellReveal {
   from {
-    opacity: 0.85;
-    transform: scale(0.985) translateZ(0);
-    filter: blur(1.5px);
+    opacity: 0.92;
   }
   to {
     opacity: 1;
-    transform: scale(1) translateZ(0);
-    filter: blur(0);
   }
 }
 

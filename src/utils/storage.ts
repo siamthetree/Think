@@ -24,7 +24,7 @@ export const INITIAL_FEEDS: Feed[] = [
   {
     id: 'prothom_alo_en',
     title: 'Prothom Alo (English)',
-    url: 'https://en.prothomalo.com',
+    url: 'https://en.prothomalo.com/feed',
     siteUrl: 'https://en.prothomalo.com',
     description: 'National news, politics, economy, and views from Dhaka.',
     category: 'Bangladesh',
@@ -33,11 +33,29 @@ export const INITIAL_FEEDS: Feed[] = [
   {
     id: 'prothom_alo_bn',
     title: 'প্রথম আলো (Prothom Alo Bangla)',
-    url: 'https://www.prothomalo.com',
+    url: 'https://www.prothomalo.com/feed',
     siteUrl: 'https://www.prothomalo.com',
     description: 'বাংলাদেশের শীর্ষস্থানীয় বাংলা দৈনিক পত্রিকা (Direct & Feed Reader)।',
     category: 'Bangladesh (বাংলা)',
     defaultTags: ['tag_bd'],
+  },
+  {
+    id: 'tbs_news',
+    title: 'The Business Standard (TBS)',
+    url: 'https://www.tbsnews.net/top-news/rss.xml',
+    siteUrl: 'https://www.tbsnews.net',
+    description: 'Business, economy, and policy journalism in Bangladesh.',
+    category: 'Bangladesh Finance',
+    defaultTags: ['tag_bd', 'tag_markets'],
+  },
+  {
+    id: 'bbc_world',
+    title: 'BBC News',
+    url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
+    siteUrl: 'https://bbc.com/news',
+    description: 'Global news, correspondents, and impartial reporting.',
+    category: 'World',
+    defaultTags: ['tag_world', 'tag_breaking'],
   },
   {
     id: 'bdnews24',
@@ -58,15 +76,6 @@ export const INITIAL_FEEDS: Feed[] = [
     defaultTags: ['tag_bd', 'tag_markets'],
   },
   {
-    id: 'tbs_news',
-    title: 'The Business Standard (TBS)',
-    url: 'https://www.tbsnews.net',
-    siteUrl: 'https://www.tbsnews.net',
-    description: 'Direct Portal Reader - Business, economy, and policy journalism in Bangladesh.',
-    category: 'Bangladesh Finance',
-    defaultTags: ['tag_bd', 'tag_markets'],
-  },
-  {
     id: 'dhaka_tribune',
     title: 'Dhaka Tribune',
     url: 'https://www.dhakatribune.com',
@@ -74,15 +83,6 @@ export const INITIAL_FEEDS: Feed[] = [
     description: 'Direct Portal Reader - National politics, foreign affairs, and Dhaka dispatches.',
     category: 'Bangladesh',
     defaultTags: ['tag_bd', 'tag_opinion'],
-  },
-  {
-    id: 'bbc_world',
-    title: 'BBC News',
-    url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
-    siteUrl: 'https://bbc.com/news',
-    description: 'Global news, correspondents, and impartial reporting.',
-    category: 'World',
-    defaultTags: ['tag_world', 'tag_breaking'],
   },
 ];
 
@@ -109,9 +109,9 @@ export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   distractionFree: false,
 };
 
-// Storage limits (localStorage is roughly 5 MB per origin)
-const MAX_UNSAVED_ARTICLES = 400;
-const MAX_HTML_CHARS = 60000;
+// Storage limits (keep payload compact so iOS WebView never hits QuotaExceededError or JSON freeze)
+const MAX_UNSAVED_ARTICLES = 120;
+const MAX_HTML_CHARS = 10000;
 const FULL_BODY_MIN_CHARS = 800;
 
 // Demo stories shipped by older versions. They were invented, so they are removed on load.
@@ -145,16 +145,43 @@ export function pruneArticles(articles: FeedItem[], maxUnsaved = MAX_UNSAVED_ART
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, maxUnsaved);
   return [...saved, ...others]
-    .map((a) =>
-      a.contentHtml && a.contentHtml.length > MAX_HTML_CHARS
-        ? { ...a, contentHtml: a.contentHtml.slice(0, MAX_HTML_CHARS) }
-        : a
-    )
+    .map((a) => {
+      if (a.isBookmarked) {
+        return a.contentHtml && a.contentHtml.length > 40000
+          ? { ...a, contentHtml: a.contentHtml.slice(0, 40000) }
+          : a;
+      }
+      return {
+        ...a,
+        contentHtml:
+          a.contentHtml && a.contentHtml.length > MAX_HTML_CHARS
+            ? a.contentHtml.slice(0, MAX_HTML_CHARS)
+            : a.contentHtml,
+        contentClean:
+          a.contentClean && a.contentClean.length > MAX_HTML_CHARS
+            ? a.contentClean.slice(0, MAX_HTML_CHARS)
+            : a.contentClean,
+      };
+    })
     .sort((a, b) => b.timestamp - a.timestamp);
 }
 
 export function loadFeedsFromStorage(): Feed[] {
-  return readArray<Feed>(STORAGE_KEYS.FEEDS) || INITIAL_FEEDS;
+  const stored = readArray<Feed>(STORAGE_KEYS.FEEDS);
+  if (!stored || stored.length === 0) return INITIAL_FEEDS;
+  // Upgrade legacy slow homepage URLs for built-in sources to their fast XML feed endpoints
+  return stored.map((f) => {
+    if (f.id === 'prothom_alo_en' && f.url === 'https://en.prothomalo.com') {
+      return { ...f, url: 'https://en.prothomalo.com/feed' };
+    }
+    if (f.id === 'prothom_alo_bn' && f.url === 'https://www.prothomalo.com') {
+      return { ...f, url: 'https://www.prothomalo.com/feed' };
+    }
+    if (f.id === 'tbs_news' && f.url === 'https://www.tbsnews.net') {
+      return { ...f, url: 'https://www.tbsnews.net/top-news/rss.xml' };
+    }
+    return f;
+  });
 }
 
 export function saveFeedsToStorage(feeds: Feed[]): void {
@@ -193,20 +220,15 @@ export function loadArticlesFromStorage(): FeedItem[] {
 }
 
 export function saveArticlesToStorage(articles: FeedItem[]): void {
-  let limit = MAX_UNSAVED_ARTICLES;
-  // On a quota error, retry with fewer stories, then without stored HTML for unsaved ones.
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      localStorage.setItem(STORAGE_KEYS.ARTICLES, JSON.stringify(pruneArticles(articles, limit)));
-      return;
-    } catch (e) {
-      limit = Math.floor(limit / 2);
-      if (limit < 20) break;
-    }
+  try {
+    localStorage.setItem(STORAGE_KEYS.ARTICLES, JSON.stringify(pruneArticles(articles, MAX_UNSAVED_ARTICLES)));
+    return;
+  } catch {
+    // Fallback if storage is near quota
   }
   try {
     const slim = pruneArticles(articles, 50).map((a) =>
-      a.isBookmarked ? a : { ...a, contentHtml: undefined }
+      a.isBookmarked ? a : { ...a, contentHtml: undefined, contentClean: undefined }
     );
     localStorage.setItem(STORAGE_KEYS.ARTICLES, JSON.stringify(slim));
   } catch (e) {

@@ -69,16 +69,27 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [feedViewMode, setFeedViewMode] = useState<'magazine' | 'compact'>('magazine');
+  const [visibleCount, setVisibleCount] = useState(25);
 
-  // Blurry transparent header on Newsfeed scroll
+  // Reset visible window when filters change
+  useEffect(() => {
+    setVisibleCount(25);
+  }, [selectedFeedId, selectedFolder, selectedTagId, filterMode, searchQuery, currentTab]);
+
+  // Blurry transparent header on Newsfeed scroll + infinite scroll window expansion
   const [isScrolled, setIsScrolled] = useState(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState(true);
   const lastScrollYRef = useRef(0);
   const scrollDeltaRef = useRef(0);
 
   const handleFeedScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const currentScrollY = e.currentTarget.scrollTop;
+    const { scrollTop: currentScrollY, scrollHeight, clientHeight } = e.currentTarget;
     const delta = currentScrollY - lastScrollYRef.current;
+
+    // Expand rendered article window smoothly as user scrolls down
+    if (scrollHeight - currentScrollY - clientHeight < 800) {
+      setVisibleCount((prev) => (prev < articles.length ? Math.min(prev + 25, articles.length) : prev));
+    }
 
     // Track scroll depth so header gets blurry and transparent
     setIsScrolled(currentScrollY > 4);
@@ -123,13 +134,19 @@ export default function App() {
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  // Synchronize state changes to localStorage
+  // Synchronize state changes to localStorage (debounced to keep iOS UI thread 100% fluid)
   useEffect(() => {
-    saveFeedsToStorage(feeds);
+    const timer = setTimeout(() => {
+      saveFeedsToStorage(feeds);
+    }, 400);
+    return () => clearTimeout(timer);
   }, [feeds]);
 
   useEffect(() => {
-    saveArticlesToStorage(articles);
+    const timer = setTimeout(() => {
+      saveArticlesToStorage(articles);
+    }, 600);
+    return () => clearTimeout(timer);
   }, [articles]);
 
   useEffect(() => {
@@ -240,21 +257,33 @@ export default function App() {
     return [...additions, ...refreshed].sort((a, b) => b.timestamp - a.timestamp);
   };
 
-  // Listen for background startup feed updates so articles stream into the feed seamlessly
+  // Listen for background startup feed updates in memory without repeated localStorage round-trips
   useEffect(() => {
-    const handleBackgroundStorageUpdate = () => {
-      const latestArticles = loadArticlesFromStorage();
-      const latestFeeds = loadFeedsFromStorage();
-      setArticles((prev) => mergeFeedItems(prev, latestArticles));
-      setFeeds((prev) => {
-        const byId = new Map(latestFeeds.map((f) => [f.id, f]));
-        return prev.map((f) => byId.get(f.id) || f);
-      });
+    const handleIncomingArticles = (e: Event) => {
+      const custom = e as CustomEvent<{
+        items?: FeedItem[];
+        resolvedFeeds?: Array<{ id: string; url: string }>;
+      }>;
+      const incomingItems = custom.detail?.items;
+      const resolvedFeeds = custom.detail?.resolvedFeeds;
+
+      if (incomingItems && incomingItems.length > 0) {
+        setArticles((prev) => mergeFeedItems(prev, incomingItems));
+      }
+      if (resolvedFeeds && resolvedFeeds.length > 0) {
+        const urlById = new Map(resolvedFeeds.map((r) => [r.id, r.url]));
+        setFeeds((prev) =>
+          prev.map((f) => {
+            const newUrl = urlById.get(f.id);
+            return newUrl && newUrl !== f.url ? { ...f, url: newUrl } : f;
+          })
+        );
+      }
     };
 
-    window.addEventListener('chinta:storage-updated', handleBackgroundStorageUpdate);
+    window.addEventListener('chinta:incoming-articles', handleIncomingArticles);
     return () => {
-      window.removeEventListener('chinta:storage-updated', handleBackgroundStorageUpdate);
+      window.removeEventListener('chinta:incoming-articles', handleIncomingArticles);
     };
   }, []);
 
@@ -1043,7 +1072,7 @@ export default function App() {
                 disabled={isOffline}
               >
                 <div className="divide-y divide-stone-200/50 dark:divide-white/[0.08]">
-                  {displayedArticles.map((article) => (
+                  {displayedArticles.slice(0, visibleCount).map((article) => (
                     <ArticleCard
                       key={article.id}
                       article={article}
