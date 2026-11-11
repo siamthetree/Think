@@ -201,20 +201,28 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-stone-50 dark:bg-[#090A0C]">
-      {/* Minimal iOS 26 Liquid Glass Navigation Header */}
-      <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-2.5 liquid-glass-header border-b border-stone-200/60 dark:border-white/[0.07] z-10">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-baseline gap-2">
-            <h1 className="font-serif text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">
+    <div className="flex-1 relative flex flex-col h-full overflow-hidden bg-stone-50 dark:bg-[#090A0C]">
+      {/* Progressive Atmospheric Top Blur Mask */}
+      <div
+        aria-hidden="true"
+        className="top-progressive-blur absolute top-0 left-0 right-0 h-28 z-10 pointer-events-none"
+      />
+
+      {/* Floating Top 3D Liquid Glass Controls */}
+      <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-2.5 z-20 space-y-2.5">
+        <div className="flex items-center justify-between gap-2 pt-1">
+          {/* Top-Left: Floating 3D Liquid Glass Title Pill */}
+          <div className="liquid-glass-pill h-12 px-4 rounded-full flex items-center gap-2.5">
+            <h1 className="font-serif text-lg font-bold tracking-tight text-stone-900 dark:text-white">
               Sources
             </h1>
-            <span className="text-xs text-stone-400 font-mono tabular-nums">
+            <span className="text-xs text-stone-500 dark:text-stone-300 font-mono tabular-nums">
               {feeds.length}
             </span>
           </div>
 
-          <div className="flex items-center gap-1">
+          {/* Top-Right: Floating 3D Liquid Glass Action Pill */}
+          <div className="liquid-glass-pill h-12 px-2.5 rounded-full flex items-center gap-1.5">
             <button
               type="button"
               onClick={() => {
@@ -224,9 +232,9 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
               disabled={isRefreshing || isOffline}
               aria-label="Refresh all sources"
               title="Refresh all"
-              className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors disabled:opacity-40 active:scale-95"
+              className="w-9 h-9 flex items-center justify-center rounded-full text-stone-800 dark:text-white transition-transform disabled:opacity-40 active:scale-90"
             >
-              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`} />
+              <RefreshCw className={`w-4 h-4 stroke-[2] ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`} />
             </button>
 
             <button
@@ -237,32 +245,41 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
               }}
               aria-label="Add source or folder"
               title="Add source or folder"
-              className={`min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full transition-colors active:scale-95 ${
+              className={`w-9 h-9 flex items-center justify-center rounded-full transition-all active:scale-90 ${
                 isAddOpen
-                  ? 'bg-[#FF6719] text-white'
-                  : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
+                  ? 'bg-[#FF6719] text-white shadow-sm'
+                  : 'text-stone-800 dark:text-white'
               }`}
             >
-              {isAddOpen ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4 stroke-[2.2]" />}
+              {isAddOpen ? <X className="w-4 h-4 stroke-[2.2]" /> : <Plus className="w-4 h-4 stroke-[2.4]" />}
             </button>
           </div>
         </div>
 
-        {/* Minimal Search Bar */}
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-2.5 pointer-events-none" />
+        {/* Floating 3D Liquid Glass Search Capsule */}
+        <div className="liquid-glass-pill rounded-full px-3.5 py-2 flex items-center gap-2">
+          <Search className="w-4 h-4 text-stone-500 dark:text-stone-300 shrink-0 pointer-events-none" />
           <input
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Filter folders or sources..."
-            className="w-full pl-8 pr-3 py-1.5 rounded-xl text-xs bg-stone-200/60 dark:bg-white/[0.06] border border-transparent dark:border-white/[0.06] text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+            className="w-full bg-transparent text-xs text-stone-900 dark:text-white placeholder-stone-500 dark:placeholder-stone-300 focus:outline-none"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="text-stone-400 hover:text-white"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </header>
 
       {/* Main Scrollable Folder & Source List */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 pb-28 space-y-3.5 no-scrollbar">
+      <div className="flex-1 overflow-y-auto px-4 py-2 pb-28 space-y-3.5 no-scrollbar">
         {/* Collapsible Add Source + Folder Creation Card */}
         {isAddOpen && (
           <form

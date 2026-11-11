@@ -793,179 +793,217 @@ export default function App() {
           <div className="flex-1 flex flex-col h-full overflow-hidden">
             {/* NEWSFEED (all sources, or the one source/folder/tag selected) */}
             <div className="flex-1 relative h-full overflow-hidden">
-              {/* Status Bar subtle backdrop shield during scroll or when header is collapsed */}
+              {/* Progressive Atmospheric Top Blur Mask (content scrolls directly underneath and blurs softly) */}
               <div
                 aria-hidden="true"
-                className={`absolute top-0 left-0 right-0 h-[max(env(safe-area-inset-top,0px),0.75rem)] z-20 pointer-events-none transition-opacity duration-300 scroll-glass-overlay ${
-                  !isHeaderVisible || isScrolled ? 'opacity-100' : 'opacity-0'
-                }`}
+                className="top-progressive-blur absolute top-0 left-0 right-0 h-28 z-20 pointer-events-none"
               />
 
-              {/* Apple iOS 26 Liquid Glass Newsfeed Header */}
+              {/* Floating Top 3D Liquid Glass Orbs & Capsule (matches reference photo) */}
               <header
-                className={`feed-scroll-header liquid-glass-header absolute top-0 left-0 right-0 z-30 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-0 border-b border-stone-200/70 dark:border-white/[0.08] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-                  isScrolled ? 'is-scrolled backdrop-blur-2xl' : ''
-                } ${
+                className={`absolute top-0 left-0 right-0 z-30 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-2 pointer-events-none transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
                   isHeaderVisible
-                    ? 'translate-y-0 opacity-100 pointer-events-auto shadow-xs'
-                    : '-translate-y-full opacity-0 pointer-events-none'
+                    ? 'translate-y-0 opacity-100'
+                    : '-translate-y-20 opacity-0'
                 }`}
               >
-                {/* The source or folder title becomes Newsfeed when browsing all feeds */}
-                <div className="flex items-center justify-between pt-1 mb-1.5">
-                  <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                    <div className="w-5 h-6 bg-[#FF6719] rounded-[4px] flex items-center justify-center text-white font-serif font-black text-xs shadow-xs shrink-0 select-none">
-                      চ
-                    </div>
-                    <div className="min-w-0 flex items-center gap-2">
-                      <h1 className="font-serif text-[22px] font-bold tracking-tight text-stone-900 dark:text-stone-100 truncate">
-                        {selectedFeed?.title || selectedFolder || 'Newsfeed'}
-                      </h1>
-                      {(selectedFeed || selectedFolder) && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            triggerHapticSelection();
-                            setSelectedFeedId(null);
-                            setSelectedFolder(null);
-                            setSelectedTagId(null);
-                          }}
-                          title="Show all stories"
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-stone-200/80 dark:bg-white/[0.09] text-stone-700 dark:text-stone-300 hover:bg-stone-300 dark:hover:bg-white/[0.15] transition-colors shrink-0"
-                        >
-                          {selectedFolder && <Folder className="w-2.5 h-2.5 text-[#FF6719]" />}
-                          <span>All</span>
-                          <X className="w-3 h-3" />
-                        </button>
-                      )}
-                    </div>
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  {/* Top-Left: Floating 3D Liquid Glass Ribbon Orb + Active Folder/Source Pill */}
+                  <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHapticSelection();
+                        setSelectedFeedId(null);
+                        setSelectedFolder(null);
+                        setSelectedTagId(null);
+                        setFilterMode('all');
+                      }}
+                      title="All Stories"
+                      aria-label="All Stories"
+                      className="liquid-glass-pill w-12 h-12 rounded-full flex items-center justify-center shrink-0 active:scale-92 transition-transform"
+                    >
+                      {/* Iconic Orange Ribbon Bookmark Icon */}
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="w-5 h-5 text-[#FF6719] fill-current"
+                        aria-hidden="true"
+                      >
+                        <path d="M4 3h16v2.5H4V3zm0 4.5h16V10H4V7.5zm0 4.5h16v9l-8-3.8L4 21v-9z" />
+                      </svg>
+                    </button>
+
+                    {(selectedFeed || selectedFolder || filterMode !== 'all') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          triggerHapticSelection();
+                          setSelectedFeedId(null);
+                          setSelectedFolder(null);
+                          setSelectedTagId(null);
+                          setFilterMode('all');
+                        }}
+                        title="Clear filter and show all stories"
+                        className="liquid-glass-pill h-10 px-3.5 rounded-full flex items-center gap-1.5 text-xs font-semibold text-stone-900 dark:text-white truncate max-w-[180px] active:scale-95 transition-transform"
+                      >
+                        {selectedFolder && <Folder className="w-3.5 h-3.5 text-[#FF6719] shrink-0" />}
+                        <span className="truncate">
+                          {selectedFeed?.title ||
+                            selectedFolder ||
+                            (filterMode === 'unread'
+                              ? `Unread (${activeSourceUnreadCount})`
+                              : filterMode === 'bookmarked'
+                                ? 'Saved'
+                                : 'Offline')}
+                        </span>
+                        <X className="w-3.5 h-3.5 opacity-70 shrink-0" />
+                      </button>
+                    )}
                   </div>
 
-                  <div className="flex items-center gap-1 shrink-0">
-                    {/* View Switcher: Magazine vs Compact List */}
-                    <div className="flex items-center bg-stone-100 dark:bg-stone-800/80 p-0.5 rounded-lg mr-1 border border-stone-200/60 dark:border-stone-700/60">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          triggerHapticSelection();
-                          setFeedViewMode('magazine');
-                        }}
-                        aria-label="Magazine View"
-                        title="Magazine View"
-                        className={`p-1.5 rounded-md transition-colors ${
-                          feedViewMode === 'magazine'
-                            ? 'bg-white dark:bg-stone-700 text-[#FF6719] shadow-xs'
-                            : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200'
-                        }`}
-                      >
-                        <LayoutList className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          triggerHapticSelection();
-                          setFeedViewMode('compact');
-                        }}
-                        aria-label="Compact List View"
-                        title="Compact Scanner View"
-                        className={`p-1.5 rounded-md transition-colors ${
-                          feedViewMode === 'compact'
-                            ? 'bg-white dark:bg-stone-700 text-[#FF6719] shadow-xs'
-                            : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200'
-                        }`}
-                      >
-                        <Rows3 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
+                  {/* Top-Right: Floating 3D Liquid Glass Capsule Pill (Search + View/Refresh + Layered Avatar Orb) */}
+                  <div className="liquid-glass-pill h-12 pl-3.5 pr-2 rounded-full flex items-center gap-2.5 shrink-0 pointer-events-auto">
                     <button
-                      onClick={() => setIsSearchOpen(!isSearchOpen)}
+                      type="button"
+                      onClick={() => {
+                        triggerHapticSelection();
+                        setIsSearchOpen(!isSearchOpen);
+                      }}
                       aria-label="Search stories"
-                      className={`p-2 rounded-full transition-colors ${
+                      title="Search stories"
+                      className={`p-1.5 rounded-full transition-transform active:scale-90 ${
                         isSearchOpen
-                          ? 'bg-stone-200 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
-                          : 'text-stone-500 hover:text-stone-900 dark:hover:text-stone-100'
+                          ? 'text-[#FF6719]'
+                          : 'text-stone-900 dark:text-white opacity-90 hover:opacity-100'
                       }`}
                     >
-                      <Search className="w-4 h-4" />
+                      <Search className="w-5 h-5 stroke-[2.2]" />
                     </button>
 
                     <button
+                      type="button"
+                      onClick={() => {
+                        triggerHapticSelection();
+                        setFeedViewMode((m) => (m === 'magazine' ? 'compact' : 'magazine'));
+                      }}
+                      aria-label="Toggle view mode"
+                      title={feedViewMode === 'magazine' ? 'Switch to Compact List' : 'Switch to Magazine View'}
+                      className="p-1.5 rounded-full text-stone-900 dark:text-white opacity-85 hover:opacity-100 transition-transform active:scale-90"
+                    >
+                      {feedViewMode === 'magazine' ? (
+                        <Rows3 className="w-4 h-4 stroke-[2]" />
+                      ) : (
+                        <LayoutList className="w-4 h-4 stroke-[2]" />
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={handleRefreshActive}
                       disabled={isRefreshing || isOffline}
-                      aria-label="Refresh source feed"
-                      title="Reload stories"
-                      className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors disabled:opacity-40"
+                      aria-label="Refresh feed"
+                      title="Refresh stories"
+                      className="p-1.5 rounded-full text-stone-900 dark:text-white opacity-85 hover:opacity-100 transition-transform active:scale-90 disabled:opacity-40"
                     >
-                      <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`} />
+                      <RefreshCw
+                        className={`w-4 h-4 stroke-[2] ${
+                          isRefreshing ? 'animate-spin text-[#FF6719]' : ''
+                        }`}
+                      />
                     </button>
 
+                    {/* Layered Circular Filter Orb (matches the orange/teal layered circle inside the top-right pill in the reference photo) */}
                     <button
-                      onClick={handleMarkSourceAsRead}
-                      aria-label="Mark source as read"
-                      title="Mark stories as read"
-                      className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors"
+                      type="button"
+                      onClick={() => {
+                        triggerHapticSelection();
+                        const order: Array<'all' | 'unread' | 'bookmarked' | 'offline'> = [
+                          'all',
+                          'unread',
+                          'bookmarked',
+                          'offline',
+                        ];
+                        const next = order[(order.indexOf(filterMode) + 1) % order.length];
+                        setFilterMode(next);
+                        notify(
+                          next === 'all'
+                            ? 'Showing All Stories'
+                            : next === 'unread'
+                              ? `Showing Unread Stories (${activeSourceUnreadCount})`
+                              : next === 'bookmarked'
+                                ? 'Showing Saved Stories'
+                                : 'Showing Offline Cached Stories'
+                        );
+                      }}
+                      title="Tap to cycle filter: All · Unread · Saved · Offline"
+                      aria-label="Cycle story filter"
+                      className="relative w-8 h-8 rounded-full flex items-center justify-center active:scale-90 transition-transform ml-0.5"
                     >
-                      <CheckCheck className="w-4 h-4" />
+                      <span
+                        className="absolute inset-0 rounded-full translate-x-[2px] translate-y-[1px]"
+                        style={{
+                          background: 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
+                          border: '1px solid rgba(255,255,255,0.45)',
+                        }}
+                      />
+                      <span
+                        className="relative w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shadow-sm"
+                        style={{
+                          background: 'linear-gradient(145deg, #FF982E 0%, #FF6719 100%)',
+                          border: '1.5px solid rgba(255,255,255,0.85)',
+                        }}
+                      >
+                        {filterMode === 'all' ? '' : filterMode[0].toUpperCase()}
+                      </span>
                     </button>
                   </div>
                 </div>
 
-                {/* Collapsible Search Input */}
+                {/* Floating Liquid Glass Search Bar & Quick Filter Pills */}
                 {isSearchOpen && (
-                  <div className="mt-1 mb-2 animate-in fade-in duration-100">
-                    <div className="relative">
-                      <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-2.5" />
+                  <div className="mt-2.5 pointer-events-auto animate-in fade-in duration-150 space-y-2">
+                    <div className="liquid-glass-pill rounded-full px-3.5 py-2 flex items-center gap-2">
+                      <Search className="w-4 h-4 text-stone-500 dark:text-stone-300 shrink-0" />
                       <input
                         type="search"
+                        autoFocus
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder={`Search in ${selectedFeed?.title || selectedFolder || 'stories'}...`}
-                        className="w-full pl-8 pr-3 py-1.5 bg-stone-100 dark:bg-stone-800/80 rounded-xl text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+                        className="w-full bg-transparent text-xs text-stone-900 dark:text-white placeholder-stone-500 dark:placeholder-stone-300 focus:outline-none"
                       />
+                      {searchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchQuery('')}
+                          className="text-stone-400 hover:text-white"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleMarkSourceAsRead}
+                        title="Mark stories as read"
+                        className="p-1 text-stone-500 dark:text-stone-300 hover:text-[#FF6719]"
+                      >
+                        <CheckCheck className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 )}
-
-                {/* Navigation Underline Tabs */}
-                <div className="flex items-center gap-1 overflow-x-auto no-scrollbar -mx-4 px-4 pt-0.5">
-                  {[
-                    { id: 'all', label: 'Home' },
-                    { id: 'unread', label: `Unread (${activeSourceUnreadCount})` },
-                    { id: 'bookmarked', label: 'Saved' },
-                    { id: 'offline', label: 'Offline' },
-                  ].map((tab) => (
-                    <button
-                      key={tab.id}
-                      onClick={() => {
-                        triggerHapticSelection();
-                        setFilterMode(tab.id as any);
-                      }}
-                      className={`relative pb-2.5 px-3 text-[13px] font-medium whitespace-nowrap transition-colors ${
-                        filterMode === tab.id
-                          ? 'text-stone-950 dark:text-stone-50 font-semibold'
-                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                      }`}
-                    >
-                      <span>{tab.label}</span>
-                      {filterMode === tab.id && (
-                        <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-[#FF6719] rounded-full animate-in fade-in duration-150" />
-                      )}
-                    </button>
-                  ))}
-                </div>
               </header>
 
-              {/* Articles Feed with Pull to Refresh & Scroll Fill */}
+              {/* Articles Feed with Pull to Refresh — scrolls directly under top & bottom Liquid Glass */}
               <PullToRefresh
-                className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+5.25rem)] pb-28"
+                className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+3.75rem)] pb-28"
                 onScroll={handleFeedScroll}
                 onRefresh={handleRefreshActive}
                 isRefreshing={isRefreshing}
                 refreshFailed={refreshFailed}
                 disabled={isOffline}
               >
-                <div className="divide-y divide-stone-200/50 dark:divide-stone-800/60">
+                <div className="divide-y divide-stone-200/50 dark:divide-white/[0.08]">
                   {displayedArticles.map((article) => (
                     <ArticleCard
                       key={article.id}
@@ -999,7 +1037,7 @@ export default function App() {
                         setSelectedFeedId(null);
                         setSelectedFolder(null);
                       }}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-stone-200 dark:bg-stone-800 text-stone-800 dark:text-stone-200"
+                      className="px-3.5 py-1.5 rounded-full text-xs font-medium liquid-glass-pill text-stone-800 dark:text-stone-200"
                     >
                       Show All Stories
                     </button>
@@ -1013,7 +1051,7 @@ export default function App() {
           {/* TAB 2: TAGS & CATEGORIES */}
           {currentTab === 'tags' && (
             <div className="flex-1 flex flex-col h-full overflow-hidden">
-              <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-3 bg-stone-50/95 dark:bg-[#090A0C]/95 backdrop-blur-xl border-b border-stone-200/60 dark:border-stone-800/60 flex items-center justify-between">
+              <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-3 liquid-glass-header border-b border-stone-200/60 dark:border-white/[0.08] flex items-center justify-between">
                 <div>
                   <h1 className="font-serif text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">
                     Categorization
@@ -1028,9 +1066,9 @@ export default function App() {
                     setTagModalArticle(null);
                     setIsTagModalOpen(true);
                   }}
-                  className="px-3 py-1.5 bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-white text-white dark:text-stone-900 rounded-xl text-xs font-medium flex items-center gap-1.5 shadow-xs"
+                  className="px-3.5 py-1.5 liquid-glass-pill rounded-full text-xs font-semibold text-stone-900 dark:text-white flex items-center gap-1.5"
                 >
-                  <Plus className="w-3.5 h-3.5" />
+                  <Plus className="w-3.5 h-3.5 text-[#FF6719]" />
                   <span>New Tag</span>
                 </button>
               </header>
@@ -1045,10 +1083,11 @@ export default function App() {
                       key={tag.id}
                       onClick={() => {
                         setSelectedFeedId(null);
+                        setSelectedFolder(null);
                         setSelectedTagId(tag.id);
                         setCurrentTab('stories');
                       }}
-                      className="p-3.5 rounded-2xl border border-stone-200/80 dark:border-stone-800 bg-white/60 dark:bg-stone-800/40 hover:bg-white dark:hover:bg-stone-800 cursor-pointer transition-all shadow-xs"
+                      className="p-3.5 rounded-2xl liquid-glass cursor-pointer transition-all active:scale-[0.99]"
                     >
                       <div className="flex items-center justify-between mb-1.5">
                         <div className="flex items-center gap-2">
@@ -1069,7 +1108,7 @@ export default function App() {
                         <span>
                           {unreadTagCount > 0 ? `${unreadTagCount} unread stories` : 'All caught up'}
                         </span>
-                        <span className="text-emerald-700 dark:text-emerald-400 font-medium">
+                        <span className="text-[#FF6719] font-medium">
                           Browse Tag →
                         </span>
                       </div>
@@ -1083,7 +1122,7 @@ export default function App() {
           {/* TAB 3: SAVED & OFFLINE HUB */}
           {currentTab === 'saved' && (
             <div className="flex-1 flex flex-col h-full overflow-hidden">
-              <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-3 bg-stone-50/95 dark:bg-[#090A0C]/95 backdrop-blur-xl border-b border-stone-200/60 dark:border-stone-800/60">
+              <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-3 liquid-glass-header border-b border-stone-200/60 dark:border-white/[0.08]">
                 <div className="flex items-center justify-between mb-2">
                   <div>
                     <h1 className="font-serif text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">
@@ -1097,23 +1136,23 @@ export default function App() {
                   <button
                     onClick={handleCacheAllForOffline}
                     disabled={isCachingAll}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-medium flex items-center gap-1.5 shadow-xs transition-colors"
+                    className="px-3.5 py-1.5 liquid-glass-pill disabled:opacity-50 text-stone-900 dark:text-white rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors"
                     title="Download full text of the newest stories for offline use"
                   >
-                    <ArrowDownCircle className={`w-3.5 h-3.5 ${isCachingAll ? 'animate-pulse' : ''}`} />
+                    <ArrowDownCircle className={`w-3.5 h-3.5 text-emerald-500 ${isCachingAll ? 'animate-pulse' : ''}`} />
                     <span>{isCachingAll ? 'Saving...' : 'Save All'}</span>
                   </button>
                 </div>
 
                 {/* Offline Status Banner */}
-                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 rounded-2xl border border-emerald-200/60 dark:border-emerald-800/40 text-xs text-emerald-900 dark:text-emerald-200 flex items-center justify-between">
+                <div className="p-3 liquid-glass rounded-2xl text-xs text-stone-800 dark:text-stone-200 flex items-center justify-between">
                   <div>
                     <span className="font-semibold block">Offline Reading Ready</span>
-                    <span className="opacity-80 text-[11px]">
+                    <span className="opacity-75 text-[11px]">
                       {articles.filter((a) => a.isOfflineCached).length} stories cached on device
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono uppercase text-emerald-800 dark:text-emerald-300 font-bold">
+                  <span className="text-[10px] font-mono uppercase text-emerald-600 dark:text-emerald-400 font-bold">
                     Zero-Data Mode
                   </span>
                 </div>
@@ -1176,10 +1215,11 @@ export default function App() {
             />
           )}
 
-          {/* Bottom iOS Navigation Bar */}
+          {/* Bottom Floating iOS 26 Liquid Glass Capsule Dock */}
           <TabBar
             currentTab={currentTab}
             isVisible={isHeaderVisible || currentTab !== 'stories'}
+            onQuickAction={() => setIsFeedModalOpen(true)}
             onSelectTab={(tab) => {
               setCurrentTab(tab);
               setIsHeaderVisible(true);
