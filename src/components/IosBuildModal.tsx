@@ -48,7 +48,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
 
       - name: Install Node Dependencies
         run: npm install --legacy-peer-deps
@@ -63,7 +62,7 @@ jobs:
           if [ ! -d "ios" ]; then
             npx cap add ios
           fi
-          npx cap sync ios
+          npx cap sync ios || (cd ios/App && pod install --repo-update && cd ../.. && npx cap copy ios)
 
       - name: Select Xcode Version
         run: |
@@ -90,7 +89,9 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \\
             CODE_SIGNING_REQUIRED=NO \\
             CODE_SIGN_IDENTITY="" \\
+            EXPANDED_CODE_SIGN_IDENTITY="" \\
             AD_HOC_CODE_SIGNING_ALLOWED=YES \\
+            COMPILER_INDEX_STORE_ENABLE=NO \\
             clean build
 
       - name: Package Unsigned iOS .ipa (Payload)
