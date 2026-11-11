@@ -91,7 +91,15 @@ const STORAGE_KEYS = {
   ARTICLES: 'paperpress_articles_v2',
   TAGS: 'paperpress_tags_v2',
   PREFS: 'paperpress_reader_prefs_v2',
+  FOLDERS: 'paperpress_folders_v1',
 };
+
+export const DEFAULT_FOLDERS: string[] = [
+  'Bangladesh',
+  'Bangladesh (বাংলা)',
+  'Bangladesh Finance',
+  'World',
+];
 
 export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   font: 'serif',
@@ -221,3 +229,21 @@ export function savePreferencesToStorage(prefs: ReaderPreferences): void {
     console.error('Failed to save preferences to localStorage', e);
   }
 }
+
+export function loadFoldersFromStorage(): string[] {
+  const stored = readArray<string>(STORAGE_KEYS.FOLDERS);
+  if (stored && stored.length > 0) {
+    return Array.from(new Set([...DEFAULT_FOLDERS, ...stored.map((s) => s.trim()).filter(Boolean)]));
+  }
+  return DEFAULT_FOLDERS;
+}
+
+export function saveFoldersToStorage(folders: string[]): void {
+  try {
+    const clean = Array.from(new Set(folders.map((f) => f.trim()).filter(Boolean)));
+    localStorage.setItem(STORAGE_KEYS.FOLDERS, JSON.stringify(clean));
+  } catch (e) {
+    console.error('Failed to save folders to localStorage', e);
+  }
+}
+

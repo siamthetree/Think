@@ -560,13 +560,22 @@ export function filterArticles(
     searchQuery?: string;
     filterMode?: 'all' | 'unread' | 'bookmarked' | 'offline';
     selectedFeedId?: string | null;
+    selectedFeedIds?: string[] | null;
   }
 ): FeedItem[] {
-  const { selectedTagId, searchQuery, filterMode = 'all', selectedFeedId } = options;
+  const { selectedTagId, searchQuery, filterMode = 'all', selectedFeedId, selectedFeedIds } = options;
 
   return articles.filter((article) => {
-    // Feed filter
+    // Single feed filter
     if (selectedFeedId && article.feedId !== selectedFeedId) {
+      return false;
+    }
+
+    // Folder feeds filter (when a specific folder is selected)
+    if (selectedFeedIds && selectedFeedIds.length > 0 && !selectedFeedIds.includes(article.feedId)) {
+      return false;
+    }
+    if (selectedFeedIds && selectedFeedIds.length === 0) {
       return false;
     }
 

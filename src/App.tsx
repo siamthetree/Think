@@ -7,24 +7,19 @@ import {
   ArrowDownCircle,
   LayoutList,
   Rows3,
-  PenSquare,
-  Send,
-  Sparkles,
-  Trash2,
-  Image as ImageIcon,
-  BookOpen,
+  Folder,
+  X,
 } from 'lucide-react';
 import { IPhoneFrame } from './components/IPhoneFrame';
 import { ArticleCard } from './components/ArticleCard';
 import { ReaderView } from './components/ReaderView';
 import { TabBar, type TabType } from './components/TabBar';
-import { FeedChipBar } from './components/FeedChipBar';
 import { SourcesSection } from './components/SourcesSection';
 import { TagManagerModal } from './components/TagManagerModal';
 import { FeedManagerModal } from './components/FeedManagerModal';
 import { IosBuildModal } from './components/IosBuildModal';
 import { PullToRefresh } from './components/PullToRefresh';
-import { triggerHapticSelection, triggerHapticComplete } from './utils/haptics';
+import { triggerHapticSelection } from './utils/haptics';
 import type { Feed, FeedItem, Tag, ReaderPreferences } from './types';
 import {
   loadFeedsFromStorage,
@@ -33,15 +28,16 @@ import {
   saveArticlesToStorage,
   loadTagsFromStorage,
   saveTagsToStorage,
+  loadFoldersFromStorage,
+  saveFoldersToStorage,
   loadPreferencesFromStorage,
   savePreferencesToStorage,
   hasFullBody,
 } from './utils/storage';
-import { filterArticles, calculateReadTime } from './utils/feedParser';
+import { filterArticles } from './utils/feedParser';
 import {
   fetchFeedWithFallback,
   extractArticleWithFallback,
-  publishBlogToDatabase,
 } from './utils/apiClient';
 import { blocksToHtml, escapeHtml } from './utils/sanitize';
 
@@ -50,6 +46,7 @@ export default function App() {
   const [feeds, setFeeds] = useState<Feed[]>(loadFeedsFromStorage);
   const [articles, setArticles] = useState<FeedItem[]>(loadArticlesFromStorage);
   const [tags, setTags] = useState<Tag[]>(loadTagsFromStorage);
+  const [folders, setFolders] = useState<string[]>(loadFoldersFromStorage);
   const [preferences, setPreferences] = useState<ReaderPreferences>(() => {
     return loadPreferencesFromStorage();
   });
@@ -60,10 +57,10 @@ export default function App() {
     document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
   }, [preferences.theme]);
 
-  // Navigation & Active Source State
-  // The app only displays a source's feed when a specific source is clicked (selectedFeedId !== null)
+  // Navigation & Active Source / Folder State
   const [currentTab, setCurrentTab] = useState<TabType>('stories');
   const [selectedFeedId, setSelectedFeedId] = useState<string | null>(null);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [activeArticle, setActiveArticle] = useState<FeedItem | null>(null);
 
   // Filters within a selected source or tag view
@@ -112,124 +109,6 @@ export default function App() {
     lastScrollYRef.current = currentScrollY;
   };
 
-  // User Draft & Published Posts (local state list persisted alongside RSS items)
-  const [userPosts, setUserPosts] = useState<FeedItem[]>(() => {
-    try {
-      const stored = localStorage.getItem('chinta_user_posts_v1');
-      if (stored) return JSON.parse(stored);
-    } catch {}
-    return [];
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('chinta_user_posts_v1', JSON.stringify(userPosts));
-    } catch {}
-  }, [userPosts]);
-
-  // Form State for Write tab
-  const [writeTitle, setWriteTitle] = useState('');
-  const [writeContent, setWriteContent] = useState('');
-  const [writeAuthor, setWriteAuthor] = useState('');
-  const [writeGroup, setWriteGroup] = useState('Travelers of Bangladesh (TOB)');
-  const [writeLocation, setWriteLocation] = useState('');
-  const [writeCoverImage, setWriteCoverImage] = useState('');
-  const [isPublishing, setIsPublishing] = useState(false);
-
-  const handlePublishPost = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmedTitle = writeTitle.trim();
-    const trimmedContent = writeContent.trim();
-    if (!trimmedTitle || !trimmedContent) {
-      notify('Please enter a title and content for your story.');
-      return;
-    }
-
-    setIsPublishing(true);
-    const authorName = writeAuthor.trim() || 'Community Writer';
-    const groupName = writeGroup.trim();
-    const locationName = writeLocation.trim();
-    const now = Date.now();
-    const postId = `post_${now}_${Math.random().toString(36).substring(2, 7)}`;
-    const readTime = calculateReadTime(trimmedContent);
-
-    const paragraphs = trimmedContent
-      .split(/\n\n+/)
-      .map((p) => p.trim())
-      .filter(Boolean);
-
-    const groupBadgeHtml = groupName
-      ? `<div class="travel-group-badge mb-4 p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-200">
-           <p class="text-xs uppercase font-bold tracking-wider text-emerald-400 mb-1">Bangladeshi Travel Group Dispatch</p>
-           <p class="text-sm font-semibold text-stone-100">${escapeHtml(groupName)} · Writer: ${escapeHtml(authorName)}</p>
-           ${locationName ? `<p class="text-xs text-stone-300 mt-1">📍 Destination: ${escapeHtml(locationName)}</p>` : ''}
-         </div>`
-      : '';
-
-    const contentHtml = `
-      ${groupBadgeHtml}
-      ${paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join('\n')}
-    `;
-
-    const newPost: FeedItem = {
-      id: postId,
-      feedId: 'travel_blogs_bd',
-      feedTitle: groupName || 'Community Travel Dispatch',
-      feedUrl: '/api/blogs',
-      title: trimmedTitle,
-      link: `https://chinta.app/posts/${postId}`,
-      pubDate: new Date(now).toISOString(),
-      timestamp: now,
-      author: authorName,
-      summary: trimmedContent.slice(0, 240),
-      contentHtml,
-      contentClean: trimmedContent,
-      imageUrl: writeCoverImage.trim() || undefined,
-      tags: ['tag_bd'],
-      isRead: true,
-      isBookmarked: false,
-      isOfflineCached: true,
-      cachedAt: now,
-      readTimeMin: readTime,
-    };
-
-    // 1. Add to local state list
-    setUserPosts((prev) => [newPost, ...prev]);
-
-    // 2. Persist alongside RSS items in feed
-    setArticles((prev) => [newPost, ...prev]);
-
-    // 3. Post to server database (/api/blogs)
-    publishBlogToDatabase({
-      title: trimmedTitle,
-      author: authorName,
-      groupName: groupName || 'Community Writer',
-      location: locationName,
-      summary: trimmedContent.slice(0, 240),
-      content: trimmedContent,
-      coverImage: writeCoverImage.trim() || undefined,
-    }).catch((err) => console.warn('Cloud sync for blog skipped:', err));
-
-    setWriteTitle('');
-    setWriteContent('');
-    setWriteLocation('');
-    setWriteCoverImage('');
-    setIsPublishing(false);
-
-    // Switch to newsfeed
-    setCurrentTab('stories');
-    setSelectedFeedId(null);
-    setSelectedTagId(null);
-    notify('Story published to newsfeed!');
-  };
-
-  const handleDeleteUserPost = (postId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setUserPosts((prev) => prev.filter((p) => p.id !== postId));
-    setArticles((prev) => prev.filter((a) => a.id !== postId));
-    notify('Post removed from feed');
-  };
-
   // Direct URL Reader State (for loading any Bangladeshi news portal or article URL without RSS)
   const [directUrlInput, setDirectUrlInput] = useState('');
   const [isLoadingDirectUrl, setIsLoadingDirectUrl] = useState(false);
@@ -256,6 +135,10 @@ export default function App() {
   useEffect(() => {
     saveTagsToStorage(tags);
   }, [tags]);
+
+  useEffect(() => {
+    saveFoldersToStorage(folders);
+  }, [folders]);
 
   useEffect(() => {
     savePreferencesToStorage(preferences);
@@ -356,6 +239,7 @@ export default function App() {
   const handleSelectSource = async (feed: Feed) => {
     triggerHapticSelection();
     setSelectedFeedId(feed.id);
+    setSelectedFolder(null);
     setSelectedTagId(null);
     setFilterMode('all');
     setSearchQuery('');
@@ -384,7 +268,51 @@ export default function App() {
     }
   };
 
-  // Refresh active source (or all sources if triggered from top bar)
+  // Click handler for a specific folder: selects that folder and shows news from all sources in that folder
+  const handleSelectFolder = async (folderName: string) => {
+    triggerHapticSelection();
+    setSelectedFolder(folderName);
+    setSelectedFeedId(null);
+    setSelectedTagId(null);
+    setFilterMode('all');
+    setSearchQuery('');
+    setCurrentTab('stories');
+    setIsHeaderVisible(true);
+
+    const folderFeeds = feeds.filter((f) => (f.category?.trim() || 'General') === folderName);
+    if (isOffline || folderFeeds.length === 0) {
+      if (isOffline) notify(`Offline mode: Showing cached stories in ${folderName}`);
+      return;
+    }
+
+    setRefreshFailed(false);
+    setIsRefreshing(true);
+    try {
+      const incomingItems: FeedItem[] = [];
+      let failedCount = 0;
+      await runPool(folderFeeds, 4, async (f) => {
+        const result = await syncFeed(f);
+        if (result === null) failedCount += 1;
+        else incomingItems.push(...result);
+      });
+      if (incomingItems.length > 0) {
+        setArticles((prev) => mergeFeedItems(prev, incomingItems));
+      }
+      if (failedCount === folderFeeds.length) {
+        setRefreshFailed(true);
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const handleCreateFolder = (folderName: string) => {
+    const trimmed = folderName.trim();
+    if (!trimmed) return;
+    setFolders((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+  };
+
+  // Refresh active source, active folder, or all sources if triggered from top bar
   const handleRefreshActive = async () => {
     if (isOffline) {
       notify('Offline mode active. Using locally cached articles.');
@@ -394,6 +322,11 @@ export default function App() {
     const activeFeed = feeds.find((f) => f.id === selectedFeedId);
     if (activeFeed) {
       await handleSelectSource(activeFeed);
+      return;
+    }
+
+    if (selectedFolder) {
+      await handleSelectFolder(selectedFolder);
       return;
     }
 
@@ -602,7 +535,15 @@ export default function App() {
 
   const handleMarkSourceAsRead = () => {
     setArticles((prev) =>
-      prev.map((a) => (!selectedFeedId || a.feedId === selectedFeedId ? { ...a, isRead: true } : a))
+      prev.map((a) => {
+        if (selectedFeedId) {
+          return a.feedId === selectedFeedId ? { ...a, isRead: true } : a;
+        }
+        if (selectedFolder && selectedFolderFeedIds) {
+          return selectedFolderFeedIds.includes(a.feedId) ? { ...a, isRead: true } : a;
+        }
+        return { ...a, isRead: true };
+      })
     );
     notify('Stories marked as read');
   };
@@ -795,10 +736,19 @@ export default function App() {
 
   const selectedFeed = feeds.find((f) => f.id === selectedFeedId) || null;
 
+  const selectedFolderFeedIds = useMemo(() => {
+    if (!selectedFolder) return null;
+    return feeds
+      .filter((f) => (f.category?.trim() || 'General') === selectedFolder)
+      .map((f) => f.id);
+  }, [feeds, selectedFolder]);
+
   // Filtered Articles calculation:
-  // When in Stories tab and a source is clicked, only show that specific source's feed
+  // When in Stories tab and a source or folder is clicked, only show that specific source's or folder's feed
   const displayedArticles = filterArticles(articles, {
     selectedFeedId: currentTab === 'stories' && !selectedTagId ? selectedFeedId : null,
+    selectedFeedIds:
+      currentTab === 'stories' && !selectedTagId && !selectedFeedId ? selectedFolderFeedIds : null,
     selectedTagId,
     searchQuery,
     filterMode: currentTab === 'saved' ? 'bookmarked' : filterMode,
@@ -806,16 +756,6 @@ export default function App() {
 
   const activeSourceUnreadCount = displayedArticles.filter((a) => !a.isRead).length;
   const totalUnreadCount = articles.filter((a) => !a.isRead).length;
-
-  const unreadCountByFeed = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const a of articles) {
-      if (!a.isRead) {
-        counts[a.feedId] = (counts[a.feedId] || 0) + 1;
-      }
-    }
-    return counts;
-  }, [articles]);
 
   // Next article in reader view
   const handleNextArticle = () => {
@@ -838,7 +778,8 @@ export default function App() {
     >
       {/* Toast Notification — spring in from top */}
       {statusMessage && (
-        <div className="absolute top-[max(env(safe-area-inset-top,12px),12px)] left-1/2 -translate-x-1/2 px-4 py-2.5 bg-stone-900/96 dark:bg-stone-100/96 text-white dark:text-stone-900 text-xs font-semibold rounded-full shadow-xl backdrop-blur-xl z-50 toast-enter whitespace-nowrap"
+        <div
+          className="absolute top-[max(env(safe-area-inset-top,12px),12px)] left-1/2 -translate-x-1/2 px-4 py-2.5 bg-stone-900/96 dark:bg-stone-100/96 text-white dark:text-stone-900 text-xs font-semibold rounded-full shadow-xl backdrop-blur-xl z-50 toast-enter whitespace-nowrap"
           style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.3), 0 2px 8px rgba(0,0,0,0.2)' }}
         >
           {statusMessage}
@@ -847,479 +788,227 @@ export default function App() {
 
       {/* Main Screen Container */}
       <div className="flex-1 relative flex flex-col h-full overflow-hidden bg-stone-50 dark:bg-[#090A0C] text-stone-900 dark:text-stone-100">
-          {/* TAB 1: Latest feed with optional source filtering */}
-          {currentTab === 'stories' && (
-            <div className="flex-1 flex flex-col h-full overflow-hidden">
-              {/* NEWSFEED (all sources, or the one source/tag selected) */}
-              <div className="flex-1 relative h-full overflow-hidden">
-                  {/* Status Bar subtle backdrop shield during scroll or when header is collapsed */}
-                  <div
-                    aria-hidden="true"
-                    className={`absolute top-0 left-0 right-0 h-[max(env(safe-area-inset-top,0px),0.75rem)] z-20 pointer-events-none transition-opacity duration-300 scroll-glass-overlay ${
-                      !isHeaderVisible || isScrolled ? 'opacity-100' : 'opacity-0'
-                    }`}
-                  />
+        {/* TAB 1: Latest feed with optional source or folder filtering */}
+        {currentTab === 'stories' && (
+          <div className="flex-1 flex flex-col h-full overflow-hidden">
+            {/* NEWSFEED (all sources, or the one source/folder/tag selected) */}
+            <div className="flex-1 relative h-full overflow-hidden">
+              {/* Status Bar subtle backdrop shield during scroll or when header is collapsed */}
+              <div
+                aria-hidden="true"
+                className={`absolute top-0 left-0 right-0 h-[max(env(safe-area-inset-top,0px),0.75rem)] z-20 pointer-events-none transition-opacity duration-300 scroll-glass-overlay ${
+                  !isHeaderVisible || isScrolled ? 'opacity-100' : 'opacity-0'
+                }`}
+              />
 
-                  {/* Frosted Glass Substack Newsfeed Header: gets blurry and transparent during scroll */}
-                  <header
-                    className={`feed-scroll-header absolute top-0 left-0 right-0 z-30 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-0 border-b border-stone-200/70 dark:border-stone-800/80 transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-                      isScrolled ? 'is-scrolled backdrop-blur-xl' : 'bg-white/95 dark:bg-[#090A0C]/95'
-                    } ${
-                      isHeaderVisible
-                        ? 'translate-y-0 opacity-100 pointer-events-auto shadow-xs'
-                        : '-translate-y-full opacity-0 pointer-events-none'
-                    }`}
-                  >
-                    {/* The source title becomes Newsfeed when browsing all feeds */}
-                    <div className="flex items-center justify-between pt-1 mb-1.5">
-                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                        {/* Substack signature orange bookmark glyph */}
-                        <div className="w-5 h-6 bg-[#FF6719] rounded-[3px] flex items-center justify-center text-white font-serif font-black text-xs shadow-xs shrink-0 select-none">
-                          চ
-                        </div>
-                        <div className="min-w-0">
-                          <h1 className="font-serif text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100 truncate">
-                            {selectedFeed?.title || 'Newsfeed'}
-                          </h1>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1 shrink-0">
-                        {/* Substack View Switcher: Magazine vs Compact List */}
-                        <div className="flex items-center bg-stone-100 dark:bg-stone-800/80 p-0.5 rounded-lg mr-1 border border-stone-200/60 dark:border-stone-700/60">
-                          <button
-                            type="button"
-                            onClick={() => setFeedViewMode('magazine')}
-                            aria-label="Magazine View"
-                            title="Substack Magazine View"
-                            className={`p-1.5 rounded-md transition-colors ${
-                              feedViewMode === 'magazine'
-                                ? 'bg-white dark:bg-stone-700 text-[#FF6719] shadow-xs'
-                                : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200'
-                            }`}
-                          >
-                            <LayoutList className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setFeedViewMode('compact')}
-                            aria-label="Compact List View"
-                            title="Compact Scanner View"
-                            className={`p-1.5 rounded-md transition-colors ${
-                              feedViewMode === 'compact'
-                                ? 'bg-white dark:bg-stone-700 text-[#FF6719] shadow-xs'
-                                : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200'
-                            }`}
-                          >
-                            <Rows3 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-
-                        <button
-                          onClick={() => setIsSearchOpen(!isSearchOpen)}
-                          aria-label="Search stories"
-                          className={`p-2 rounded-full transition-colors ${
-                            isSearchOpen
-                              ? 'bg-stone-200 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
-                              : 'text-stone-500 hover:text-stone-900 dark:hover:text-stone-100'
-                          }`}
-                        >
-                          <Search className="w-4 h-4" />
-                        </button>
-
-                        <button
-                          onClick={handleRefreshActive}
-                          disabled={isRefreshing || isOffline}
-                          aria-label="Refresh source feed"
-                          title="Reload stories from source"
-                          className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors disabled:opacity-40"
-                        >
-                          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`} />
-                        </button>
-
-                        <button
-                          onClick={handleMarkSourceAsRead}
-                          aria-label="Mark source as read"
-                          title="Mark source stories as read"
-                          className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors"
-                        >
-                          <CheckCheck className="w-4 h-4" />
-                        </button>
-                      </div>
+              {/* Apple iOS 26 Liquid Glass Newsfeed Header */}
+              <header
+                className={`feed-scroll-header liquid-glass-header absolute top-0 left-0 right-0 z-30 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-0 border-b border-stone-200/70 dark:border-white/[0.08] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                  isScrolled ? 'is-scrolled backdrop-blur-2xl' : ''
+                } ${
+                  isHeaderVisible
+                    ? 'translate-y-0 opacity-100 pointer-events-auto shadow-xs'
+                    : '-translate-y-full opacity-0 pointer-events-none'
+                }`}
+              >
+                {/* The source or folder title becomes Newsfeed when browsing all feeds */}
+                <div className="flex items-center justify-between pt-1 mb-1.5">
+                  <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                    <div className="w-5 h-6 bg-[#FF6719] rounded-[4px] flex items-center justify-center text-white font-serif font-black text-xs shadow-xs shrink-0 select-none">
+                      চ
                     </div>
-
-                    {/* Collapsible Search Input */}
-                    {isSearchOpen && (
-                      <div className="mt-1 mb-2 animate-in fade-in duration-100">
-                        <div className="relative">
-                          <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-2.5" />
-                          <input
-                            type="search"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder={`Search in ${selectedFeed?.title || 'stories'}...`}
-                            className="w-full pl-8 pr-3 py-1.5 bg-stone-100 dark:bg-stone-800/80 rounded-xl text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Substack Style Navigation Underline Tabs */}
-                    <div className="flex items-center gap-1 overflow-x-auto no-scrollbar -mx-4 px-4 pt-1">
-                      {[
-                        { id: 'all', label: 'Home' },
-                        { id: 'unread', label: `Unread (${activeSourceUnreadCount})` },
-                        { id: 'bookmarked', label: 'Saved' },
-                        { id: 'offline', label: 'Offline' },
-                      ].map((tab) => (
+                    <div className="min-w-0 flex items-center gap-2">
+                      <h1 className="font-serif text-[22px] font-bold tracking-tight text-stone-900 dark:text-stone-100 truncate">
+                        {selectedFeed?.title || selectedFolder || 'Newsfeed'}
+                      </h1>
+                      {(selectedFeed || selectedFolder) && (
                         <button
-                          key={tab.id}
-                          onClick={() => setFilterMode(tab.id as any)}
-                          className={`relative pb-2.5 px-3 text-[13px] font-medium whitespace-nowrap transition-colors ${
-                            filterMode === tab.id
-                              ? 'text-stone-950 dark:text-stone-50 font-semibold'
-                              : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                          }`}
-                        >
-                          <span>{tab.label}</span>
-                          {filterMode === tab.id && (
-                            <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-[#FF6719] rounded-full animate-in fade-in duration-150" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Newspaper Sources Liquid Glass Pills */}
-                    <div className="pt-1.5 pb-2">
-                      <FeedChipBar
-                        feeds={feeds}
-                        selectedFeedId={selectedFeedId}
-                        onSelectAll={() => {
-                          setSelectedFeedId(null);
-                          setSelectedTagId(null);
-                        }}
-                        onSelectFeed={(feed) => {
-                          handleSelectSource(feed);
-                        }}
-                        unreadCountByFeed={unreadCountByFeed}
-                        totalUnread={totalUnreadCount}
-                      />
-                    </div>
-                  </header>
-
-                  {/* Active Source's Articles Feed with Pull to Refresh & Scroll Fill */}
-                  <PullToRefresh
-                    className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+8rem)] pb-28"
-                    onScroll={handleFeedScroll}
-                    onRefresh={handleRefreshActive}
-                    isRefreshing={isRefreshing}
-                    refreshFailed={refreshFailed}
-                    disabled={isOffline}
-                  >
-                    <div className="divide-y divide-stone-200/50 dark:divide-stone-800/60">
-                      {displayedArticles.map((article) => (
-                        <ArticleCard
-                          key={article.id}
-                          article={article}
-                          viewMode={feedViewMode}
-                          onSelect={(art) => setActiveArticle(art)}
-                          onToggleBookmark={handleToggleBookmark}
-                          onToggleRead={handleToggleRead}
-                          onOpenTagManager={(art, e) => {
-                            e.stopPropagation();
-                            setTagModalArticle(art);
-                            setIsTagModalOpen(true);
-                          }}
-                        />
-                      ))}
-                    </div>
-
-                    {displayedArticles.length === 0 && (
-                      <div className="py-16 px-6 text-center text-stone-500">
-                        <p className="font-serif text-base text-stone-800 dark:text-stone-200 mb-1">
-                          No stories found for this filter
-                        </p>
-                        <p className="text-xs mb-4">
-                          Try switching filters or pull down to check for new articles.
-                        </p>
-                        <button
+                          type="button"
                           onClick={() => {
-                            setFilterMode('all');
-                            setSearchQuery('');
+                            triggerHapticSelection();
+                            setSelectedFeedId(null);
+                            setSelectedFolder(null);
                             setSelectedTagId(null);
                           }}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-stone-200 dark:bg-stone-800 text-stone-800 dark:text-stone-200"
+                          title="Show all stories"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-stone-200/80 dark:bg-white/[0.09] text-stone-700 dark:text-stone-300 hover:bg-stone-300 dark:hover:bg-white/[0.15] transition-colors shrink-0"
                         >
-                          Show All Stories
+                          {selectedFolder && <Folder className="w-2.5 h-2.5 text-[#FF6719]" />}
+                          <span>All</span>
+                          <X className="w-3 h-3" />
                         </button>
-                      </div>
-                    )}
-                  </PullToRefresh>
-                </div>
-            </div>
-          )}
-
-          {/* TAB: WRITE & DRAFT BLOG POSTS */}
-          {currentTab === 'write' && (
-            <div className="flex-1 flex flex-col h-full overflow-hidden bg-stone-50 dark:bg-[#090A0C]">
-              <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-3 bg-white/95 dark:bg-[#090A0C]/95 backdrop-blur-xl border-b border-stone-200/70 dark:border-stone-800/80 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-[#FF6719]/15 flex items-center justify-center text-[#FF6719]">
-                    <PenSquare className="w-4 h-4 stroke-[2.2]" />
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <h1 className="font-serif text-xl font-bold tracking-tight text-stone-900 dark:text-stone-100">
-                      Write & Publish
-                    </h1>
-                    <span className="text-[11px] text-stone-500 dark:text-stone-400 block -mt-0.5">
-                      Draft posts & broadcast to newsfeed
-                    </span>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    {/* View Switcher: Magazine vs Compact List */}
+                    <div className="flex items-center bg-stone-100 dark:bg-stone-800/80 p-0.5 rounded-lg mr-1 border border-stone-200/60 dark:border-stone-700/60">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          triggerHapticSelection();
+                          setFeedViewMode('magazine');
+                        }}
+                        aria-label="Magazine View"
+                        title="Magazine View"
+                        className={`p-1.5 rounded-md transition-colors ${
+                          feedViewMode === 'magazine'
+                            ? 'bg-white dark:bg-stone-700 text-[#FF6719] shadow-xs'
+                            : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200'
+                        }`}
+                      >
+                        <LayoutList className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          triggerHapticSelection();
+                          setFeedViewMode('compact');
+                        }}
+                        aria-label="Compact List View"
+                        title="Compact Scanner View"
+                        className={`p-1.5 rounded-md transition-colors ${
+                          feedViewMode === 'compact'
+                            ? 'bg-white dark:bg-stone-700 text-[#FF6719] shadow-xs'
+                            : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200'
+                        }`}
+                      >
+                        <Rows3 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={() => setIsSearchOpen(!isSearchOpen)}
+                      aria-label="Search stories"
+                      className={`p-2 rounded-full transition-colors ${
+                        isSearchOpen
+                          ? 'bg-stone-200 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
+                          : 'text-stone-500 hover:text-stone-900 dark:hover:text-stone-100'
+                      }`}
+                    >
+                      <Search className="w-4 h-4" />
+                    </button>
+
+                    <button
+                      onClick={handleRefreshActive}
+                      disabled={isRefreshing || isOffline}
+                      aria-label="Refresh source feed"
+                      title="Reload stories"
+                      className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors disabled:opacity-40"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`} />
+                    </button>
+
+                    <button
+                      onClick={handleMarkSourceAsRead}
+                      aria-label="Mark source as read"
+                      title="Mark stories as read"
+                      className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors"
+                    >
+                      <CheckCheck className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
 
-                <button
-                  onClick={handlePublishPost}
-                  disabled={!writeTitle.trim() || !writeContent.trim() || isPublishing}
-                  className="px-3.5 py-1.5 bg-[#FF6719] hover:bg-[#ff5700] disabled:opacity-40 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>{isPublishing ? 'Publishing...' : 'Publish'}</span>
-                </button>
+                {/* Collapsible Search Input */}
+                {isSearchOpen && (
+                  <div className="mt-1 mb-2 animate-in fade-in duration-100">
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-2.5" />
+                      <input
+                        type="search"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder={`Search in ${selectedFeed?.title || selectedFolder || 'stories'}...`}
+                        className="w-full pl-8 pr-3 py-1.5 bg-stone-100 dark:bg-stone-800/80 rounded-xl text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Navigation Underline Tabs */}
+                <div className="flex items-center gap-1 overflow-x-auto no-scrollbar -mx-4 px-4 pt-0.5">
+                  {[
+                    { id: 'all', label: 'Home' },
+                    { id: 'unread', label: `Unread (${activeSourceUnreadCount})` },
+                    { id: 'bookmarked', label: 'Saved' },
+                    { id: 'offline', label: 'Offline' },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => {
+                        triggerHapticSelection();
+                        setFilterMode(tab.id as any);
+                      }}
+                      className={`relative pb-2.5 px-3 text-[13px] font-medium whitespace-nowrap transition-colors ${
+                        filterMode === tab.id
+                          ? 'text-stone-950 dark:text-stone-50 font-semibold'
+                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+                      }`}
+                    >
+                      <span>{tab.label}</span>
+                      {filterMode === tab.id && (
+                        <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-[#FF6719] rounded-full animate-in fade-in duration-150" />
+                      )}
+                    </button>
+                  ))}
+                </div>
               </header>
 
-              <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-4 no-scrollbar">
-                {/* Draft Form Card */}
-                <form onSubmit={handlePublishPost} className="p-4 rounded-2xl bg-white dark:bg-[#14161B] border border-stone-200/70 dark:border-stone-800/80 shadow-xs space-y-3.5">
-                  <div>
-                    <label className="block text-xs font-semibold text-stone-700 dark:text-stone-300 mb-1">
-                      Post Title <span className="text-[#FF6719]">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={writeTitle}
-                      onChange={(e) => setWriteTitle(e.target.value)}
-                      placeholder="Story headline or travel dispatch..."
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-stone-100/70 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700/70 text-sm font-medium text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+              {/* Articles Feed with Pull to Refresh & Scroll Fill */}
+              <PullToRefresh
+                className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+5.25rem)] pb-28"
+                onScroll={handleFeedScroll}
+                onRefresh={handleRefreshActive}
+                isRefreshing={isRefreshing}
+                refreshFailed={refreshFailed}
+                disabled={isOffline}
+              >
+                <div className="divide-y divide-stone-200/50 dark:divide-stone-800/60">
+                  {displayedArticles.map((article) => (
+                    <ArticleCard
+                      key={article.id}
+                      article={article}
+                      viewMode={feedViewMode}
+                      onSelect={(art) => setActiveArticle(art)}
+                      onToggleBookmark={handleToggleBookmark}
+                      onToggleRead={handleToggleRead}
+                      onOpenTagManager={(art, e) => {
+                        e.stopPropagation();
+                        setTagModalArticle(art);
+                        setIsTagModalOpen(true);
+                      }}
                     />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-stone-600 dark:text-stone-400 mb-1">
-                        Writer Name
-                      </label>
-                      <input
-                        type="text"
-                        value={writeAuthor}
-                        onChange={(e) => setWriteAuthor(e.target.value)}
-                        placeholder="Your name or pen name..."
-                        className="w-full px-3 py-2 rounded-xl bg-stone-100/70 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700/70 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-semibold text-stone-600 dark:text-stone-400 mb-1">
-                        Destination / Region
-                      </label>
-                      <input
-                        type="text"
-                        value={writeLocation}
-                        onChange={(e) => setWriteLocation(e.target.value)}
-                        placeholder="e.g. Bandarban, Sunamganj..."
-                        className="w-full px-3 py-2 rounded-xl bg-stone-100/70 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700/70 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Travel Group Selection with one-tap chips */}
-                  <div>
-                    <label className="block text-[11px] font-semibold text-stone-600 dark:text-stone-400 mb-1.5">
-                      Travel Group / Publication
-                    </label>
-                    <input
-                      type="text"
-                      value={writeGroup}
-                      onChange={(e) => setWriteGroup(e.target.value)}
-                      placeholder="e.g. Travelers of Bangladesh (TOB)..."
-                      className="w-full px-3 py-2 rounded-xl bg-stone-100/70 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700/70 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719] mb-1.5"
-                    />
-                    <div className="flex flex-wrap gap-1.5">
-                      {[
-                        'Travelers of Bangladesh (TOB)',
-                        'Chhayanaut Wanderers',
-                        'Bengal Trekkers Guild',
-                        'BD Travelers Club',
-                        'Solo Explorer BD',
-                      ].map((grp) => (
-                        <button
-                          key={grp}
-                          type="button"
-                          onClick={() => setWriteGroup(grp)}
-                          className={`px-2 py-0.5 rounded-lg text-[10px] font-medium transition-colors ${
-                            writeGroup === grp
-                              ? 'bg-emerald-600 text-white'
-                              : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 hover:bg-stone-200 dark:hover:bg-stone-700'
-                          }`}
-                        >
-                          {grp}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Content Textarea */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-semibold text-stone-700 dark:text-stone-300">
-                        Story Paragraphs <span className="text-[#FF6719]">*</span>
-                      </label>
-                      <span className="text-[10px] text-stone-400">
-                        {writeContent.trim().split(/\s+/).filter(Boolean).length} words · ~{calculateReadTime(writeContent)} min read
-                      </span>
-                    </div>
-                    <textarea
-                      rows={6}
-                      value={writeContent}
-                      onChange={(e) => setWriteContent(e.target.value)}
-                      placeholder="Write your story, travelogue, reflections, or dispatch here. Separate paragraphs with an empty line..."
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-stone-100/70 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700/70 text-xs leading-relaxed text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
-                    />
-                  </div>
-
-                  {/* Cover Photo URL (Optional) with quick presets */}
-                  <div>
-                    <label className="block text-[11px] font-semibold text-stone-600 dark:text-stone-400 mb-1">
-                      Cover Photo URL (Optional)
-                    </label>
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <ImageIcon className="w-3.5 h-3.5 text-stone-400 shrink-0 ml-1" />
-                      <input
-                        type="url"
-                        value={writeCoverImage}
-                        onChange={(e) => setWriteCoverImage(e.target.value)}
-                        placeholder="https://images.unsplash.com/..."
-                        className="flex-1 px-3 py-1.5 rounded-xl bg-stone-100/70 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700/70 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1.5 text-[10px] text-stone-400">
-                      <span>Presets:</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setWriteCoverImage(
-                            'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80'
-                          )
-                        }
-                        className="underline hover:text-stone-200"
-                      >
-                        Hills
-                      </button>
-                      <span>·</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setWriteCoverImage(
-                            'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=800&q=80'
-                          )
-                        }
-                        className="underline hover:text-stone-200"
-                      >
-                        Haor Waters
-                      </button>
-                      <span>·</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setWriteCoverImage(
-                            'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80'
-                          )
-                        }
-                        className="underline hover:text-stone-200"
-                      >
-                        Mountain Peak
-                      </button>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={!writeTitle.trim() || !writeContent.trim() || isPublishing}
-                    className="w-full py-2.5 bg-[#FF6719] hover:bg-[#ff5700] disabled:opacity-40 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>{isPublishing ? 'Publishing Story...' : 'Publish to Newsfeed'}</span>
-                  </button>
-                </form>
-
-                {/* Local State List: Published Stories by this device */}
-                <div className="pt-2">
-                  <div className="flex items-center justify-between mb-2">
-                    <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-500">
-                      Your Published Stories ({userPosts.length})
-                    </h2>
-                    <span className="text-[11px] text-stone-400">Persisted locally in feed</span>
-                  </div>
-
-                  {userPosts.length === 0 ? (
-                    <div className="p-6 rounded-2xl border border-dashed border-stone-200 dark:border-stone-800 text-center text-xs text-stone-400">
-                      <p>You haven’t published any stories yet.</p>
-                      <p className="mt-1 text-[11px]">Draft a story above and tap Publish to see it broadcast in your newsfeed!</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {userPosts.map((post) => (
-                        <div
-                          key={post.id}
-                          onClick={() => setActiveArticle(post)}
-                          className="p-3.5 rounded-2xl bg-white dark:bg-[#14161B] border border-stone-200/70 dark:border-stone-800/80 shadow-xs hover:border-[#FF6719]/40 transition-colors cursor-pointer flex items-start justify-between gap-3 group"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <span className="text-[10px] font-semibold text-[#FF6719] block mb-0.5">
-                              {post.feedTitle}
-                            </span>
-                            <h3 className="font-serif font-bold text-sm text-stone-900 dark:text-stone-100 line-clamp-1 mb-1 group-hover:text-[#FF6719] transition-colors">
-                              {post.title}
-                            </h3>
-                            <p className="text-xs text-stone-500 dark:text-stone-400 line-clamp-2 leading-relaxed mb-2">
-                              {post.summary}
-                            </p>
-                            <div className="flex items-center gap-2 text-[10px] text-stone-400">
-                              <span>By {post.author || 'You'}</span>
-                              <span>·</span>
-                              <span>{post.readTimeMin}m read</span>
-                              <span>·</span>
-                              <span className="text-emerald-500 font-medium">In Feed</span>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-1 shrink-0 pt-0.5">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setActiveArticle(post);
-                              }}
-                              className="p-1.5 rounded-lg text-stone-400 hover:text-stone-100 hover:bg-stone-800 transition-colors"
-                              title="Read full story"
-                            >
-                              <BookOpen className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => handleDeleteUserPost(post.id, e)}
-                              className="p-1.5 rounded-lg text-stone-400 hover:text-red-400 hover:bg-stone-800 transition-colors"
-                              title="Delete story"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  ))}
                 </div>
-              </div>
+
+                {displayedArticles.length === 0 && (
+                  <div className="py-16 px-6 text-center text-stone-500">
+                    <p className="font-serif text-base text-stone-800 dark:text-stone-200 mb-1">
+                      No stories found for this filter
+                    </p>
+                    <p className="text-xs mb-4">
+                      Try switching filters or pull down to check for new articles.
+                    </p>
+                    <button
+                      onClick={() => {
+                        setFilterMode('all');
+                        setSearchQuery('');
+                        setSelectedTagId(null);
+                        setSelectedFeedId(null);
+                        setSelectedFolder(null);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-stone-200 dark:bg-stone-800 text-stone-800 dark:text-stone-200"
+                    >
+                      Show All Stories
+                    </button>
+                  </div>
+                )}
+              </PullToRefresh>
             </div>
-          )}
+          </div>
+        )}
 
           {/* TAB 2: TAGS & CATEGORIES */}
           {currentTab === 'tags' && (
@@ -1466,15 +1155,14 @@ export default function App() {
             <SourcesSection
               feeds={feeds}
               articles={articles}
+              folders={folders}
               selectedFeedId={selectedFeedId}
+              selectedFolder={selectedFolder}
               isRefreshing={isRefreshing}
               isOffline={isOffline}
               onSelectSource={(feed) => handleSelectSource(feed)}
-              onSelectAllSources={() => {
-                setSelectedFeedId(null);
-                setSelectedTagId(null);
-                setCurrentTab('stories');
-              }}
+              onSelectFolder={(folderName) => handleSelectFolder(folderName)}
+              onCreateFolder={(folderName) => handleCreateFolder(folderName)}
               onRefreshFeed={async (feed) => {
                 await handleSelectSource(feed);
               }}
@@ -1497,6 +1185,7 @@ export default function App() {
               setIsHeaderVisible(true);
               if (tab === 'stories') {
                 setSelectedFeedId(null);
+                setSelectedFolder(null);
                 setSelectedTagId(null);
                 setFilterMode('all');
               } else {
@@ -1551,6 +1240,8 @@ export default function App() {
         onClose={() => setIsFeedModalOpen(false)}
         feeds={feeds}
         tags={tags}
+        folders={folders}
+        onCreateFolder={handleCreateFolder}
         onAddFeed={handleAddFeed}
         onDeleteFeed={handleDeleteFeed}
         onImportOPML={handleImportOPML}

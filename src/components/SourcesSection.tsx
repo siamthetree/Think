@@ -5,10 +5,10 @@ import {
   RefreshCw,
   Trash2,
   Check,
-  Globe,
-  Sparkles,
-  Layers,
+  Folder,
+  FolderPlus,
   ChevronRight,
+  ChevronDown,
   X,
 } from 'lucide-react';
 import type { Feed, FeedItem } from '../types';
@@ -18,115 +18,65 @@ import { triggerHapticSelection, triggerHapticComplete, triggerHapticError } fro
 interface SourcesSectionProps {
   feeds: Feed[];
   articles: FeedItem[];
+  folders: string[];
   selectedFeedId: string | null;
+  selectedFolder: string | null;
   isRefreshing: boolean;
   isOffline: boolean;
   onSelectSource: (feed: Feed) => void;
-  onSelectAllSources: () => void;
+  onSelectFolder: (folderName: string) => void;
+  onCreateFolder: (folderName: string) => void;
   onRefreshFeed: (feed: Feed) => Promise<void>;
   onRefreshAll: () => Promise<void>;
   onDeleteFeed: (feedId: string) => void;
   onAddFeed: (feed: Omit<Feed, 'id'>) => void;
   onOpenFeedModal: () => void;
-  onLoadDirectUrl: (url: string) => void;
+  onLoadDirectUrl: (url: string, folderName?: string, customTitle?: string) => void;
   isLoadingDirectUrl: boolean;
   onOpenIosModal: () => void;
 }
 
-const CURATED_PRESETS = [
-  {
-    title: 'The Daily Star',
-    url: 'https://www.thedailystar.net/rss.xml',
-    siteUrl: 'https://www.thedailystar.net',
-    category: 'Bangladesh',
-    tags: ['tag_bd', 'tag_investigative'],
-  },
-  {
-    title: 'Prothom Alo (English)',
-    url: 'https://en.prothomalo.com/feed',
-    siteUrl: 'https://en.prothomalo.com',
-    category: 'Bangladesh',
-    tags: ['tag_bd', 'tag_world'],
-  },
-  {
-    title: 'প্রথম আলো (Prothom Alo Bangla)',
-    url: 'https://www.prothomalo.com/feed',
-    siteUrl: 'https://www.prothomalo.com',
-    category: 'Bangladesh',
-    tags: ['tag_bd'],
-  },
-  {
-    title: 'The Business Standard (TBS)',
-    url: 'https://www.tbsnews.net',
-    siteUrl: 'https://www.tbsnews.net',
-    category: 'Finance',
-    tags: ['tag_bd', 'tag_markets'],
-  },
-  {
-    title: 'bdnews24.com',
-    url: 'https://bdnews24.com',
-    siteUrl: 'https://bdnews24.com',
-    category: 'Bangladesh',
-    tags: ['tag_bd', 'tag_breaking'],
-  },
-  {
-    title: 'The Financial Express (BD)',
-    url: 'https://thefinancialexpress.com.bd',
-    siteUrl: 'https://thefinancialexpress.com.bd',
-    category: 'Finance',
-    tags: ['tag_bd', 'tag_markets'],
-  },
-  {
-    title: 'Dhaka Tribune',
-    url: 'https://www.dhakatribune.com',
-    siteUrl: 'https://www.dhakatribune.com',
-    category: 'Bangladesh',
-    tags: ['tag_bd', 'tag_opinion'],
-  },
-  {
-    title: 'BBC News',
-    url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
-    siteUrl: 'https://bbc.com/news',
-    category: 'World',
-    tags: ['tag_world', 'tag_breaking'],
-  },
-  {
-    title: 'The Guardian',
-    url: 'https://www.theguardian.com/world/rss',
-    siteUrl: 'https://theguardian.com',
-    category: 'World',
-    tags: ['tag_world', 'tag_opinion'],
-  },
-  {
-    title: 'Bangladeshi Travel Dispatches',
-    url: '/api/blogs',
-    siteUrl: 'https://chinta.app/travel',
-    category: 'Community',
-    tags: ['tag_travel', 'tag_bd'],
-  },
-];
-
 export const SourcesSection: React.FC<SourcesSectionProps> = ({
   feeds,
   articles,
+  folders,
   selectedFeedId,
+  selectedFolder,
   isRefreshing,
   isOffline,
   onSelectSource,
-  onSelectAllSources,
+  onSelectFolder,
+  onCreateFolder,
   onRefreshFeed,
   onRefreshAll,
   onDeleteFeed,
   onAddFeed,
   onOpenFeedModal,
-  onLoadDirectUrl,
-  isLoadingDirectUrl,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
-  const [showPresets, setShowPresets] = useState(false);
   const [inputUrl, setInputUrl] = useState('');
+  const [inputTitle, setInputTitle] = useState('');
+  const [selectedFolderForNew, setSelectedFolderForNew] = useState<string>(
+    folders[0] || 'Bangladesh'
+  );
+  const [isCreatingNewFolder, setIsCreatingNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null);
+
+  // Combine persisted folders + any categories present on feeds
+  const allFolders = useMemo(() => {
+    const set = new Set<string>(folders);
+    for (const f of feeds) {
+      if (f.category && f.category.trim()) {
+        set.add(f.category.trim());
+      } else {
+        set.add('General');
+      }
+    }
+    return Array.from(set);
+  }, [folders, feeds]);
 
   // Filtered feeds by search query
   const filteredFeeds = useMemo(() => {
@@ -140,19 +90,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     );
   }, [feeds, searchQuery]);
 
-  // Unsubscribed presets
-  const availablePresets = useMemo(() => {
-    const subscribedUrls = new Set(feeds.map((f) => f.url.toLowerCase().replace(/\/+$/, '')));
-    return CURATED_PRESETS.filter((p) => {
-      const cleanUrl = p.url.toLowerCase().replace(/\/+$/, '');
-      return !subscribedUrls.has(cleanUrl);
-    });
-  }, [feeds]);
-
-  const totalUnreadCount = useMemo(() => {
-    return articles.filter((a) => !a.isRead).length;
-  }, [articles]);
-
+  // Unread counts per feed
   const unreadCountByFeed = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const a of articles) {
@@ -163,14 +101,42 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     return counts;
   }, [articles]);
 
-  const handleSelect = (feed: Feed) => {
+  // Group filtered feeds by folder
+  const groupedByFolder = useMemo(() => {
+    const map = new Map<string, Feed[]>();
+    for (const folder of allFolders) {
+      map.set(folder, []);
+    }
+    for (const feed of filteredFeeds) {
+      const folder = feed.category?.trim() || 'General';
+      if (!map.has(folder)) {
+        map.set(folder, []);
+      }
+      map.get(folder)!.push(feed);
+    }
+    // When searching, hide empty folders; otherwise show all folders that have feeds or were explicitly created
+    return Array.from(map.entries()).filter(
+      ([, list]) => list.length > 0 || (!searchQuery.trim() && folders.length > 0)
+    );
+  }, [allFolders, filteredFeeds, searchQuery, folders]);
+
+  const toggleFolderCollapse = (e: React.MouseEvent, folderName: string) => {
+    e.stopPropagation();
     triggerHapticSelection();
-    onSelectSource(feed);
+    setCollapsedFolders((prev) => ({
+      ...prev,
+      [folderName]: !prev[folderName],
+    }));
   };
 
-  const handleSelectAll = () => {
+  const handleFolderClick = (folderName: string) => {
     triggerHapticSelection();
-    onSelectAllSources();
+    onSelectFolder(folderName);
+  };
+
+  const handleSelectFeed = (feed: Feed) => {
+    triggerHapticSelection();
+    onSelectSource(feed);
   };
 
   const handleSingleRefresh = async (e: React.MouseEvent, feed: Feed) => {
@@ -195,43 +161,62 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
 
   const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const url = inputUrl.trim();
-    if (!url) return;
-    triggerHapticSelection();
-    onLoadDirectUrl(url);
-    setInputUrl('');
-    setIsAddOpen(false);
-  };
+    const rawUrl = inputUrl.trim();
+    if (!rawUrl) return;
 
-  const handleAddPreset = (preset: (typeof CURATED_PRESETS)[0]) => {
     triggerHapticSelection();
+
+    let targetFolder = selectedFolderForNew.trim() || 'Bangladesh';
+    if (isCreatingNewFolder && newFolderName.trim()) {
+      targetFolder = newFolderName.trim();
+      onCreateFolder(targetFolder);
+    }
+
+    const formattedUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+    let cleanTitle = inputTitle.trim();
+    if (!cleanTitle) {
+      try {
+        const u = new URL(formattedUrl);
+        cleanTitle = u.hostname.replace(/^www\./, '');
+      } catch {
+        cleanTitle = 'Newspaper Source';
+      }
+    }
+
     onAddFeed({
-      title: preset.title,
-      url: preset.url,
-      siteUrl: preset.siteUrl,
-      category: preset.category,
-      defaultTags: preset.tags,
+      title: cleanTitle,
+      url: formattedUrl,
+      siteUrl: formattedUrl,
+      category: targetFolder,
+      defaultTags: ['tag_bd'],
       unreadCount: 0,
     });
+
+    setInputUrl('');
+    setInputTitle('');
+    setNewFolderName('');
+    setIsCreatingNewFolder(false);
+    setIsAddOpen(false);
     triggerHapticComplete();
   };
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-stone-50 dark:bg-[#090A0C]">
-      {/* Minimal Apple Navigation Bar */}
-      <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-2.5 bg-white/80 dark:bg-[#090A0C]/80 backdrop-blur-2xl border-b border-stone-200/60 dark:border-white/[0.06] z-10">
+      {/* Minimal iOS 26 Liquid Glass Navigation Header */}
+      <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-2.5 liquid-glass-header border-b border-stone-200/60 dark:border-white/[0.07] z-10">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-baseline gap-2">
             <h1 className="font-serif text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">
               Sources
             </h1>
-            <span className="text-xs text-stone-400 font-mono">
+            <span className="text-xs text-stone-400 font-mono tabular-nums">
               {feeds.length}
             </span>
           </div>
 
           <div className="flex items-center gap-1">
             <button
+              type="button"
               onClick={() => {
                 triggerHapticSelection();
                 onRefreshAll();
@@ -239,252 +224,337 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
               disabled={isRefreshing || isOffline}
               aria-label="Refresh all sources"
               title="Refresh all"
-              className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors disabled:opacity-40 active:scale-95"
+              className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors disabled:opacity-40 active:scale-95"
             >
               <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`} />
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 triggerHapticSelection();
                 setIsAddOpen(!isAddOpen);
               }}
-              aria-label="Add source"
-              title="Add source"
-              className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition-colors active:scale-95"
+              aria-label="Add source or folder"
+              title="Add source or folder"
+              className={`min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full transition-colors active:scale-95 ${
+                isAddOpen
+                  ? 'bg-[#FF6719] text-white'
+                  : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
+              }`}
             >
               {isAddOpen ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4 stroke-[2.2]" />}
             </button>
           </div>
         </div>
 
-        {/* Compact Search Bar */}
+        {/* Minimal Search Bar */}
         <div className="relative">
-          <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-2.5" />
+          <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-2.5 pointer-events-none" />
           <input
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search sources..."
-            className="w-full pl-8 pr-3 py-1.5 rounded-xl text-xs bg-stone-100 dark:bg-stone-900 border border-transparent dark:border-white/[0.06] text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+            placeholder="Filter folders or sources..."
+            className="w-full pl-8 pr-3 py-1.5 rounded-xl text-xs bg-stone-200/60 dark:bg-white/[0.06] border border-transparent dark:border-white/[0.06] text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
           />
         </div>
       </header>
 
-      {/* Main List Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 pb-28 space-y-3 no-scrollbar">
-        {/* Minimal Add Input (Collapsible) */}
+      {/* Main Scrollable Folder & Source List */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 pb-28 space-y-3.5 no-scrollbar">
+        {/* Collapsible Add Source + Folder Creation Card */}
         {isAddOpen && (
           <form
             onSubmit={handleAddSubmit}
-            className="p-3 rounded-2xl liquid-glass border border-[#FF6719]/30 shadow-xs flex items-center gap-2 animate-in fade-in slide-in-from-top-1 duration-150"
+            className="p-3.5 rounded-2xl liquid-glass border border-[#FF6719]/30 shadow-sm space-y-3 animate-in fade-in slide-in-from-top-1 duration-150"
           >
-            <input
-              type="text"
-              required
-              autoFocus
-              value={inputUrl}
-              onChange={(e) => setInputUrl(e.target.value)}
-              placeholder="Paste newspaper portal or RSS URL..."
-              className="flex-1 px-3 py-1.5 text-xs bg-transparent text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none"
-            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-stone-900 dark:text-stone-100">
+                Add News Source
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsAddOpen(false)}
+                className="text-[11px] text-stone-400 hover:text-stone-600 dark:hover:text-stone-200"
+              >
+                Cancel
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <input
+                type="text"
+                required
+                autoFocus
+                value={inputUrl}
+                onChange={(e) => setInputUrl(e.target.value)}
+                placeholder="Website or RSS URL (e.g. bdnews24.com)"
+                className="w-full px-3 py-2 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-stone-200/80 dark:border-white/[0.08] text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+              />
+
+              <input
+                type="text"
+                value={inputTitle}
+                onChange={(e) => setInputTitle(e.target.value)}
+                placeholder="Source Title (optional)"
+                className="w-full px-3 py-2 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-stone-200/80 dark:border-white/[0.08] text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+              />
+            </div>
+
+            {/* Folder Selection & New Folder Creation */}
+            <div className="space-y-2 pt-0.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-medium text-stone-500 dark:text-stone-400 flex items-center gap-1.5">
+                  <Folder className="w-3.5 h-3.5 text-[#FF6719]" />
+                  <span>Folder</span>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHapticSelection();
+                    setIsCreatingNewFolder(!isCreatingNewFolder);
+                  }}
+                  className="text-[11px] font-semibold text-[#FF6719] flex items-center gap-1 hover:opacity-80"
+                >
+                  <FolderPlus className="w-3 h-3" />
+                  <span>{isCreatingNewFolder ? 'Choose Existing' : '+ New Folder'}</span>
+                </button>
+              </div>
+
+              {isCreatingNewFolder ? (
+                <input
+                  type="text"
+                  required
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="Enter new folder name (e.g. Tech, Politics)..."
+                  className="w-full px-3 py-2 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-[#FF6719]/50 text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+                />
+              ) : (
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+                  {allFolders.map((folder) => {
+                    const isPicked = selectedFolderForNew === folder;
+                    return (
+                      <button
+                        key={folder}
+                        type="button"
+                        onClick={() => {
+                          triggerHapticSelection();
+                          setSelectedFolderForNew(folder);
+                        }}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap shrink-0 transition-all ${
+                          isPicked
+                            ? 'bg-[#FF6719] text-white font-semibold shadow-xs'
+                            : 'bg-stone-200/70 dark:bg-white/[0.06] text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
+                        }`}
+                      >
+                        {folder}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             <button
               type="submit"
-              disabled={!inputUrl.trim() || isLoadingDirectUrl}
-              className="px-3 py-1.5 bg-[#FF6719] hover:bg-[#FF5500] text-white rounded-xl text-xs font-semibold disabled:opacity-40 transition-colors shrink-0 shadow-xs active:scale-95"
+              disabled={!inputUrl.trim() || (isCreatingNewFolder && !newFolderName.trim())}
+              className="w-full py-2.5 bg-[#FF6719] hover:bg-[#FF5500] text-white rounded-xl text-xs font-semibold disabled:opacity-40 transition-all shadow-xs active:scale-[0.98]"
             >
-              {isLoadingDirectUrl ? 'Loading...' : 'Add'}
+              Add Source to {isCreatingNewFolder ? newFolderName.trim() || 'New Folder' : selectedFolderForNew}
             </button>
           </form>
         )}
 
-        {/* Unified Stream / All Feeds Row */}
-        <div
-          onClick={handleSelectAll}
-          role="button"
-          tabIndex={0}
-          className={`p-3 rounded-2xl liquid-glass liquid-glass-interactive cursor-pointer flex items-center justify-between transition-all ${
-            !selectedFeedId
-              ? 'ring-1.5 ring-[#FF6719] shadow-[0_2px_12px_rgba(255,103,25,0.15)]'
-              : 'hover:shadow-xs'
-          }`}
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <div
-              className={`w-8 h-8 rounded-xl flex items-center justify-center transition-colors shrink-0 ${
-                !selectedFeedId
-                  ? 'bg-[#FF6719] text-white'
-                  : 'bg-stone-200/80 dark:bg-stone-800 text-stone-600 dark:text-stone-300'
+        {/* Folders & Their Sources */}
+        {groupedByFolder.map(([folderName, folderFeeds]) => {
+          const isCollapsed = Boolean(collapsedFolders[folderName]);
+          const isFolderSelected = selectedFolder === folderName && !selectedFeedId;
+          const folderUnread = folderFeeds.reduce(
+            (sum, f) => sum + (unreadCountByFeed[f.id] || 0),
+            0
+          );
+
+          return (
+            <section
+              key={folderName}
+              className={`rounded-2xl liquid-glass overflow-hidden transition-all ${
+                isFolderSelected
+                  ? 'ring-1.5 ring-[#FF6719] shadow-[0_4px_20px_rgba(255,103,25,0.15)]'
+                  : ''
               }`}
             >
-              <Layers className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <span className="font-serif font-semibold text-sm text-stone-900 dark:text-stone-100 block truncate">
-                All Feeds
-              </span>
-              <span className="text-[11px] text-stone-400 block -mt-0.5">
-                Unified newspaper stream
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            {totalUnreadCount > 0 && (
-              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-stone-200 dark:bg-stone-800 text-stone-600 dark:text-stone-300">
-                {totalUnreadCount}
-              </span>
-            )}
-            {!selectedFeedId ? (
-              <Check className="w-4 h-4 text-[#FF6719]" />
-            ) : (
-              <ChevronRight className="w-4 h-4 text-stone-400" />
-            )}
-          </div>
-        </div>
-
-        {/* Subscribed Feeds Group */}
-        <div className="rounded-2xl liquid-glass overflow-hidden divide-y divide-stone-200/50 dark:divide-white/[0.06] border border-white/40 dark:border-white/[0.08] shadow-xs">
-          {filteredFeeds.map((feed) => {
-            const isSelected = selectedFeedId === feed.id;
-            const unread = unreadCountByFeed[feed.id] || 0;
-            const isThisRefreshing = refreshingFeedId === feed.id;
-
-            return (
+              {/* Folder Row — Clicking opens Newsfeed filtered to this folder's sources */}
               <div
-                key={feed.id}
-                onClick={() => handleSelect(feed)}
+                onClick={() => handleFolderClick(folderName)}
                 role="button"
                 tabIndex={0}
-                className={`group px-3.5 py-3 flex items-center justify-between gap-3 cursor-pointer select-none transition-colors ${
-                  isSelected
-                    ? 'bg-[#FF6719]/8 dark:bg-[#FF6719]/12'
-                    : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleFolderClick(folderName);
+                  }
+                }}
+                className={`px-3.5 py-2.5 flex items-center justify-between gap-2 cursor-pointer select-none border-b border-stone-200/50 dark:border-white/[0.06] transition-colors ${
+                  isFolderSelected
+                    ? 'bg-[#FF6719]/10 dark:bg-[#FF6719]/15'
+                    : 'bg-stone-100/50 dark:bg-white/[0.02] hover:bg-stone-200/40 dark:hover:bg-white/[0.04]'
                 }`}
               >
-                <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <SourceAvatar name={feed.title} url={feed.url} size="sm" />
-                  <div className="min-w-0 flex-1">
-                    <span className="font-serif font-medium text-sm text-stone-900 dark:text-stone-100 block truncate leading-snug">
-                      {feed.title}
-                    </span>
-                    <span className="text-[11px] text-stone-400 dark:text-stone-500 block truncate">
-                      {feed.category || 'Newspaper'}
-                    </span>
-                  </div>
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={(e) => toggleFolderCollapse(e, folderName)}
+                    aria-label={isCollapsed ? `Expand ${folderName}` : `Collapse ${folderName}`}
+                    className="p-1 -ml-1 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
+                  <Folder
+                    className={`w-4 h-4 shrink-0 ${
+                      isFolderSelected ? 'text-[#FF6719]' : 'text-stone-500 dark:text-stone-400'
+                    }`}
+                  />
+
+                  <span className="font-serif font-semibold text-sm text-stone-900 dark:text-stone-100 truncate">
+                    {folderName}
+                  </span>
+
+                  <span className="text-[11px] text-stone-400 font-mono tabular-nums">
+                    ({folderFeeds.length})
+                  </span>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
-                  {unread > 0 && (
-                    <span
-                      className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full ${
-                        isSelected
-                          ? 'bg-[#FF6719] text-white'
-                          : 'bg-stone-200/70 dark:bg-stone-800 text-stone-600 dark:text-stone-300'
-                      }`}
-                    >
-                      {unread}
+                  {folderUnread > 0 && (
+                    <span className="text-[11px] font-mono tabular-nums text-stone-500 dark:text-stone-400">
+                      {folderUnread} unread
                     </span>
                   )}
-
-                  {/* Quick Refresh Icon */}
-                  <button
-                    type="button"
-                    onClick={(e) => handleSingleRefresh(e, feed)}
-                    disabled={isThisRefreshing || isOffline}
-                    title="Refresh this feed"
-                    className="p-1 rounded-md text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isThisRefreshing ? 'animate-spin text-[#FF6719]' : ''}`} />
-                  </button>
-
-                  {/* Remove Button */}
-                  <button
-                    type="button"
-                    onClick={(e) => handleDelete(e, feed)}
-                    title="Remove source"
-                    className="p-1 rounded-md text-stone-300 hover:text-red-500 dark:text-stone-600 dark:hover:text-red-400 transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-
-                  {isSelected && (
-                    <Check className="w-4 h-4 text-[#FF6719] shrink-0" />
-                  )}
+                  <span className="text-[11px] font-medium text-[#FF6719] flex items-center gap-0.5">
+                    <span>Read</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </span>
                 </div>
               </div>
-            );
-          })}
 
-          {filteredFeeds.length === 0 && (
-            <div className="py-8 text-center text-xs text-stone-400">
-              No sources found.
-            </div>
-          )}
-        </div>
+              {/* Sources Inside Folder */}
+              {!isCollapsed && (
+                <div className="divide-y divide-stone-200/40 dark:divide-white/[0.05]">
+                  {folderFeeds.map((feed) => {
+                    const isSelected = selectedFeedId === feed.id;
+                    const unread = unreadCountByFeed[feed.id] || 0;
+                    const isThisRefreshing = refreshingFeedId === feed.id;
 
-        {/* Minimal Curated Discovery Section (Togglable) */}
-        {availablePresets.length > 0 && (
-          <div className="pt-1">
-            <button
-              onClick={() => {
-                triggerHapticSelection();
-                setShowPresets(!showPresets);
-              }}
-              className="w-full py-2.5 px-3 rounded-xl text-xs font-medium text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 transition-colors flex items-center justify-between"
-            >
-              <span className="flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-[#FF6719]" />
-                Discover more news sources ({availablePresets.length})
-              </span>
-              <span className="text-[11px] font-semibold text-[#FF6719]">
-                {showPresets ? 'Hide' : 'Show'}
-              </span>
-            </button>
+                    return (
+                      <div
+                        key={feed.id}
+                        onClick={() => handleSelectFeed(feed)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleSelectFeed(feed);
+                          }
+                        }}
+                        className={`px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer select-none transition-colors ${
+                          isSelected
+                            ? 'bg-[#FF6719]/8 dark:bg-[#FF6719]/12'
+                            : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1 pl-2">
+                          <SourceAvatar name={feed.title} url={feed.url} size="sm" />
+                          <span className="font-serif font-medium text-sm text-stone-900 dark:text-stone-100 truncate">
+                            {feed.title}
+                          </span>
+                        </div>
 
-            {showPresets && (
-              <div className="mt-2 rounded-2xl liquid-glass overflow-hidden divide-y divide-stone-200/50 dark:divide-white/[0.06] border border-white/40 dark:border-white/[0.08] shadow-xs animate-in fade-in duration-150">
-                {availablePresets.map((preset) => (
-                  <div
-                    key={preset.url}
-                    className="px-3.5 py-2.5 flex items-center justify-between gap-3"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                      <SourceAvatar name={preset.title} url={preset.url} size="sm" />
-                      <div className="min-w-0">
-                        <span className="font-serif font-medium text-xs text-stone-900 dark:text-stone-100 block truncate">
-                          {preset.title}
-                        </span>
-                        <span className="text-[10px] text-stone-400 block truncate">
-                          {preset.category}
-                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {unread > 0 && (
+                            <span className="text-[11px] font-mono tabular-nums text-stone-400 dark:text-stone-500 mr-1">
+                              {unread}
+                            </span>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={(e) => handleSingleRefresh(e, feed)}
+                            disabled={isThisRefreshing || isOffline}
+                            title="Refresh source"
+                            aria-label={`Refresh ${feed.title}`}
+                            className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
+                          >
+                            <RefreshCw
+                              className={`w-3.5 h-3.5 ${
+                                isThisRefreshing ? 'animate-spin text-[#FF6719]' : ''
+                              }`}
+                            />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={(e) => handleDelete(e, feed)}
+                            title="Remove source"
+                            aria-label={`Remove ${feed.title}`}
+                            className="p-1.5 rounded-lg text-stone-300 hover:text-red-500 dark:text-stone-600 dark:hover:text-red-400 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+
+                          {isSelected && <Check className="w-4 h-4 text-[#FF6719] shrink-0" />}
+                        </div>
                       </div>
-                    </div>
+                    );
+                  })}
 
-                    <button
-                      onClick={() => handleAddPreset(preset)}
-                      className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 hover:opacity-90 active:scale-95 transition-all flex items-center gap-1"
-                    >
-                      <Plus className="w-3 h-3 stroke-[2.5]" />
-                      <span>Add</span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+                  {folderFeeds.length === 0 && (
+                    <div className="px-4 py-3 text-xs text-stone-400 flex items-center justify-between">
+                      <span>Empty folder</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedFolderForNew(folderName);
+                          setIsCreatingNewFolder(false);
+                          setIsAddOpen(true);
+                        }}
+                        className="text-[#FF6719] font-medium hover:underline"
+                      >
+                        + Add source here
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          );
+        })}
+
+        {groupedByFolder.length === 0 && (
+          <div className="py-12 text-center text-xs text-stone-400">
+            No matching sources found.
           </div>
         )}
 
-        {/* Minimal OPML / Settings Link */}
+        {/* Minimal OPML Link */}
         <div className="pt-2 text-center">
           <button
+            type="button"
             onClick={() => {
               triggerHapticSelection();
               onOpenFeedModal();
             }}
             className="text-[11px] text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
           >
-            Import or Export OPML Subscriptions
+            Manage Folders & OPML Subscriptions
           </button>
         </div>
       </div>

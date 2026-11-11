@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, Plus, Trash2, Rss, Download, Upload, Check, Globe } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { X, Plus, Trash2, Download, Upload, Check, Folder, FolderPlus } from 'lucide-react';
 import type { Feed, Tag } from '../types';
 import { SourceAvatar } from './SourceAvatar';
 import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
@@ -9,6 +9,8 @@ interface FeedManagerModalProps {
   onClose: () => void;
   feeds: Feed[];
   tags: Tag[];
+  folders?: string[];
+  onCreateFolder?: (folderName: string) => void;
   onAddFeed: (feed: Omit<Feed, 'id'>) => void;
   onDeleteFeed: (feedId: string) => void;
   onImportOPML: (xmlText: string) => void;
@@ -52,7 +54,7 @@ const CURATED_NEWSPAPER_PRESETS = [
     title: 'The Financial Express (BD)',
     url: 'https://thefinancialexpress.com.bd',
     siteUrl: 'https://thefinancialexpress.com.bd',
-    category: 'Direct Portal',
+    category: 'Bangladesh Finance',
     description: 'Financial, trade, and market news from Dhaka without needing RSS.',
     tags: ['tag_bd', 'tag_markets'],
   },
@@ -60,7 +62,7 @@ const CURATED_NEWSPAPER_PRESETS = [
     title: 'The Business Standard (TBS)',
     url: 'https://www.tbsnews.net',
     siteUrl: 'https://www.tbsnews.net',
-    category: 'Direct Portal',
+    category: 'Bangladesh Finance',
     description: 'Business, economy, and policy coverage in Bangladesh.',
     tags: ['tag_bd', 'tag_markets'],
   },
@@ -68,7 +70,7 @@ const CURATED_NEWSPAPER_PRESETS = [
     title: 'Dhaka Tribune',
     url: 'https://www.dhakatribune.com',
     siteUrl: 'https://www.dhakatribune.com',
-    category: 'Direct Portal',
+    category: 'Bangladesh',
     description: 'National politics, foreign affairs, and Dhaka dispatches.',
     tags: ['tag_bd', 'tag_opinion'],
   },
@@ -76,7 +78,7 @@ const CURATED_NEWSPAPER_PRESETS = [
     title: 'New Age Bangladesh',
     url: 'https://www.newagebd.net',
     siteUrl: 'https://www.newagebd.net',
-    category: 'Direct Portal',
+    category: 'Bangladesh',
     description: 'Outspoken English daily newspaper published from Dhaka.',
     tags: ['tag_bd', 'tag_opinion'],
   },
@@ -95,6 +97,8 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
   onClose,
   feeds,
   tags,
+  folders = [],
+  onCreateFolder,
   onAddFeed,
   onDeleteFeed,
   onImportOPML,
@@ -104,14 +108,33 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
   const [customTitle, setCustomTitle] = useState('');
   const [customUrl, setCustomUrl] = useState('');
   const [customCategory, setCustomCategory] = useState('Bangladesh');
+  const [isCreatingNewFolder, setIsCreatingNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
   const [selectedDefaultTags, setSelectedDefaultTags] = useState<string[]>(['tag_bd']);
   const [addedPresetUrls, setAddedPresetUrls] = useState<string[]>([]);
+
+  const availableFolders = useMemo(() => {
+    const set = new Set<string>(['Bangladesh', 'Bangladesh (বাংলা)', 'Bangladesh Finance', 'World']);
+    for (const f of folders) {
+      if (f.trim()) set.add(f.trim());
+    }
+    for (const feed of feeds) {
+      if (feed.category?.trim()) set.add(feed.category.trim());
+    }
+    return Array.from(set);
+  }, [folders, feeds]);
 
   if (!isOpen) return null;
 
   const handleAddCustom = (e: React.FormEvent) => {
     e.preventDefault();
     if (!customUrl.trim()) return;
+
+    let finalFolder = customCategory.trim() || 'Bangladesh';
+    if (isCreatingNewFolder && newFolderName.trim()) {
+      finalFolder = newFolderName.trim();
+      onCreateFolder?.(finalFolder);
+    }
 
     let cleanTitle = customTitle.trim();
     if (!cleanTitle) {
@@ -123,22 +146,26 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
       }
     }
 
+    triggerHapticComplete();
     onAddFeed({
       title: cleanTitle,
-      url: customUrl.trim(),
-      siteUrl: customUrl.trim(),
-      category: customCategory,
+      url: customUrl.trim().startsWith('http') ? customUrl.trim() : `https://${customUrl.trim()}`,
+      siteUrl: customUrl.trim().startsWith('http') ? customUrl.trim() : `https://${customUrl.trim()}`,
+      category: finalFolder,
       defaultTags: selectedDefaultTags,
       unreadCount: 0,
     });
 
     setCustomTitle('');
     setCustomUrl('');
+    setNewFolderName('');
+    setIsCreatingNewFolder(false);
     setSelectedDefaultTags(['tag_bd']);
     onClose();
   };
 
   const handleAddPreset = (preset: (typeof CURATED_NEWSPAPER_PRESETS)[0]) => {
+    triggerHapticComplete();
     onAddFeed({
       title: preset.title,
       url: preset.url,
@@ -344,12 +371,12 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
                   Newspaper Website URL or RSS URL *
                 </label>
                 <input
-                  type="url"
+                  type="text"
                   required
                   value={customUrl}
                   onChange={(e) => setCustomUrl(e.target.value)}
                   placeholder="https://bdnews24.com or https://www.prothomalo.com"
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
                 />
               </div>
 
@@ -362,8 +389,62 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
                   value={customTitle}
                   onChange={(e) => setCustomTitle(e.target.value)}
                   placeholder="e.g. Samakal / সমকাল"
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
                 />
+              </div>
+
+              {/* Folder Selection or Create New Folder */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-medium text-stone-500 flex items-center gap-1">
+                    <Folder className="w-3 h-3 text-[#FF6719]" />
+                    <span>Folder</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHapticSelection();
+                      setIsCreatingNewFolder(!isCreatingNewFolder);
+                    }}
+                    className="text-[11px] font-semibold text-[#FF6719] hover:opacity-80 flex items-center gap-1 transition-opacity"
+                  >
+                    <FolderPlus className="w-3 h-3" />
+                    <span>{isCreatingNewFolder ? 'Select Existing' : '+ New Folder'}</span>
+                  </button>
+                </div>
+
+                {isCreatingNewFolder ? (
+                  <input
+                    type="text"
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    placeholder="Enter new folder name (e.g. Tech, Politics)..."
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-[#FF6719]/50 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+                  />
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {availableFolders.map((folder) => {
+                      const active = customCategory === folder;
+                      return (
+                        <button
+                          key={folder}
+                          type="button"
+                          onClick={() => {
+                            triggerHapticSelection();
+                            setCustomCategory(folder);
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                            active
+                              ? 'bg-[#FF6719] text-white shadow-2xs'
+                              : 'border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-700 dark:text-stone-300'
+                          }`}
+                        >
+                          {folder}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               <div>
@@ -384,13 +465,13 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
                         }
                         className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs transition-colors ${
                           isSelected
-                            ? 'bg-blue-600 text-white font-medium'
+                            ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium'
                             : 'border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-700 dark:text-stone-300'
                         }`}
                       >
                         <span
                           className="w-1.5 h-1.5 rounded-full"
-                          style={{ backgroundColor: isSelected ? '#ffffff' : tag.color }}
+                          style={{ backgroundColor: isSelected ? '#FF6719' : tag.color }}
                         />
                         <span>{tag.name}</span>
                       </button>
@@ -402,7 +483,7 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
               <button
                 type="submit"
                 disabled={!customUrl.trim()}
-                className="w-full py-2.5 mt-2 bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-white text-white dark:text-stone-900 rounded-xl text-xs font-semibold disabled:opacity-40 transition-colors shadow-xs"
+                className="w-full py-2.5 mt-2 bg-[#FF6719] hover:bg-[#e8560b] text-white rounded-xl text-xs font-semibold disabled:opacity-40 transition-colors shadow-xs"
               >
                 Add Newspaper Source
               </button>
