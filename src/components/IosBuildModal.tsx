@@ -32,8 +32,11 @@ concurrency:
 jobs:
   build-ipa:
     name: Compile iOS App & Package IPA
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 45
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
 
     steps:
       - name: Checkout Source Code
@@ -64,7 +67,9 @@ jobs:
 
       - name: Select Xcode Version
         run: |
-          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          fi
           xcodebuild -version
 
       - name: Build iOS Archive (.app)
