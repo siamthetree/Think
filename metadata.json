@@ -1,0 +1,6 @@
+{
+  "name": "PaperPress - iPhone RSS Reader",
+  "description": "Minimalist, distraction-free iPhone RSS feed reader with offline reading, customizable tags, and clean newspaper reader view.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

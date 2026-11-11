@@ -1,0 +1,20 @@
+{
+  "appId": "com.paperpress.reader",
+  "appName": "Chinta",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "capacitor",
+    "allowNavigation": ["*"]
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#090A0C",
+    "preferredContentMode": "mobile"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
