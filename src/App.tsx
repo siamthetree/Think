@@ -18,10 +18,13 @@ import { IPhoneFrame } from './components/IPhoneFrame';
 import { ArticleCard } from './components/ArticleCard';
 import { ReaderView } from './components/ReaderView';
 import { TabBar, type TabType } from './components/TabBar';
+import { FeedChipBar } from './components/FeedChipBar';
+import { SourcesSection } from './components/SourcesSection';
 import { TagManagerModal } from './components/TagManagerModal';
 import { FeedManagerModal } from './components/FeedManagerModal';
 import { IosBuildModal } from './components/IosBuildModal';
 import { PullToRefresh } from './components/PullToRefresh';
+import { triggerHapticSelection, triggerHapticComplete } from './utils/haptics';
 import type { Feed, FeedItem, Tag, ReaderPreferences } from './types';
 import {
   loadFeedsFromStorage,
@@ -351,6 +354,7 @@ export default function App() {
 
   // Click handler for a specific source: selects only that source and loads its feed
   const handleSelectSource = async (feed: Feed) => {
+    triggerHapticSelection();
     setSelectedFeedId(feed.id);
     setSelectedTagId(null);
     setFilterMode('all');
@@ -425,9 +429,8 @@ export default function App() {
   };
 
   // Direct URL Loader: Load any article or Bangladeshi news portal URL directly into clean Reader Mode
-  const handleLoadDirectUrl = async (e: React.FormEvent) => {
-    e.preventDefault();
-    let targetUrl = directUrlInput.trim();
+  const processDirectUrl = async (rawUrl: string) => {
+    let targetUrl = rawUrl.trim();
     if (!targetUrl) return;
     if (!/^https?:\/\//i.test(targetUrl)) {
       targetUrl = 'https://' + targetUrl;
@@ -538,6 +541,11 @@ export default function App() {
     } finally {
       setIsLoadingDirectUrl(false);
     }
+  };
+
+  const handleLoadDirectUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await processDirectUrl(directUrlInput);
   };
 
   // Cache extracted article content back into articles state for offline reading
@@ -980,11 +988,28 @@ export default function App() {
                         </button>
                       ))}
                     </div>
+
+                    {/* Newspaper Sources Liquid Glass Pills */}
+                    <div className="pt-1.5 pb-2">
+                      <FeedChipBar
+                        feeds={feeds}
+                        selectedFeedId={selectedFeedId}
+                        onSelectAll={() => {
+                          setSelectedFeedId(null);
+                          setSelectedTagId(null);
+                        }}
+                        onSelectFeed={(feed) => {
+                          handleSelectSource(feed);
+                        }}
+                        unreadCountByFeed={unreadCountByFeed}
+                        totalUnread={totalUnreadCount}
+                      />
+                    </div>
                   </header>
 
                   {/* Active Source's Articles Feed with Pull to Refresh & Scroll Fill */}
                   <PullToRefresh
-                    className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+5.5rem)] pb-28"
+                    className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+8rem)] pb-28"
                     onScroll={handleFeedScroll}
                     onRefresh={handleRefreshActive}
                     isRefreshing={isRefreshing}
@@ -1436,123 +1461,31 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 4: NEWSPAPER SOURCES & DIRECT URL LOADER */}
+          {/* TAB 4: NEWSPAPER SOURCES & CHANNELS */}
           {currentTab === 'feeds' && (
-            <div className="flex-1 flex flex-col h-full overflow-hidden">
-              <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-3 bg-stone-50/95 dark:bg-[#090A0C]/95 backdrop-blur-xl border-b border-stone-200/60 dark:border-stone-800/60">
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <h1 className="font-serif text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">
-                      Newspaper Sources
-                    </h1>
-                    <span className="text-xs text-stone-500">
-                      Click any newspaper to load & read its feed
-                    </span>
-                  </div>
-
-                  <button
-                    onClick={() => setIsFeedModalOpen(true)}
-                    className="px-3 py-1.5 bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-white text-white dark:text-stone-900 rounded-xl text-xs font-medium flex items-center gap-1.5 shadow-xs"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add Feed</span>
-                  </button>
-                </div>
-
-                {/* Direct URL Reader input in Sources tab too */}
-                <form onSubmit={handleLoadDirectUrl} className="mt-1">
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="text"
-                      value={directUrlInput}
-                      onChange={(e) => setDirectUrlInput(e.target.value)}
-                      placeholder="Paste any BD portal or article URL to read..."
-                      aria-label="Paste any portal or article URL"
-                      className="flex-1 px-3 py-1.5 bg-white dark:bg-stone-800 rounded-xl text-xs border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-emerald-600"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!directUrlInput.trim() || isLoadingDirectUrl}
-                      className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold disabled:opacity-40 transition-colors shrink-0"
-                    >
-                      {isLoadingDirectUrl ? 'Loading...' : 'Load URL'}
-                    </button>
-                  </div>
-                </form>
-              </header>
-
-              <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-3 no-scrollbar">
-                {feeds.map((feed) => {
-                  const feedArticles = articles.filter((a) => a.feedId === feed.id);
-                  const unread = feedArticles.filter((a) => !a.isRead).length;
-
-                  return (
-                    <div
-                      key={feed.id}
-                      onClick={() => handleSelectSource(feed)}
-                      className="p-3.5 rounded-2xl border border-stone-200/80 dark:border-stone-800 bg-white/60 dark:bg-stone-800/40 hover:bg-white dark:hover:bg-stone-800 transition-all shadow-xs cursor-pointer"
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1 min-w-0 pr-2">
-                          <span className="font-serif font-semibold text-sm text-stone-900 dark:text-stone-100 block truncate">
-                            {feed.title}
-                          </span>
-                          <span className="text-[11px] text-stone-500 dark:text-stone-400 block truncate">
-                            {feed.url}
-                          </span>
-                        </div>
-
-                        <span className="text-xs font-medium text-stone-600 dark:text-stone-300">
-                          {feedArticles.length} stories
-                        </span>
-                      </div>
-
-                      <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-stone-200/60 dark:border-stone-800/60 text-xs text-stone-500">
-                        <span>{unread} unread</span>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleSelectSource(feed);
-                            }}
-                            className="text-emerald-700 dark:text-emerald-400 font-semibold"
-                          >
-                            Load Source Feed →
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteFeed(feed.id);
-                            }}
-                            className="text-stone-400 hover:text-red-600"
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                <div className="pt-2 space-y-2">
-                  <button
-                    onClick={() => setIsFeedModalOpen(true)}
-                    className="w-full py-3 rounded-2xl border border-dashed border-stone-300 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                  >
-                    + Discover & Add More Bangladeshi Newspapers
-                  </button>
-
-                  <button
-                    onClick={() => setIsIosModalOpen(true)}
-                    className="w-full py-3 rounded-2xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold hover:opacity-90 transition-opacity flex items-center justify-center gap-1.5"
-                  >
-                    <span>Export to GitHub & Build iOS .ipa</span>
-                  </button>
-                </div>
-              </div>
-            </div>
+            <SourcesSection
+              feeds={feeds}
+              articles={articles}
+              selectedFeedId={selectedFeedId}
+              isRefreshing={isRefreshing}
+              isOffline={isOffline}
+              onSelectSource={(feed) => handleSelectSource(feed)}
+              onSelectAllSources={() => {
+                setSelectedFeedId(null);
+                setSelectedTagId(null);
+                setCurrentTab('stories');
+              }}
+              onRefreshFeed={async (feed) => {
+                await handleSelectSource(feed);
+              }}
+              onRefreshAll={handleRefreshActive}
+              onDeleteFeed={handleDeleteFeed}
+              onAddFeed={handleAddFeed}
+              onOpenFeedModal={() => setIsFeedModalOpen(true)}
+              onLoadDirectUrl={(url) => processDirectUrl(url)}
+              isLoadingDirectUrl={isLoadingDirectUrl}
+              onOpenIosModal={() => setIsIosModalOpen(true)}
+            />
           )}
 
           {/* Bottom iOS Navigation Bar */}

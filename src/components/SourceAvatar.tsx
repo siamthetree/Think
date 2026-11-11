@@ -1,24 +1,82 @@
-import React from 'react';
+import React, { useState } from 'react';
 
-interface SourceAvatarProps {
+export interface SourceAvatarProps {
   name: string;
+  url?: string;
   iconUrl?: string;
-  size?: 'sm' | 'md';
+  size?: 'sm' | 'md' | 'lg';
 }
 
-export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, iconUrl, size = 'sm' }) => {
+const BRAND_GRADIENTS: Record<string, string> = {
+  daily: 'from-blue-600 to-indigo-800 text-white',
+  prothom: 'from-red-600 to-rose-800 text-white',
+  প্রথম: 'from-red-600 to-rose-800 text-white',
+  business: 'from-amber-600 to-orange-700 text-white',
+  tbs: 'from-amber-600 to-orange-700 text-white',
+  bdnews: 'from-emerald-600 to-teal-800 text-white',
+  tribune: 'from-teal-600 to-cyan-800 text-white',
+  financial: 'from-cyan-700 to-blue-900 text-white',
+  bbc: 'from-red-700 to-red-950 text-white',
+  guardian: 'from-blue-800 to-slate-900 text-white',
+  travel: 'from-emerald-600 to-green-800 text-white',
+  jugantor: 'from-orange-600 to-red-700 text-white',
+  যুগান্তর: 'from-orange-600 to-red-700 text-white',
+};
+
+function getGradientForName(name: string): string {
+  const lower = name.toLowerCase();
+  for (const [key, gradient] of Object.entries(BRAND_GRADIENTS)) {
+    if (lower.includes(key)) return gradient;
+  }
+  const charCode = name.charCodeAt(0) || 65;
+  const fallbacks = [
+    'from-indigo-600 to-violet-800 text-white',
+    'from-emerald-600 to-teal-800 text-white',
+    'from-orange-500 to-amber-700 text-white',
+    'from-rose-600 to-pink-800 text-white',
+    'from-sky-600 to-blue-800 text-white',
+  ];
+  return fallbacks[charCode % fallbacks.length];
+}
+
+export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, url, iconUrl, size = 'sm' }) => {
+  const [imgError, setImgError] = useState(false);
   const initials = name.trim().slice(0, 1).toUpperCase() || '?';
-  const sizeClass = size === 'md' ? 'h-9 w-9 text-sm' : 'h-6 w-6 text-[10px]';
+
+  let faviconUrl = iconUrl;
+  if (!faviconUrl && url) {
+    try {
+      const hostname = new URL(url.startsWith('http') ? url : `https://${url}`).hostname;
+      if (hostname && !hostname.includes('localhost') && !hostname.startsWith('api')) {
+        faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`;
+      }
+    } catch {}
+  }
+
+  const sizeClass =
+    size === 'lg'
+      ? 'h-11 w-11 text-base rounded-2xl shadow-md'
+      : size === 'md'
+      ? 'h-9 w-9 text-xs rounded-xl shadow-xs'
+      : 'h-6 w-6 text-[10px] rounded-lg shadow-2xs';
+
+  const gradient = getGradientForName(name);
 
   return (
     <span
-      className={`source-avatar inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-200 font-semibold text-stone-600 dark:bg-stone-800 dark:text-stone-300 ${sizeClass}`}
+      className={`source-avatar relative inline-flex shrink-0 items-center justify-center overflow-hidden bg-gradient-to-br ${gradient} font-bold font-serif select-none ring-1 ring-white/20 ${sizeClass}`}
       aria-hidden="true"
     >
-      {iconUrl ? (
-        <img src={iconUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
+      {faviconUrl && !imgError ? (
+        <img
+          src={faviconUrl}
+          alt=""
+          onError={() => setImgError(true)}
+          className="h-full w-full object-cover p-1 bg-white dark:bg-stone-900 rounded-[inherit]"
+          loading="lazy"
+        />
       ) : (
-        initials
+        <span>{initials}</span>
       )}
     </span>
   );

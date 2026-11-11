@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { X, Plus, Trash2, Rss, Download, Upload, Check, Globe } from 'lucide-react';
 import type { Feed, Tag } from '../types';
+import { SourceAvatar } from './SourceAvatar';
+import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
 
 interface FeedManagerModalProps {
   isOpen: boolean;
@@ -163,8 +165,8 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150">
-      <div className="w-full max-w-md bg-white dark:bg-stone-900 rounded-3xl p-5 shadow-2xl border border-stone-200 dark:border-stone-800 text-stone-900 dark:text-stone-100 flex flex-col max-h-[88vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-md animate-in fade-in duration-150">
+      <div className="w-full max-w-md liquid-glass rounded-3xl p-5 shadow-2xl border border-white/40 dark:border-white/[0.08] text-stone-900 dark:text-stone-100 flex flex-col max-h-[88vh]">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-stone-200 dark:border-stone-800 mb-3">
           <div className="flex items-center gap-2">
@@ -221,8 +223,9 @@ export const FeedManagerModal: React.FC<FeedManagerModalProps> = ({
               {feeds.map((feed) => (
                 <div
                   key={feed.id}
-                  className="flex items-start justify-between p-3 rounded-2xl border border-stone-200/80 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-800/40"
+                  className="flex items-start justify-between p-3 rounded-2xl liquid-glass border border-white/40 dark:border-white/[0.08] shadow-2xs gap-2.5"
                 >
+                  <SourceAvatar name={feed.title} url={feed.url} size="sm" />
                   <div className="flex-1 min-w-0 pr-2">
                     <span className="font-serif font-semibold text-sm text-stone-900 dark:text-stone-100 block truncate">
                       {feed.title}
