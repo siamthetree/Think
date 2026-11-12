@@ -15,12 +15,16 @@ import type {
 } from '../utils/feedIntelligence';
 import {
   SPOTIFY_BACKDROP_THEMES,
-  renderStoryCardCanvas,
   shareSpotifyStyleStory,
   type StoryBackdropThemeId,
   type StoryCardMode,
   type StoryCardPayload,
 } from '../utils/storyCardRenderer';
+import {
+  DEFAULT_STORY_CARD_TRANSFORM,
+  type StoryCardTransform,
+} from '../utils/mediaShare';
+import { InteractiveStoryPreview } from './InteractiveStoryPreview';
 import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
 import { computeSheetDragState } from '../utils/touchGestures';
 
@@ -43,7 +47,9 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
   const [storyMode, setStoryMode] = useState<StoryCardMode>('wrapped');
   const [themeId, setThemeId] = useState<StoryBackdropThemeId>('sunset');
   const [selectedStoryIdx, setSelectedStoryIdx] = useState(0);
-  const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
+  const [cardTransform, setCardTransform] = useState<StoryCardTransform>(
+    DEFAULT_STORY_CARD_TRANSFORM
+  );
   const [shareFeedback, setShareFeedback] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -63,24 +69,15 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
       imageUrl: selectedStory?.imageUrl,
       quoteText: selectedStory?.title || 'Read with clarity, free from noise.',
       stats,
+      transform: cardTransform,
     };
-  }, [storyMode, themeId, selectedStory, stats]);
+  }, [storyMode, themeId, selectedStory, stats, cardTransform]);
 
   useEffect(() => {
-    if (!isOpen || activeTab !== 'studio') return;
-    let cancelled = false;
-    renderStoryCardCanvas(storyPayload).then((canvas) => {
-      if (cancelled) return;
-      try {
-        setPreviewDataUrl(canvas.toDataURL('image/png'));
-      } catch {
-        setPreviewDataUrl(null);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, activeTab, storyPayload]);
+    if (!isOpen) {
+      setCardTransform(DEFAULT_STORY_CARD_TRANSFORM);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -416,20 +413,12 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
                 </div>
               )}
 
-              {/* Live 9:16 Card Preview */}
-              <div className="flex justify-center">
-                <div className="w-44 aspect-[9/16] rounded-2xl overflow-hidden border border-white/15 bg-black/40 shadow-2xl flex items-center justify-center">
-                  {previewDataUrl ? (
-                    <img
-                      src={previewDataUrl}
-                      alt="Story Card Preview"
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-5 h-5 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin" />
-                  )}
-                </div>
-              </div>
+              {/* Live Interactive 9:16 Card Preview */}
+              <InteractiveStoryPreview
+                payload={storyPayload}
+                transform={cardTransform}
+                onChangeTransform={setCardTransform}
+              />
 
               {/* Minimal Color Dots */}
               <div className="flex items-center justify-center gap-3">

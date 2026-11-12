@@ -11,6 +11,10 @@ import {
   guessImageExtensionFromMime,
   sanitizePhotoFilename,
   buildImageProxyUrl,
+  DEFAULT_STORY_CARD_TRANSFORM,
+  clampStoryCardTransform,
+  computeTwoFingerTransform,
+  isStoryTransformModified,
 } from './mediaShare';
 import { configureIosNativeProject } from '../../scripts/configure-ios-native.mjs';
 
@@ -85,7 +89,56 @@ test('buildImageProxyUrl encodes valid HTTP(S) URLs and rejects non-HTTP schemes
   assert.equal(buildImageProxyUrl('javascript:alert(1)'), '');
 });
 
-test('configureIosNativeProject idempotently injects ChintaMediaPlugin, storyboard class, and Info.plist keys', () => {
+test('computeTwoFingerTransform scales, rotates across PI wraparound, pans midpoint, and snaps near 0deg', () => {
+  // 1. Scale up 1.5x + pan right by 10%
+  const scaled = computeTwoFingerTransform({
+    startP1: { x: 80, y: 150 },
+    startP2: { x: 120, y: 150 }, // dist 40, mid (100, 150)
+    currP1: { x: 90, y: 150 },
+    currP2: { x: 150, y: 150 }, // dist 60 (1.5x), mid (120, 150) -> +20px / 200 = +0.1
+    baseTransform: DEFAULT_STORY_CARD_TRANSFORM,
+    containerWidth: 200,
+    containerHeight: 400,
+  });
+  assert.equal(scaled.scale, 1.5);
+  assert.equal(scaled.offsetX, 0.1);
+  assert.equal(scaled.rotationDeg, 0);
+  assert.equal(isStoryTransformModified(scaled), true);
+
+  // 2. Rotation across -PI / +PI boundary (e.g. 170° -> -175° = +15° clockwise delta)
+  const rad170 = (170 * Math.PI) / 180;
+  const radNeg175 = (-175 * Math.PI) / 180;
+  const rotated = computeTwoFingerTransform({
+    startP1: { x: 100, y: 150 },
+    startP2: { x: 100 + 50 * Math.cos(rad170), y: 150 + 50 * Math.sin(rad170) },
+    currP1: { x: 100, y: 150 },
+    currP2: { x: 100 + 50 * Math.cos(radNeg175), y: 150 + 50 * Math.sin(radNeg175) },
+    baseTransform: DEFAULT_STORY_CARD_TRANSFORM,
+    containerWidth: 200,
+    containerHeight: 400,
+  });
+  assert.equal(Math.round(rotated.rotationDeg), 15);
+
+  // 3. Tiny jitter within ±2.2° snaps cleanly to 0°
+  const tinyJitter = computeTwoFingerTransform({
+    startP1: { x: 100, y: 150 },
+    startP2: { x: 150, y: 150 },
+    currP1: { x: 100, y: 150 },
+    currP2: { x: 150, y: 151 }, // ~1.15°
+    baseTransform: DEFAULT_STORY_CARD_TRANSFORM,
+    containerWidth: 200,
+    containerHeight: 400,
+  });
+  assert.equal(tinyJitter.rotationDeg, 0);
+
+  // 4. Clamping respects bounds
+  const clamped = clampStoryCardTransform({ scale: 4, offsetX: -2, rotationDeg: 90 });
+  assert.equal(clamped.scale, 1.65);
+  assert.equal(clamped.offsetX, -0.35);
+  assert.equal(clamped.rotationDeg, 45);
+});
+
+test('configureIosNativeProject idempotently injects ChintaMediaPlugin with stickerImage support, storyboard class, and Info.plist keys', () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'chinta-ios-cfg-'));
   try {
     const iosAppDir = path.join(tmpRoot, 'ios', 'App', 'App');
@@ -122,6 +175,8 @@ test('configureIosNativeProject idempotently injects ChintaMediaPlugin, storyboa
     const appDelegate = fs.readFileSync(appDelegatePath, 'utf8');
     assert.equal(appDelegate.match(/BEGIN CHINTA MEDIA BRIDGE/g)?.length, 1);
     assert.match(appDelegate, /class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin/);
+    assert.match(appDelegate, /com\.instagram\.sharedSticker\.stickerImage/);
+    assert.match(appDelegate, /com\.facebook\.sharedSticker\.stickerImage/);
     assert.match(appDelegate, /class ChintaViewController: CAPBridgeViewController/);
     assert.match(appDelegate, /import Photos/);
 

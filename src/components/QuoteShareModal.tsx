@@ -4,11 +4,15 @@ import type { FeedItem } from '../types';
 import { generateQuickTldrBullets } from '../utils/feedIntelligence';
 import {
   SPOTIFY_BACKDROP_THEMES,
-  renderStoryCardCanvas,
   shareSpotifyStyleStory,
   type StoryBackdropThemeId,
   type StoryCardMode,
 } from '../utils/storyCardRenderer';
+import {
+  DEFAULT_STORY_CARD_TRANSFORM,
+  type StoryCardTransform,
+} from '../utils/mediaShare';
+import { InteractiveStoryPreview } from './InteractiveStoryPreview';
 import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
 import { computeSheetDragState, classifyHorizontalSwipe } from '../utils/touchGestures';
 
@@ -45,7 +49,9 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
   const [themeId, setThemeId] = useState<StoryBackdropThemeId>('sunset');
   const [copied, setCopied] = useState(false);
   const [shareFeedback, setShareFeedback] = useState<string | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [cardTransform, setCardTransform] = useState<StoryCardTransform>(
+    DEFAULT_STORY_CARD_TRANSFORM
+  );
   const [dragOffsetY, setDragOffsetY] = useState(0);
   const dragStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
@@ -63,25 +69,16 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
       imageUrl: article.imageUrl,
       quoteText: activeQuote,
       attributionUrl: article.link,
+      transform: cardTransform,
     }),
-    [storyMode, themeId, article, activeQuote]
+    [storyMode, themeId, article, activeQuote, cardTransform]
   );
 
   useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    renderStoryCardCanvas(payload).then((canvas) => {
-      if (cancelled) return;
-      try {
-        setPreviewUrl(canvas.toDataURL('image/png'));
-      } catch {
-        setPreviewUrl(null);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, payload]);
+    if (!isOpen) {
+      setCardTransform(DEFAULT_STORY_CARD_TRANSFORM);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -232,19 +229,13 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
           ))}
         </div>
 
-        {/* Live 9:16 Story Preview */}
-        <div className="flex justify-center mb-3.5">
-          <div className="w-44 aspect-[9/16] rounded-2xl overflow-hidden border border-white/15 bg-black/40 shadow-xl flex items-center justify-center">
-            {previewUrl ? (
-              <img
-                src={previewUrl}
-                alt="Story Card Preview"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-5 h-5 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin" />
-            )}
-          </div>
+        {/* Live Interactive 9:16 Story Preview */}
+        <div className="mb-3.5">
+          <InteractiveStoryPreview
+            payload={payload}
+            transform={cardTransform}
+            onChangeTransform={setCardTransform}
+          />
         </div>
 
         {/* Passage Selector (for Quote mode) */}

@@ -92,3 +92,109 @@ export function buildImageProxyUrl(targetUrl: string): string {
   }
   return `/api/image-proxy?url=${encodeURIComponent(clean)}`;
 }
+
+export interface StoryCardTransform {
+  /** Normalized horizontal offset relative to story width (-0.35 .. 0.35) */
+  offsetX: number;
+  /** Normalized vertical offset relative to story height (-0.35 .. 0.35) */
+  offsetY: number;
+  /** Card scale multiplier (0.55 .. 1.65) */
+  scale: number;
+  /** Card rotation in degrees (-45 .. 45) */
+  rotationDeg: number;
+}
+
+export const DEFAULT_STORY_CARD_TRANSFORM: StoryCardTransform = {
+  offsetX: 0,
+  offsetY: 0,
+  scale: 1,
+  rotationDeg: 0,
+};
+
+export interface TouchPoint2D {
+  x: number;
+  y: number;
+}
+
+export function clampStoryCardTransform(
+  input: Partial<StoryCardTransform>
+): StoryCardTransform {
+  const clamp = (val: number, min: number, max: number) =>
+    Math.min(max, Math.max(min, val));
+  return {
+    offsetX: Number(clamp(input.offsetX ?? 0, -0.35, 0.35).toFixed(4)),
+    offsetY: Number(clamp(input.offsetY ?? 0, -0.35, 0.35).toFixed(4)),
+    scale: Number(clamp(input.scale ?? 1, 0.55, 1.65).toFixed(3)),
+    rotationDeg: Number(clamp(input.rotationDeg ?? 0, -45, 45).toFixed(2)),
+  };
+}
+
+/**
+ * Computes independent foreground card transform (pinch scale, two-finger rotation with angle-wrap
+ * safety & subtle 0-deg detent snap, and midpoint pan) without altering the background gradient.
+ */
+export function computeTwoFingerTransform(params: {
+  startP1: TouchPoint2D;
+  startP2: TouchPoint2D;
+  currP1: TouchPoint2D;
+  currP2: TouchPoint2D;
+  baseTransform: StoryCardTransform;
+  containerWidth: number;
+  containerHeight: number;
+}): StoryCardTransform {
+  const {
+    startP1,
+    startP2,
+    currP1,
+    currP2,
+    baseTransform,
+    containerWidth,
+    containerHeight,
+  } = params;
+
+  const w = Math.max(1, containerWidth);
+  const h = Math.max(1, containerHeight);
+
+  const startDx = startP2.x - startP1.x;
+  const startDy = startP2.y - startP1.y;
+  const currDx = currP2.x - currP1.x;
+  const currDy = currP2.y - currP1.y;
+
+  const startDist = Math.max(12, Math.hypot(startDx, startDy));
+  const currDist = Math.max(12, Math.hypot(currDx, currDy));
+
+  const startMidX = (startP1.x + startP2.x) / 2;
+  const startMidY = (startP1.y + startP2.y) / 2;
+  const currMidX = (currP1.x + currP2.x) / 2;
+  const currMidY = (currP1.y + currP2.y) / 2;
+
+  const startAngle = Math.atan2(startDy, startDx);
+  const currAngle = Math.atan2(currDy, currDx);
+  let deltaRad = currAngle - startAngle;
+  // Normalize angular delta across -PI..PI boundary
+  while (deltaRad > Math.PI) deltaRad -= Math.PI * 2;
+  while (deltaRad < -Math.PI) deltaRad += Math.PI * 2;
+  const deltaDeg = (deltaRad * 180) / Math.PI;
+
+  let nextRotation = baseTransform.rotationDeg + deltaDeg;
+  // Apple-style subtle magnetic snap to 0° when within ±2.2°
+  if (Math.abs(nextRotation) < 2.2) {
+    nextRotation = 0;
+  }
+
+  return clampStoryCardTransform({
+    offsetX: baseTransform.offsetX + (currMidX - startMidX) / w,
+    offsetY: baseTransform.offsetY + (currMidY - startMidY) / h,
+    scale: baseTransform.scale * (currDist / startDist),
+    rotationDeg: nextRotation,
+  });
+}
+
+export function isStoryTransformModified(t: StoryCardTransform): boolean {
+  return (
+    Math.abs(t.offsetX) > 0.005 ||
+    Math.abs(t.offsetY) > 0.005 ||
+    Math.abs(t.scale - 1) > 0.015 ||
+    Math.abs(t.rotationDeg) > 0.5
+  );
+}

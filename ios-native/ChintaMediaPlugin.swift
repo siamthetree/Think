@@ -57,8 +57,10 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc public func shareToInstagramStory(_ call: CAPPluginCall) {
-        guard let pngData = decodeImageData(from: call.getString("imageBase64")),
-              let image = UIImage(data: pngData) else {
+        let stickerData = decodeImageData(from: call.getString("stickerBase64"))
+        let fullData = decodeImageData(from: call.getString("imageBase64"))
+        guard let fallbackData = fullData ?? stickerData,
+              let fallbackImage = UIImage(data: fallbackData) else {
             call.reject("Missing or invalid story image data.")
             return
         }
@@ -72,7 +74,7 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let schemeUrl = URL(string: "instagram-stories://share?source_application=\(sourceApp)"),
                   UIApplication.shared.canOpenURL(schemeUrl) else {
                 self.presentActivitySheet(
-                    image: image,
+                    image: fallbackImage,
                     title: nil,
                     call: call,
                     message: "Instagram not detected — choose an app or Save Image."
@@ -81,10 +83,15 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
             }
 
             var pasteboardItem: [String: Any] = [
-                "com.instagram.sharedSticker.backgroundImage": pngData,
                 "com.instagram.sharedSticker.backgroundTopColor": topColor,
                 "com.instagram.sharedSticker.backgroundBottomColor": bottomColor
             ]
+            if let stickerPng = stickerData {
+                // Interactive floating card sticker over independent background gradient
+                pasteboardItem["com.instagram.sharedSticker.stickerImage"] = stickerPng
+            } else {
+                pasteboardItem["com.instagram.sharedSticker.backgroundImage"] = fallbackData
+            }
             if let urlStr = attributionUrl, !urlStr.isEmpty {
                 pasteboardItem["com.instagram.sharedSticker.contentURL"] = urlStr
             }
@@ -103,7 +110,7 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                     ])
                 } else {
                     self.presentActivitySheet(
-                        image: image,
+                        image: fallbackImage,
                         title: nil,
                         call: call,
                         message: "Select Instagram or Save Image."
@@ -114,8 +121,10 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc public func shareToFacebookStory(_ call: CAPPluginCall) {
-        guard let pngData = decodeImageData(from: call.getString("imageBase64")),
-              let image = UIImage(data: pngData) else {
+        let stickerData = decodeImageData(from: call.getString("stickerBase64"))
+        let fullData = decodeImageData(from: call.getString("imageBase64"))
+        guard let fallbackData = fullData ?? stickerData,
+              let fallbackImage = UIImage(data: fallbackData) else {
             call.reject("Missing or invalid story image data.")
             return
         }
@@ -140,7 +149,7 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
 
             guard let schemeUrl = targetUrl else {
                 self.presentActivitySheet(
-                    image: image,
+                    image: fallbackImage,
                     title: nil,
                     call: call,
                     message: "Facebook not detected — choose an app or Save Image."
@@ -148,12 +157,17 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
-            let pasteboardItem: [String: Any] = [
-                "com.facebook.sharedSticker.backgroundImage": pngData,
+            var pasteboardItem: [String: Any] = [
                 "com.facebook.sharedSticker.backgroundTopColor": topColor,
                 "com.facebook.sharedSticker.backgroundBottomColor": bottomColor,
                 "com.facebook.sharedSticker.appID": appId
             ]
+            if let stickerPng = stickerData {
+                // Interactive floating card sticker over independent background gradient
+                pasteboardItem["com.facebook.sharedSticker.stickerImage"] = stickerPng
+            } else {
+                pasteboardItem["com.facebook.sharedSticker.backgroundImage"] = fallbackData
+            }
             let options: [UIPasteboard.OptionsKey: Any] = [
                 .expirationDate: Date().addingTimeInterval(60 * 5)
             ]
@@ -168,7 +182,7 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                     ])
                 } else {
                     self.presentActivitySheet(
-                        image: image,
+                        image: fallbackImage,
                         title: nil,
                         call: call,
                         message: "Select Facebook or Save Image."

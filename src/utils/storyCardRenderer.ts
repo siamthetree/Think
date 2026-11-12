@@ -8,16 +8,20 @@ import {
   guessImageExtensionFromMime,
   sanitizePhotoFilename,
   buildImageProxyUrl,
+  DEFAULT_STORY_CARD_TRANSFORM,
+  type StoryCardTransform,
 } from './mediaShare';
 
 interface ChintaMediaNativePlugin {
   shareToInstagramStory(opts: {
+    stickerBase64?: string;
     imageBase64: string;
     topColor?: string;
     bottomColor?: string;
     attributionUrl?: string;
   }): Promise<{ ok: boolean; method: string; message: string }>;
   shareToFacebookStory(opts: {
+    stickerBase64?: string;
     imageBase64: string;
     topColor?: string;
     bottomColor?: string;
@@ -113,10 +117,15 @@ export interface StoryCardPayload {
   quoteText?: string;
   attributionUrl?: string;
   stats?: SpotifyReadingStats;
+  transform?: StoryCardTransform;
+}
+
+export function getStoryBackdropTheme(themeId: StoryBackdropThemeId): StoryBackdropTheme {
+  return SPOTIFY_BACKDROP_THEMES.find((t) => t.id === themeId) || SPOTIFY_BACKDROP_THEMES[0];
 }
 
 function getTheme(themeId: StoryBackdropThemeId): StoryBackdropTheme {
-  return SPOTIFY_BACKDROP_THEMES.find((t) => t.id === themeId) || SPOTIFY_BACKDROP_THEMES[0];
+  return getStoryBackdropTheme(themeId);
 }
 
 function roundRectPath(
@@ -199,17 +208,17 @@ async function loadCorsSafeImage(url?: string): Promise<HTMLImageElement | null>
   return loadSingleImageUrl(url, 1800);
 }
 
-function drawFooterSignature(ctx: CanvasRenderingContext2D, accentColor: string, y: number) {
+function drawFooterSignature(ctx: CanvasRenderingContext2D, accentColor: string, centerX: number, y: number) {
   ctx.save();
   ctx.fillStyle = accentColor;
   ctx.beginPath();
-  ctx.arc(412, y - 10, 10, 0, Math.PI * 2);
+  ctx.arc(centerX - 116, y - 10, 10, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = 'rgba(255,255,255,0.88)';
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.font = '600 28px "Plus Jakarta Sans", -apple-system, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('চিন্তা · Think', 436, y);
+  ctx.fillText('চিন্তা · Think', centerX - 92, y);
   ctx.restore();
 }
 
@@ -229,53 +238,49 @@ function drawBackdrop(ctx: CanvasRenderingContext2D, theme: StoryBackdropTheme) 
 }
 
 /**
- * Renders a minimal 1080×1920 (9:16 vertical Instagram / Facebook Story) newsreader card.
+ * Renders ONLY the transparent floating Story card sticker (1000×1500) with subtle shadow and signature.
+ * Used directly as `stickerImage` on Instagram/Facebook Stories so users can resize/rotate/drag
+ * the card with two fingers independently of the gradient background color.
  */
-export async function renderStoryCardCanvas(
+export async function renderStoryStickerCanvas(
   payload: StoryCardPayload
 ): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
-  canvas.width = 1080;
-  canvas.height = 1920;
+  canvas.width = 1000;
+  canvas.height = 1500;
   const ctx = canvas.getContext('2d');
   if (!ctx) return canvas;
 
   const theme = getTheme(payload.themeId);
-  drawBackdrop(ctx, theme);
+  const cardX = 50;
+  const cardY = 40;
+  const cardW = 900;
+  const cardH = 1310;
+  const footerY = 1445;
 
-  // Mode 1: Editorial Article Story Card ('song' ID retained for API compatibility)
+  // Floating Card Surface + Specular Rim
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.44)';
+  ctx.shadowBlur = 55;
+  ctx.shadowOffsetY = 24;
+  ctx.fillStyle = theme.cardBg;
+  roundRectPath(ctx, cardX, cardY, cardW, cardH, 44);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = 2;
+  roundRectPath(ctx, cardX, cardY, cardW, cardH, 44);
+  ctx.stroke();
+
+  // Mode 1: Editorial Article Story Card
   if (payload.mode === 'song') {
     const coverImg = await loadCorsSafeImage(payload.imageUrl);
-
-    // Subtle Top Pill
-    ctx.fillStyle = 'rgba(255,255,255,0.14)';
-    roundRectPath(ctx, 390, 145, 300, 54, 27);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.font = '700 21px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('READING NOW', 540, 179);
-
-    // Floating Minimal Editorial Card
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.42)';
-    ctx.shadowBlur = 70;
-    ctx.shadowOffsetY = 28;
-    ctx.fillStyle = theme.cardBg;
-    roundRectPath(ctx, 90, 260, 900, 1310, 44);
-    ctx.fill();
-    ctx.restore();
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 2;
-    roundRectPath(ctx, 90, 260, 900, 1310, 44);
-    ctx.stroke();
-
-    // Editorial Cover Image / Clean Monogram Poster
-    const artX = 160;
-    const artY = 335;
+    const artX = cardX + 70;
+    const artY = cardY + 75;
     const artW = 760;
     const artH = 680;
+
     ctx.save();
     roundRectPath(ctx, artX, artY, artW, artH, 28);
     ctx.clip();
@@ -305,25 +310,22 @@ export async function renderStoryCardCanvas(
     }
     ctx.restore();
 
-    // Publisher Kicker
     ctx.textAlign = 'left';
     ctx.fillStyle = theme.accentColor;
     ctx.font = '700 24px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText((payload.publisher || 'News').toUpperCase(), 160, 1085);
+    ctx.fillText((payload.publisher || 'News').toUpperCase(), cardX + 70, cardY + 825);
 
-    // Crisp Serif Headline
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '700 50px "Lora", Georgia, serif';
     const titleLines = wrapCanvasText(ctx, payload.headline, 760, 4);
-    let textY = 1160;
+    let textY = cardY + 900;
     for (const line of titleLines) {
-      ctx.fillText(line, 160, textY);
+      ctx.fillText(line, cardX + 70, textY);
       textY += 66;
     }
 
-    // Minimal Hairline & Attribution + Read Time
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
-    ctx.fillRect(160, 1445, 760, 2);
+    ctx.fillRect(cardX + 70, cardY + 1185, 760, 2);
 
     const mins = Math.max(1, payload.readTimeMin || 3);
     const metaLine = payload.author ? `${payload.author}` : 'Distraction-Free Edition';
@@ -332,89 +334,64 @@ export async function renderStoryCardCanvas(
     ctx.textAlign = 'left';
     ctx.fillText(
       metaLine.length > 34 ? `${metaLine.slice(0, 32)}…` : metaLine,
-      160,
-      1505
+      cardX + 70,
+      cardY + 1245
     );
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.font = '600 25px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText(`${mins} min read`, 920, 1505);
+    ctx.fillText(`${mins} min read`, cardX + 830, cardY + 1245);
 
-    drawFooterSignature(ctx, theme.accentColor, 1735);
+    drawFooterSignature(ctx, theme.accentColor, 500, footerY);
     return canvas;
   }
 
-  // Mode 2: Editorial Pull-Quote Highlight Card ('lyrics' ID retained)
+  // Mode 2: Editorial Pull-Quote Highlight Card
   if (payload.mode === 'lyrics') {
-    ctx.fillStyle = 'rgba(255,255,255,0.14)';
-    roundRectPath(ctx, 400, 145, 280, 54, 27);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.font = '700 21px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('KEY PASSAGE', 540, 179);
-
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.42)';
-    ctx.shadowBlur = 70;
-    ctx.shadowOffsetY = 26;
-    ctx.fillStyle = theme.cardBg;
-    roundRectPath(ctx, 90, 260, 900, 1310, 44);
-    ctx.fill();
-    ctx.restore();
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 2;
-    roundRectPath(ctx, 90, 260, 900, 1310, 44);
-    ctx.stroke();
-
-    // Publisher Header
     ctx.textAlign = 'left';
     ctx.fillStyle = theme.accentColor;
     ctx.font = '700 25px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText((payload.publisher || 'News').toUpperCase(), 165, 365);
+    ctx.fillText((payload.publisher || 'News').toUpperCase(), cardX + 75, cardY + 105);
 
     ctx.fillStyle = 'rgba(255,255,255,0.58)';
     ctx.font = '500 24px "Plus Jakarta Sans", -apple-system, sans-serif';
     const subTitle =
       payload.headline.length > 46 ? `${payload.headline.slice(0, 44)}…` : payload.headline;
-    ctx.fillText(subTitle, 165, 412);
+    ctx.fillText(subTitle, cardX + 75, cardY + 152);
 
     ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    ctx.fillRect(165, 458, 750, 2);
+    ctx.fillRect(cardX + 75, cardY + 198, 750, 2);
 
-    // Clean Editorial Pull-Quote with vertical accent bar
     const quote = payload.quoteText || payload.headline;
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '700 54px "Lora", Georgia, serif';
     const quoteLines = wrapCanvasText(ctx, `“${quote}”`, 705, 9);
 
-    const startY = 580;
+    const startY = cardY + 320;
     const lineHeight = 86;
     const barHeight = Math.max(120, quoteLines.length * lineHeight - 16);
 
     ctx.fillStyle = theme.accentColor;
-    roundRectPath(ctx, 165, startY - 50, 7, barHeight, 4);
+    roundRectPath(ctx, cardX + 75, startY - 50, 7, barHeight, 4);
     ctx.fill();
 
     let qY = startY;
     ctx.fillStyle = '#FFFFFF';
     for (let i = 0; i < quoteLines.length; i++) {
-      ctx.fillText(quoteLines[i], 202, qY);
+      ctx.fillText(quoteLines[i], cardX + 112, qY);
       qY += lineHeight;
     }
 
-    // Minimal Bottom Line
     const mins = Math.max(1, payload.readTimeMin || 3);
     ctx.fillStyle = 'rgba(255,255,255,0.58)';
     ctx.font = '600 23px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText(`${mins} min read · Saved on Chinta`, 165, 1490);
+    ctx.fillText(`${mins} min read · Saved on Chinta`, cardX + 75, cardY + 1230);
 
-    drawFooterSignature(ctx, theme.accentColor, 1735);
+    drawFooterSignature(ctx, theme.accentColor, 500, footerY);
     return canvas;
   }
 
-  // Mode 3: Minimal Newsreader Reading Recap ('wrapped' ID retained)
+  // Mode 3: Minimal Newsreader Reading Recap
   const stats = payload.stats;
   const totalMin = stats?.totalMinutesRead ?? 0;
   const totalStories = stats?.totalStoriesRead ?? 0;
@@ -422,117 +399,135 @@ export async function renderStoryCardCanvas(
   const topSources = stats?.topSources?.slice(0, 4) || [];
   const topGenres = stats?.topGenres?.slice(0, 3) || [];
 
-  ctx.fillStyle = 'rgba(255,255,255,0.14)';
-  roundRectPath(ctx, 375, 145, 330, 54, 27);
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.font = '700 21px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('READING RECAP', 540, 179);
-
-  // Main Card Container
-  ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.42)';
-  ctx.shadowBlur = 70;
-  ctx.shadowOffsetY = 26;
-  ctx.fillStyle = theme.cardBg;
-  roundRectPath(ctx, 90, 260, 900, 1310, 44);
-  ctx.fill();
-  ctx.restore();
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-  ctx.lineWidth = 2;
-  roundRectPath(ctx, 90, 260, 900, 1310, 44);
-  ctx.stroke();
-
-  // Hero Reading Time
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.accentColor;
   ctx.font = '700 23px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText('FOCUSED READING', 165, 355);
+  ctx.fillText('FOCUSED READING', cardX + 75, cardY + 95);
 
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '700 124px "Lora", Georgia, serif';
-  ctx.fillText(`${totalMin}m`, 165, 490);
+  ctx.fillText(`${totalMin}m`, cardX + 75, cardY + 230);
 
   ctx.fillStyle = 'rgba(255,255,255,0.72)';
   ctx.font = '500 30px "Plus Jakarta Sans", -apple-system, sans-serif';
   ctx.fillText(
     `${totalStories} ${totalStories === 1 ? 'article' : 'articles'} · ${streak}d streak`,
-    165,
-    555
+    cardX + 75,
+    cardY + 295
   );
 
   ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  ctx.fillRect(165, 610, 750, 2);
+  ctx.fillRect(cardX + 75, cardY + 350, 750, 2);
 
-  // Top Sources
   ctx.fillStyle = theme.accentColor;
   ctx.font = '700 22px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText('MOST READ SOURCES', 165, 680);
+  ctx.fillText('MOST READ SOURCES', cardX + 75, cardY + 420);
 
   if (topSources.length > 0) {
-    let sy = 755;
+    let sy = cardY + 495;
     for (const src of topSources) {
       ctx.fillStyle = 'rgba(255,255,255,0.42)';
       ctx.font = '700 32px "Plus Jakarta Sans", -apple-system, sans-serif';
-      ctx.fillText(`${src.rank}.`, 165, sy);
+      ctx.fillText(`${src.rank}.`, cardX + 75, sy);
 
       ctx.fillStyle = '#FFFFFF';
       ctx.font = '700 36px "Lora", Georgia, serif';
       const label = src.title.length > 24 ? `${src.title.slice(0, 22)}…` : src.title;
-      ctx.fillText(label, 225, sy);
+      ctx.fillText(label, cardX + 135, sy);
 
       ctx.textAlign = 'right';
       ctx.fillStyle = 'rgba(255,255,255,0.62)';
       ctx.font = '500 26px "Plus Jakarta Sans", -apple-system, sans-serif';
-      ctx.fillText(`${src.storyCount}`, 915, sy);
+      ctx.fillText(`${src.storyCount}`, cardX + 825, sy);
       ctx.textAlign = 'left';
       sy += 78;
     }
   } else {
     ctx.fillStyle = 'rgba(255,255,255,0.58)';
     ctx.font = '500 28px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText('Read articles to see your top sources here', 165, 760);
+    ctx.fillText('Read articles to see your top sources here', cardX + 75, cardY + 500);
   }
 
   ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  ctx.fillRect(165, 1105, 750, 2);
+  ctx.fillRect(cardX + 75, cardY + 845, 750, 2);
 
-  // Top Topics
   ctx.fillStyle = theme.accentColor;
   ctx.font = '700 22px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText('TOPICS', 165, 1175);
+  ctx.fillText('TOPICS', cardX + 75, cardY + 915);
 
   if (topGenres.length > 0) {
     const topicLine = topGenres.map((g) => g.name).join(' · ');
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '700 38px "Lora", Georgia, serif';
     const topicLines = wrapCanvasText(ctx, topicLine, 750, 2);
-    let ty = 1245;
+    let ty = cardY + 985;
     for (const line of topicLines) {
-      ctx.fillText(line, 165, ty);
+      ctx.fillText(line, cardX + 75, ty);
       ty += 54;
     }
   } else {
     ctx.fillStyle = 'rgba(255,255,255,0.58)';
     ctx.font = '500 28px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText('Topics appear as you read across categories', 165, 1245);
+    ctx.fillText('Topics appear as you read across categories', cardX + 75, cardY + 985);
   }
 
-  // Calm Reader Summary Line
   const profileTitle = stats?.readerAura?.title || 'Mindful Reader';
   ctx.fillStyle = 'rgba(255,255,255,0.06)';
-  roundRectPath(ctx, 165, 1390, 750, 115, 24);
+  roundRectPath(ctx, cardX + 75, cardY + 1130, 750, 115, 24);
   ctx.fill();
   ctx.fillStyle = 'rgba(255,255,255,0.62)';
   ctx.font = '600 20px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText('READING STYLE', 200, 1435);
+  ctx.fillText('READING STYLE', cardX + 110, cardY + 1175);
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '700 34px "Lora", Georgia, serif';
-  ctx.fillText(profileTitle, 200, 1480);
+  ctx.fillText(profileTitle, cardX + 110, cardY + 1220);
 
-  drawFooterSignature(ctx, theme.accentColor, 1735);
+  drawFooterSignature(ctx, theme.accentColor, 500, footerY);
+  return canvas;
+}
+
+/**
+ * Renders a full 1080×1920 (9:16 vertical Story) image by compositing the movable/scalable/rotatable
+ * card sticker over a fixed, unchanged background gradient.
+ */
+export async function renderStoryCardCanvas(
+  payload: StoryCardPayload
+): Promise<HTMLCanvasElement> {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1080;
+  canvas.height = 1920;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+
+  const theme = getTheme(payload.themeId);
+  drawBackdrop(ctx, theme);
+
+  // Subtle fixed top mode label on the static background layer
+  const pillLabel =
+    payload.mode === 'song'
+      ? 'READING NOW'
+      : payload.mode === 'lyrics'
+        ? 'KEY PASSAGE'
+        : 'READING RECAP';
+  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  roundRectPath(ctx, 375, 115, 330, 52, 26);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = '700 21px "Plus Jakarta Sans", -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(pillLabel, 540, 149);
+
+  // Draw the independent foreground card sticker with any two-finger transform applied
+  const stickerCanvas = await renderStoryStickerCanvas(payload);
+  const t = payload.transform || DEFAULT_STORY_CARD_TRANSFORM;
+
+  ctx.save();
+  ctx.translate(540 + t.offsetX * 1080, 995 + t.offsetY * 1920);
+  ctx.rotate((t.rotationDeg * Math.PI) / 180);
+  ctx.scale(t.scale, t.scale);
+  ctx.drawImage(stickerCanvas, -stickerCanvas.width / 2, -stickerCanvas.height / 2);
+  ctx.restore();
+
   return canvas;
 }
 
@@ -603,19 +598,23 @@ export async function shareSpotifyStyleStory(
   const dataUrl = canvas.toDataURL('image/png');
   const imageBase64 = stripDataUrlPrefix(dataUrl);
 
-  // 1. Native Capacitor iOS Bridge (Direct Instagram/Facebook Story Pasteboard + Photos Library)
+  // 1. Native Capacitor iOS Bridge (Interactive floating Sticker + Static Backdrop Gradient -> Photos)
   if (isNativePlatformSafe()) {
     try {
-      if (platform === 'instagram') {
-        return await ChintaMedia.shareToInstagramStory({
-          imageBase64,
-          topColor: theme.topColor,
-          bottomColor: theme.bottomColor,
-          attributionUrl: payload.attributionUrl,
-        });
-      }
-      if (platform === 'facebook') {
+      if (platform === 'instagram' || platform === 'facebook') {
+        const stickerCanvas = await renderStoryStickerCanvas(payload);
+        const stickerBase64 = stripDataUrlPrefix(stickerCanvas.toDataURL('image/png'));
+        if (platform === 'instagram') {
+          return await ChintaMedia.shareToInstagramStory({
+            stickerBase64,
+            imageBase64,
+            topColor: theme.topColor,
+            bottomColor: theme.bottomColor,
+            attributionUrl: payload.attributionUrl,
+          });
+        }
         return await ChintaMedia.shareToFacebookStory({
+          stickerBase64,
           imageBase64,
           topColor: theme.topColor,
           bottomColor: theme.bottomColor,
