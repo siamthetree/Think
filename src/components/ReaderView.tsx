@@ -12,6 +12,8 @@ import {
   ChevronRight,
   Check,
   Quote,
+  EyeOff,
+  HardDriveDownload,
 } from 'lucide-react';
 import type { FeedItem, Tag, ReaderPreferences, ReaderTheme, ReaderFont, ReaderLineHeight } from '../types';
 import { sanitizeArticleHtml, blocksToHtml, isJavaScriptWarningText } from '../utils/sanitize';
@@ -98,6 +100,101 @@ function getEditorialSubtitle(summary?: string, title?: string): string | null {
   return candidate;
 }
 
+interface ReaderThemeSpec {
+  id: ReaderTheme;
+  name: string;
+  swatch: string;
+  vars: Record<string, string>;
+}
+
+const READER_THEMES: ReaderThemeSpec[] = [
+  {
+    id: 'paper',
+    name: 'Paper',
+    swatch: 'bg-[#FBF9F5]',
+    vars: {
+      '--reader-bg': '#FBF9F5',
+      '--reader-surface': 'rgba(28, 25, 23, 0.04)',
+      '--reader-surface-strong': 'rgba(28, 25, 23, 0.08)',
+      '--reader-text': '#292524',
+      '--reader-heading': '#1C1917',
+      '--reader-muted': '#78716C',
+      '--reader-border': 'rgba(28, 25, 23, 0.12)',
+      '--reader-quote-border': 'rgba(255, 103, 25, 0.55)',
+      '--reader-quote-text': '#44403C',
+      '--reader-link-underline': 'rgba(28, 25, 23, 0.35)',
+    },
+  },
+  {
+    id: 'sepia',
+    name: 'Sepia',
+    swatch: 'bg-[#F4ECD8]',
+    vars: {
+      '--reader-bg': '#F4ECD8',
+      '--reader-surface': 'rgba(56, 47, 45, 0.05)',
+      '--reader-surface-strong': 'rgba(56, 47, 45, 0.10)',
+      '--reader-text': '#433422',
+      '--reader-heading': '#2B2118',
+      '--reader-muted': '#7C6A58',
+      '--reader-border': 'rgba(67, 52, 34, 0.15)',
+      '--reader-quote-border': 'rgba(180, 83, 9, 0.5)',
+      '--reader-quote-text': '#5B4636',
+      '--reader-link-underline': 'rgba(67, 52, 34, 0.4)',
+    },
+  },
+  {
+    id: 'clean',
+    name: 'Clean',
+    swatch: 'bg-[#FFFFFF]',
+    vars: {
+      '--reader-bg': '#FFFFFF',
+      '--reader-surface': 'rgba(17, 24, 39, 0.04)',
+      '--reader-surface-strong': 'rgba(17, 24, 39, 0.08)',
+      '--reader-text': '#1F2937',
+      '--reader-heading': '#111827',
+      '--reader-muted': '#6B7280',
+      '--reader-border': 'rgba(17, 24, 39, 0.12)',
+      '--reader-quote-border': 'rgba(255, 103, 25, 0.6)',
+      '--reader-quote-text': '#374151',
+      '--reader-link-underline': 'rgba(17, 24, 39, 0.35)',
+    },
+  },
+  {
+    id: 'slate',
+    name: 'Slate',
+    swatch: 'bg-[#181818]',
+    vars: {
+      '--reader-bg': '#181818',
+      '--reader-surface': 'rgba(255, 255, 255, 0.04)',
+      '--reader-surface-strong': 'rgba(255, 255, 255, 0.08)',
+      '--reader-text': '#E6E6E6',
+      '--reader-heading': '#EDEDED',
+      '--reader-muted': '#9E9E9E',
+      '--reader-border': '#2C2C2C',
+      '--reader-quote-border': 'rgba(255, 255, 255, 0.28)',
+      '--reader-quote-text': '#CFCFCF',
+      '--reader-link-underline': 'rgba(255, 255, 255, 0.45)',
+    },
+  },
+  {
+    id: 'oled',
+    name: 'OLED',
+    swatch: 'bg-[#000000]',
+    vars: {
+      '--reader-bg': '#000000',
+      '--reader-surface': 'rgba(255, 255, 255, 0.05)',
+      '--reader-surface-strong': 'rgba(255, 255, 255, 0.10)',
+      '--reader-text': '#D1D5DB',
+      '--reader-heading': '#F9FAFB',
+      '--reader-muted': '#9CA3AF',
+      '--reader-border': 'rgba(255, 255, 255, 0.14)',
+      '--reader-quote-border': 'rgba(255, 255, 255, 0.3)',
+      '--reader-quote-text': '#D1D5DB',
+      '--reader-link-underline': 'rgba(255, 255, 255, 0.45)',
+    },
+  },
+];
+
 export const ReaderView: React.FC<ReaderViewProps> = ({
   article,
   tags,
@@ -107,6 +204,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   onToggleBookmark,
   onToggleRead,
   onOpenTagManager,
+  onToggleOfflineCache,
   onPrevArticle,
   onNextArticle,
   initialScrollTop = 0,
@@ -491,14 +589,30 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [article.link]);
 
-  // Exact dark background matching the reference (#181818 warm charcoal dark)
+  const activeThemeSpec =
+    READER_THEMES.find((t) => t.id === preferences.theme) || READER_THEMES[3];
+
+  // Dynamically synchronize CSS custom properties whenever preferences.theme changes
+  useEffect(() => {
+    const rootStyle = document.documentElement.style;
+    for (const [prop, val] of Object.entries(activeThemeSpec.vars)) {
+      rootStyle.setProperty(prop, val);
+    }
+  }, [activeThemeSpec]);
+
   const getThemeClasses = (theme: ReaderTheme) => {
     switch (theme) {
+      case 'paper':
+        return 'reader-theme-paper selection:bg-[#FF6719]/20';
+      case 'sepia':
+        return 'reader-theme-sepia selection:bg-[#FF6719]/20';
+      case 'clean':
+        return 'reader-theme-clean selection:bg-[#FF6719]/20';
       case 'oled':
-        return 'bg-[#0C0C0C] text-[#E8E8E8] selection:bg-white/15';
+        return 'reader-theme-oled selection:bg-white/15';
       case 'slate':
       default:
-        return 'bg-[#181818] text-[#E6E6E6] selection:bg-white/15';
+        return 'reader-theme-slate selection:bg-white/15';
     }
   };
 
@@ -558,18 +672,29 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   return (
     <div
+      data-reader-theme={preferences.theme}
       className={`flex-1 flex flex-col h-full overflow-hidden relative reader-push-enter ${getThemeClasses(
         preferences.theme
       )}`}
-      style={{ transition: 'background-color 200ms ease, color 200ms ease' }}
+      style={{
+        ...(activeThemeSpec.vars as React.CSSProperties),
+        backgroundColor: 'var(--reader-bg)',
+        color: 'var(--reader-text)',
+        transition: 'background-color 220ms ease, color 220ms ease',
+      }}
     >
       {/* Top 2px Reading Momentum Bar */}
-      <div className="absolute top-0 left-0 right-0 h-[2px] bg-white/5 z-40 pointer-events-none">
+      {!preferences.distractionFree && (
         <div
-          className="h-full bg-[#FF6719] transition-all duration-150"
-          style={{ width: `${scrollProgress}%` }}
-        />
-      </div>
+          className="absolute top-0 left-0 right-0 h-[2px] z-40 pointer-events-none"
+          style={{ backgroundColor: 'var(--reader-surface-strong)' }}
+        >
+          <div
+            className="h-full bg-[#FF6719] transition-all duration-150"
+            style={{ width: `${scrollProgress}%` }}
+          />
+        </div>
+      )}
 
       {/* Toast Notification */}
       {toastMessage && (
@@ -607,47 +732,53 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               </button>
             </div>
 
-            {/* Dark Reading Theme Selector */}
+            {/* 5-Mode Dynamic CSS Variable Theme Switcher */}
             <div className="mb-4">
-              <span className="text-[11px] font-medium text-stone-400 block mb-2">Background Tone</span>
-              <div className="grid grid-cols-2 gap-2 p-1 bg-black/40 border border-white/10 rounded-2xl">
-                {[
-                  {
-                    id: 'slate',
-                    name: 'Editorial Dark',
-                    preview: 'bg-[#181818]',
-                    desc: '#181818 Charcoal',
-                  },
-                  {
-                    id: 'oled',
-                    name: 'OLED Black',
-                    preview: 'bg-[#0C0C0C]',
-                    desc: 'True Pitch Dark',
-                  },
-                ].map((t) => {
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] font-medium text-stone-400">Theme</span>
+                <span className="text-[11px] font-semibold text-[#FF6719]">
+                  {activeThemeSpec.name}
+                </span>
+              </div>
+              <div
+                role="radiogroup"
+                aria-label="Theme"
+                className="grid grid-cols-5 gap-1.5 p-1 bg-black/40 border border-white/10 rounded-2xl"
+              >
+                {READER_THEMES.map((t) => {
                   const isActive = preferences.theme === t.id;
                   return (
                     <button
                       key={t.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={isActive}
                       onClick={() => {
                         triggerHapticSelection();
-                        onUpdatePreferences({ ...preferences, theme: t.id as ReaderTheme });
+                        onUpdatePreferences({ ...preferences, theme: t.id });
                       }}
-                      className={`p-2 rounded-xl flex items-center gap-2 transition-all text-left ${
+                      className={`py-2 px-1 rounded-xl flex flex-col items-center gap-1.5 transition-all ${
                         isActive
-                          ? 'liquid-glass-active-bubble ring-1 ring-white/30 shadow-md'
-                          : 'opacity-65 hover:opacity-100'
+                          ? 'liquid-glass-active-bubble ring-1 ring-[#FF6719] shadow-md'
+                          : 'opacity-70 hover:opacity-100'
                       }`}
                     >
                       <span
-                        className={`w-4 h-4 rounded-full border border-white/25 shrink-0 ${t.preview}`}
-                      />
-                      <div className="min-w-0">
-                        <span className="text-xs font-medium block truncate text-stone-200">
-                          {t.name}
-                        </span>
-                        <span className="text-[9px] text-stone-400 block truncate">{t.desc}</span>
-                      </div>
+                        className={`w-6 h-6 rounded-full border border-white/30 shadow-xs flex items-center justify-center ${t.swatch}`}
+                      >
+                        {isActive && (
+                          <Check
+                            className={`w-3 h-3 ${
+                              t.id === 'slate' || t.id === 'oled'
+                                ? 'text-white'
+                                : 'text-stone-900'
+                            }`}
+                          />
+                        )}
+                      </span>
+                      <span className="text-[10px] font-medium text-stone-200 leading-none">
+                        {t.name}
+                      </span>
                     </button>
                   );
                 })}
@@ -734,7 +865,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </div>
 
             {/* Line Spacing */}
-            <div>
+            <div className="mb-4">
               <span className="text-[11px] font-medium text-stone-400 block mb-1.5">Line Spacing</span>
               <div className="grid grid-cols-3 gap-1 p-1 bg-black/40 border border-white/10 rounded-2xl">
                 {(['normal', 'relaxed', 'loose'] as ReaderLineHeight[]).map((lh) => {
@@ -757,6 +888,43 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   );
                 })}
               </div>
+            </div>
+
+            {/* Pure Focus Mode & Offline Cache Toggles */}
+            <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHapticSelection();
+                  const nextFocus = !preferences.distractionFree;
+                  onUpdatePreferences({ ...preferences, distractionFree: nextFocus });
+                  showToast(nextFocus ? 'Pure Focus Mode on' : 'Pure Focus Mode off');
+                }}
+                className={`py-2 px-2.5 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+                  preferences.distractionFree
+                    ? 'bg-[#FF6719]/20 border-[#FF6719]/50 text-[#FF6719]'
+                    : 'bg-black/35 border-white/10 text-stone-300 hover:text-white'
+                }`}
+              >
+                <EyeOff className="w-3.5 h-3.5 shrink-0" />
+                <span>Pure Focus</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHapticSelection();
+                  onToggleOfflineCache(article);
+                }}
+                className={`py-2 px-2.5 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+                  article.isOfflineCached
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400'
+                    : 'bg-black/35 border-white/10 text-stone-300 hover:text-white'
+                }`}
+              >
+                <HardDriveDownload className="w-3.5 h-3.5 shrink-0" />
+                <span>{article.isOfflineCached ? 'Cached' : 'Cache Story'}</span>
+              </button>
             </div>
           </div>
         </div>
@@ -811,15 +979,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       >
         <article className="max-w-[640px] mx-auto">
           {/* 1. Uppercase Kicker (Publication Name) */}
-          <div className="text-[12px] font-sans font-semibold uppercase tracking-[0.06em] text-[#9E9E9E] mb-2.5">
+          <div
+            className="text-[12px] font-sans font-semibold uppercase tracking-[0.06em] mb-2.5"
+            style={{ color: 'var(--reader-muted)' }}
+          >
             {article.feedTitle}
           </div>
 
           {/* 2. Large Bold Sans-Serif Headline */}
           <h1
-            className="font-sans font-bold text-[#EDEDED] tracking-[-0.022em] leading-[1.14]"
+            className="font-sans font-bold tracking-[-0.022em] leading-[1.14]"
             style={{
               fontSize: 'clamp(27px, 7.2vw, 34px)',
+              color: 'var(--reader-heading)',
             }}
           >
             {extractedMeta.title || article.title}
@@ -827,129 +999,175 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
           {/* 3. Standfirst / Subtitle */}
           {subtitle && (
-            <p className="font-sans font-normal text-[17px] leading-[1.42] text-[#9E9E9E] mt-3.5 mb-5">
+            <p
+              className="font-sans font-normal text-[17px] leading-[1.42] mt-3.5 mb-5"
+              style={{ color: 'var(--reader-muted)' }}
+            >
               {subtitle}
             </p>
           )}
 
-          {/* 4. Overlapping Circular Avatars + Reader Mark Row */}
-          <div
-            className={`flex items-center justify-between ${subtitle ? 'mt-5' : 'mt-6'} mb-3.5`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Left: Overlapping circular avatar stack */}
-            <div className="flex items-center -space-x-2">
-              {/* Primary Publication Circle */}
-              <div className="w-9 h-9 rounded-full ring-2 ring-[#181818] bg-[#D92323] text-white flex items-center justify-center font-serif font-bold text-lg overflow-hidden shrink-0 shadow-xs">
-                {faviconUrl && !faviconError ? (
-                  <img
-                    src={faviconUrl}
-                    alt={article.feedTitle}
-                    onError={() => setFaviconError(true)}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <span>{sourceInitial}</span>
-                )}
-              </div>
-
-              {/* Secondary Author / Editorial Circle */}
-              {authorInitial && (
-                <div className="w-9 h-9 rounded-full ring-2 ring-[#181818] bg-gradient-to-br from-[#4F5D73] to-[#2C3545] text-white flex items-center justify-center font-sans font-semibold text-xs shrink-0">
-                  {authorInitial}
+          {/* 4. Overlapping Circular Avatars + Reader Mark Row (hidden in Pure Focus Mode) */}
+          {!preferences.distractionFree && (
+            <div
+              className={`flex items-center justify-between ${subtitle ? 'mt-5' : 'mt-6'} mb-3.5`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Left: Overlapping circular avatar stack */}
+              <div className="flex items-center -space-x-2">
+                <div
+                  className="w-9 h-9 rounded-full bg-[#D92323] text-white flex items-center justify-center font-serif font-bold text-lg overflow-hidden shrink-0 shadow-xs"
+                  style={{ boxShadow: '0 0 0 2px var(--reader-bg)' }}
+                >
+                  {faviconUrl && !faviconError ? (
+                    <img
+                      src={faviconUrl}
+                      alt={article.feedTitle}
+                      onError={() => setFaviconError(true)}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span>{sourceInitial}</span>
+                  )}
                 </div>
-              )}
 
-              {/* Accent Brand Orb (Matches overlapping orange/gold circle in reference) */}
-              <div className="w-9 h-9 rounded-full ring-2 ring-[#181818] bg-gradient-to-br from-[#FF7A2F] to-[#E8521A] flex items-center justify-center shrink-0">
-                <span className="w-7 h-7 rounded-full border border-emerald-300/60" />
+                {authorInitial && (
+                  <div
+                    className="w-9 h-9 rounded-full bg-gradient-to-br from-[#4F5D73] to-[#2C3545] text-white flex items-center justify-center font-sans font-semibold text-xs shrink-0"
+                    style={{ boxShadow: '0 0 0 2px var(--reader-bg)' }}
+                  >
+                    {authorInitial}
+                  </div>
+                )}
+
+                <div
+                  className="w-9 h-9 rounded-full bg-gradient-to-br from-[#FF7A2F] to-[#E8521A] flex items-center justify-center shrink-0"
+                  style={{ boxShadow: '0 0 0 2px var(--reader-bg)' }}
+                >
+                  <span className="w-7 h-7 rounded-full border border-emerald-300/60" />
+                </div>
+              </div>
+
+              {/* Right: Perspective & Reader Brand Mark / Quick Summary Trigger */}
+              <div className="flex items-center gap-3">
+                {onOpenPerspective && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHapticSelection();
+                      onOpenPerspective(article);
+                    }}
+                    title="Perspective — View all sources covering this story"
+                    style={{
+                      backgroundColor: 'var(--reader-surface)',
+                      borderColor: 'var(--reader-border)',
+                      color: 'var(--reader-heading)',
+                    }}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium transition-all active:scale-95"
+                  >
+                    <PerspectiveLogo className="w-3.5 h-3.5 text-[#FF6719]" />
+                    <span>Perspective</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={handleGenerateSummary}
+                  title="Toggle AI Editorial Summary"
+                  style={{ color: 'var(--reader-heading)' }}
+                  className="flex items-center gap-1.5 hover:opacity-80 transition-opacity active:scale-95"
+                >
+                  <svg
+                    width="13"
+                    height="15"
+                    viewBox="0 0 14 16"
+                    fill="#FF6719"
+                    aria-hidden="true"
+                    className="shrink-0"
+                  >
+                    <path d="M0 0h14v2.2H0V0zm0 4.2h14v2.2H0V4.2zm0 4.2h14V16l-7-3.8L0 16V8.4z" />
+                  </svg>
+                  <span className="font-sans font-semibold text-[15px] tracking-[-0.02em]">
+                    reader
+                  </span>
+                </button>
               </div>
             </div>
-
-            {/* Right: Perspective & Reader Brand Mark / Quick Summary Trigger */}
-            <div className="flex items-center gap-3">
-              {onOpenPerspective && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHapticSelection();
-                    onOpenPerspective(article);
-                  }}
-                  title="Perspective — View all sources covering this story"
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-[#ECECEC] transition-all active:scale-95"
-                >
-                  <PerspectiveLogo className="w-3.5 h-3.5 text-[#FF6719]" />
-                  <span>Perspective</span>
-                </button>
-              )}
-
-              <button
-                onClick={handleGenerateSummary}
-                title="Toggle AI Editorial Summary"
-                className="flex items-center gap-1.5 text-[#ECECEC] hover:opacity-80 transition-opacity active:scale-95"
-              >
-                <svg
-                  width="13"
-                  height="15"
-                  viewBox="0 0 14 16"
-                  fill="#FF6719"
-                  aria-hidden="true"
-                  className="shrink-0"
-                >
-                  <path d="M0 0h14v2.2H0V0zm0 4.2h14v2.2H0V4.2zm0 4.2h14V16l-7-3.8L0 16V8.4z" />
-                </svg>
-                <span className="font-sans font-semibold text-[15px] tracking-[-0.02em] text-[#F2F2F2]">
-                  reader
-                </span>
-              </button>
-            </div>
-          </div>
+          )}
 
           {/* 5. Uppercase Author Byline & Date-Time */}
           <div className="mt-3">
-            <div className="text-[11.5px] font-sans font-bold uppercase tracking-[0.04em] text-[#DEDEDE] leading-snug">
+            <div
+              className="text-[11.5px] font-sans font-bold uppercase tracking-[0.04em] leading-snug"
+              style={{ color: 'var(--reader-heading)' }}
+            >
               {bylineText}
             </div>
-            <div className="text-[11.5px] font-sans font-medium uppercase tracking-[0.04em] text-[#8E8E8E] mt-1">
+            <div
+              className="text-[11.5px] font-sans font-medium uppercase tracking-[0.04em] mt-1"
+              style={{ color: 'var(--reader-muted)' }}
+            >
               {formatEditorialTimestamp(article.pubDate, article.timestamp)}
             </div>
           </div>
 
           {/* 6. Thin Subtle Horizontal Divider */}
-          <div className="border-b border-[#2C2C2C] my-5" />
+          <div className="border-b my-5" style={{ borderColor: 'var(--reader-border)' }} />
 
-          {/* Optional AI Editorial Summary Card (when toggled via the reader badge or dock) */}
+          {/* Optional AI Editorial Summary Card */}
           {showSummary && (
             <aside
               onClick={(e) => e.stopPropagation()}
-              className="my-6 reader-liquid-card rounded-2xl p-4 sm:p-5 border border-white/15 shadow-2xl text-[#E6E6E6] animate-in fade-in slide-in-from-top-2 duration-200"
+              className="my-6 rounded-2xl p-4 sm:p-5 border shadow-lg animate-in fade-in slide-in-from-top-2 duration-200"
+              style={{
+                backgroundColor: 'var(--reader-surface)',
+                borderColor: 'var(--reader-border)',
+                color: 'var(--reader-text)',
+              }}
             >
-              <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/10">
+              <div
+                className="flex items-center justify-between pb-3 mb-3 border-b"
+                style={{ borderColor: 'var(--reader-border)' }}
+              >
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-[#FF6719]" />
-                  <h3 className="font-sans font-bold text-xs uppercase tracking-wider text-[#EDEDED]">
+                  <h3
+                    className="font-sans font-bold text-xs uppercase tracking-wider"
+                    style={{ color: 'var(--reader-heading)' }}
+                  >
                     Editorial Summary
                   </h3>
                 </div>
                 <button
                   onClick={() => setShowSummary(false)}
                   aria-label="Hide summary"
-                  className="p-1 rounded-full text-stone-400 hover:text-stone-100 hover:bg-white/10 transition-colors"
+                  style={{ color: 'var(--reader-muted)' }}
+                  className="p-1 rounded-full hover:opacity-80 transition-opacity"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               {isLoadingSummary ? (
-                <div className="py-6 flex items-center justify-center gap-2.5 text-xs text-[#9E9E9E] font-sans">
+                <div
+                  className="py-6 flex items-center justify-center gap-2.5 text-xs font-sans"
+                  style={{ color: 'var(--reader-muted)' }}
+                >
                   <div className="w-4 h-4 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin" />
                   <span>Distilling key points…</span>
                 </div>
               ) : summaryData ? (
                 <div className="space-y-3 text-[14px] leading-relaxed">
-                  <p className="font-serif text-[#EAEAEA]">{summaryData.executiveSummary}</p>
+                  <p className="font-serif" style={{ color: 'var(--reader-heading)' }}>
+                    {summaryData.executiveSummary}
+                  </p>
                   {summaryData.keyTakeaways && summaryData.keyTakeaways.length > 0 && (
-                    <ul className="space-y-1.5 pt-2 border-t border-white/10 font-sans text-[13px] text-[#CFCFCF]">
+                    <ul
+                      className="space-y-1.5 pt-2 border-t font-sans text-[13px]"
+                      style={{
+                        borderColor: 'var(--reader-border)',
+                        color: 'var(--reader-text)',
+                      }}
+                    >
                       {summaryData.keyTakeaways.map((point, i) => (
                         <li key={i} className="flex items-start gap-2">
                           <span className="w-1.5 h-1.5 rounded-full bg-[#FF6719] shrink-0 mt-2" />
@@ -960,14 +1178,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   )}
                 </div>
               ) : (
-                <p className="text-xs text-[#9E9E9E]">Unable to generate summary right now.</p>
+                <p className="text-xs" style={{ color: 'var(--reader-muted)' }}>
+                  Unable to generate summary right now.
+                </p>
               )}
             </aside>
           )}
 
-          {/* 7. Lead / Hero Image — Crisp Rectangular Edges Matching Reference */}
+          {/* 7. Lead / Hero Image */}
           {(extractedMeta.leadImage || article.imageUrl) && (
-            <figure className="my-6 overflow-hidden rounded-[2px] bg-[#222222]">
+            <figure
+              className="my-6 overflow-hidden rounded-[2px]"
+              style={{ backgroundColor: 'var(--reader-surface)' }}
+            >
               <img
                 src={extractedMeta.leadImage || article.imageUrl}
                 alt={extractedMeta.title || article.title}
@@ -981,23 +1204,34 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </figure>
           )}
 
-          {/* Author Credit Attribution Line (matching "Marie Segger / Data journalist" style if author exists) */}
+          {/* Author Credit Attribution Line */}
           {rawAuthor && (
-            <div className="mb-6 font-serif text-[18px] leading-[1.45] text-[#E6E6E6]">
-              <div className="underline underline-offset-4 decoration-white/55">{rawAuthor}</div>
-              <div className="italic text-[#CFCFCF] text-[17px]">{article.feedTitle}</div>
+            <div
+              className="mb-6 font-serif text-[18px] leading-[1.45]"
+              style={{ color: 'var(--reader-heading)' }}
+            >
+              <div
+                className="underline underline-offset-4"
+                style={{ textDecorationColor: 'var(--reader-link-underline)' }}
+              >
+                {rawAuthor}
+              </div>
+              <div className="italic text-[17px]" style={{ color: 'var(--reader-muted)' }}>
+                {article.feedTitle}
+              </div>
             </div>
           )}
 
-          {/* 8. Article Body Copy — Clean Editorial Serif (Double-tap any paragraph to Quote, Pinch 2 fingers to resize) */}
+          {/* 8. Article Body Copy */}
           <div
             onClick={handleBodyParagraphClick}
             style={{
               ...getBodyFontFamilyStyle(preferences.font),
               fontSize: `${effectiveBodySize}px`,
               lineHeight: getLineHeightStyle(preferences.lineHeight),
+              color: 'var(--reader-text)',
             }}
-            className="space-y-5 text-[#E6E6E6] tracking-[-0.003em]"
+            className="space-y-5 tracking-[-0.003em]"
           >
             {extractedBlocks && extractedBlocks.length > 0 ? (
               extractedBlocks.map((block, idx) => {
@@ -1005,7 +1239,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   return (
                     <h2
                       key={idx}
-                      className="font-sans font-bold pt-4 text-[22px] tracking-tight text-[#F0F0F0] leading-snug"
+                      className="font-sans font-bold pt-4 text-[22px] tracking-tight leading-snug"
+                      style={{ color: 'var(--reader-heading)' }}
                     >
                       {block.text}
                     </h2>
@@ -1015,7 +1250,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   return (
                     <blockquote
                       key={idx}
-                      className="py-1 pl-4 my-5 border-l-2 border-white/30 italic text-[#D0D0D0]"
+                      className="py-1 pl-4 my-5 border-l-2 italic"
+                      style={{
+                        borderColor: 'var(--reader-quote-border)',
+                        color: 'var(--reader-quote-text)',
+                      }}
                     >
                       {block.text}
                     </blockquote>
@@ -1023,7 +1262,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 }
                 if (block.type === 'img' && block.src) {
                   return (
-                    <figure key={idx} className="my-6 overflow-hidden rounded-[2px] bg-[#222222]">
+                    <figure
+                      key={idx}
+                      className="my-6 overflow-hidden rounded-[2px]"
+                      style={{ backgroundColor: 'var(--reader-surface)' }}
+                    >
                       <img
                         src={block.src}
                         alt=""
@@ -1031,18 +1274,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                         className="w-full h-auto object-cover block"
                       />
                       {block.caption && (
-                        <figcaption className="pt-2 text-xs text-[#9E9E9E] font-sans">
+                        <figcaption
+                          className="pt-2 text-xs font-sans"
+                          style={{ color: 'var(--reader-muted)' }}
+                        >
                           {block.caption}
                         </figcaption>
                       )}
                     </figure>
                   );
                 }
-                return (
-                  <p key={idx} className="text-[#E6E6E6]">
-                    {block.text}
-                  </p>
-                );
+                return <p key={idx}>{block.text}</p>;
               })
             ) : article.contentHtml ? (
               <div
@@ -1056,13 +1298,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   .map((p) => p.trim())
                   .filter((p) => Boolean(p) && !isJavaScriptWarningText(p))
                   .map((p, idx) => (
-                    <p key={idx} className="text-[#E6E6E6]">
-                      {p}
-                    </p>
+                    <p key={idx}>{p}</p>
                   ))}
               </div>
             ) : (
-              <p className="text-[#E6E6E6]">
+              <p>
                 {isJavaScriptWarningText(article.summary || '') ? article.title : article.summary}
               </p>
             )}
@@ -1070,16 +1310,22 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             {(!extractedBlocks || extractedBlocks.length < 2) &&
               (article.contentClean || '').trim().length < 500 && (
                 <div className="pt-2 space-y-5">
-                  <p className="text-[#D8D8D8]">
+                  <p style={{ color: 'var(--reader-quote-text)' }}>
                     {`This report was published by ${article.feedTitle}${
                       rawAuthor ? ` (${rawAuthor})` : ''
                     }. Below are the key highlights and verified takeaways from this dispatch:`}
                   </p>
-                  <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 space-y-2.5 font-sans text-[14px]">
+                  <div
+                    className="p-4 rounded-2xl border space-y-2.5 font-sans text-[14px]"
+                    style={{
+                      backgroundColor: 'var(--reader-surface)',
+                      borderColor: 'var(--reader-border)',
+                    }}
+                  >
                     <div className="text-xs font-bold uppercase tracking-wider text-[#FF6719]">
                       Key Story Highlights
                     </div>
-                    <ul className="space-y-2 text-[#D8D8D8]">
+                    <ul className="space-y-2" style={{ color: 'var(--reader-text)' }}>
                       {generateQuickTldrBullets(article).map((b, i) => (
                         <li key={i} className="flex items-start gap-2">
                           <span className="w-1.5 h-1.5 rounded-full bg-[#FF6719] shrink-0 mt-2" />
@@ -1092,55 +1338,74 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               )}
 
             {isLoadingExtraction && (
-              <div className="pt-2 pb-1 flex items-center gap-2 text-[11px] text-[#8E8E8E] font-sans">
-                <div className="w-2.5 h-2.5 border-2 border-white/40 border-t-transparent rounded-full animate-spin shrink-0" />
+              <div
+                className="pt-2 pb-1 flex items-center gap-2 text-[11px] font-sans"
+                style={{ color: 'var(--reader-muted)' }}
+              >
+                <div className="w-2.5 h-2.5 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin shrink-0" />
                 <span>Loading full story…</span>
               </div>
             )}
           </div>
 
           {/* Footer: Story Tags & Original Link */}
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="mt-14 pt-6 border-t border-[#2C2C2C] flex flex-wrap items-center justify-between gap-4 text-xs text-[#9E9E9E] font-sans"
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              {articleTags.map((tag) => (
-                <span
-                  key={tag.id}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border border-white/15 bg-white/5 text-[#DEDEDE]"
-                >
+          {!preferences.distractionFree && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="mt-14 pt-6 border-t flex flex-wrap items-center justify-between gap-4 text-xs font-sans"
+              style={{
+                borderColor: 'var(--reader-border)',
+                color: 'var(--reader-muted)',
+              }}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                {articleTags.map((tag) => (
                   <span
-                    className="w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{ backgroundColor: tag.color }}
-                  />
-                  <span>{tag.name}</span>
-                </span>
-              ))}
-              <button
-                onClick={() => {
-                  triggerHapticSelection();
-                  onOpenTagManager(article);
-                }}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-white/10 hover:border-white/25 text-[11px] text-[#9E9E9E] hover:text-white transition-colors"
-              >
-                <TagIcon className="w-3 h-3" />
-                <span>Tags</span>
-              </button>
-            </div>
+                    key={tag.id}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border"
+                    style={{
+                      borderColor: 'var(--reader-border)',
+                      backgroundColor: 'var(--reader-surface)',
+                      color: 'var(--reader-heading)',
+                    }}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: tag.color }}
+                    />
+                    <span>{tag.name}</span>
+                  </span>
+                ))}
+                <button
+                  onClick={() => {
+                    triggerHapticSelection();
+                    onOpenTagManager(article);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border text-[11px] transition-opacity hover:opacity-80"
+                  style={{
+                    borderColor: 'var(--reader-border)',
+                    color: 'var(--reader-muted)',
+                  }}
+                >
+                  <TagIcon className="w-3 h-3" />
+                  <span>Tags</span>
+                </button>
+              </div>
 
-            {article.link && article.link.startsWith('http') && (
-              <a
-                href={article.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] text-[#9E9E9E] hover:text-white underline underline-offset-4 transition-colors"
-              >
-                <span>View original</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            )}
-          </div>
+              {article.link && article.link.startsWith('http') && (
+                <a
+                  href={article.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] underline underline-offset-4 transition-opacity hover:opacity-80"
+                  style={{ color: 'var(--reader-muted)' }}
+                >
+                  <span>View original</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+            </div>
+          )}
         </article>
       </main>
 

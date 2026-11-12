@@ -251,12 +251,15 @@ interface SplashProps {
   subtitleCount: number;
   /** 'enter' | 'hold' | 'exit' | 'gone' */
   phase: 'enter' | 'hold' | 'exit' | 'gone';
+  /** Allow instant tap-anywhere dismiss */
+  onDismiss: () => void;
 }
 
 const SplashScreen: React.FC<SplashProps> = ({
   headlineCount,
   subtitleCount,
   phase,
+  onDismiss,
 }) => {
   if (phase === 'gone') return null;
 
@@ -275,7 +278,8 @@ const SplashScreen: React.FC<SplashProps> = ({
 
   return (
     <div
-      className={`splash-root ${phase === 'exit' ? 'splash-exit' : 'splash-enter'}`}
+      onClick={onDismiss}
+      className={`splash-root cursor-pointer ${phase === 'exit' ? 'splash-exit' : 'splash-enter'}`}
       aria-hidden="true"
     >
       {/* Ambient background glow */}
@@ -332,6 +336,7 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
   const hasRunSplashRef   = useRef(skipSplash);
   const lastResumeRef     = useRef(0);
   const refreshRunningRef = useRef(false);
+  const dismissSplashRef  = useRef<(() => void) | null>(null);
 
   const startSyncIfIdle = useCallback((waitForBannerOpenPromise?: Promise<void>) => {
     if (refreshRunningRef.current) return null;
@@ -348,11 +353,9 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
   /**
    * Startup sequence:
    *   1. Immediately kick off Phase 1 priority news fetch in parallel with the banner
-   *   2. Type "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।" smoothly (~1.25s)
-   *   3. Immediately type "চিন্তা-Think" below it (~0.60s)
-   *   4. Hold the completed banner text on screen for 2 full seconds (2000ms) so the user can read it
-   *   5. Flush the first loaded news batch in a single update and open the feed smoothly
-   *   6. After a 2.5s calm window on the home screen, fetch remaining sources one-by-one in the background
+   *   2. Type "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।" smoothly
+   *   3. Immediately type "চিন্তা-Think" below it
+   *   4. Hold or dismiss cleanly by 2.4s (or immediately on tap)
    */
   const runInitialBannerAndSync = useCallback(async () => {
     recordSplashStartedTimestamp();
@@ -365,8 +368,10 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
     // Start loading the first few news sources immediately while the banner is showing
     const sync = startSyncIfIdle(bannerOpenedPromise);
 
-    // Hard safety timer: guarantee the banner always exits by 5.2s (after typing + 2s hold) even if a timer stalls
-    const safetyTimer = setTimeout(() => {
+    let finished = false;
+    const finishSplashNow = () => {
+      if (finished) return;
+      finished = true;
       sync?.flushPriorityBatch();
       notifyBannerOpened();
       if (mountedRef.current) {
@@ -374,45 +379,56 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
         setSubtitleCount(SUBTITLE_GRAPHEMES.length);
         setSplashPhase('gone');
       }
-    }, 5200);
+    };
+
+    dismissSplashRef.current = finishSplashNow;
+
+    // Hard safety timer: guarantee the banner always exits by 2.4s even if a timer stalls
+    const safetyTimer = setTimeout(finishSplashNow, 2400);
 
     try {
       await wait(INITIAL_START_DELAY_MS);
+      if (finished || !mountedRef.current) return;
 
-      // Stage 1: Faster typewriter for "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।" (~1.25s)
+      // Stage 1: Faster typewriter for "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।"
       await runSmoothTypewriter(
         TOTAL_HEADLINE_GRAPHEMES,
         HEADLINE_STEP_MS,
-        () => mountedRef.current,
-        (count) => setHeadlineCount(count)
+        () => mountedRef.current && !finished,
+        (count) => {
+          if (!finished) setHeadlineCount(count);
+        }
       );
 
-      if (!mountedRef.current) return;
+      if (finished || !mountedRef.current) return;
 
-      // Stage 2: Immediately type "চিন্তা-Think" (~0.60s) with zero pause in between
+      // Stage 2: Immediately type "চিন্তা-Think"
       await runSmoothTypewriter(
         SUBTITLE_GRAPHEMES.length,
         SUBTITLE_STEP_MS,
-        () => mountedRef.current,
-        (count) => setSubtitleCount(count)
+        () => mountedRef.current && !finished,
+        (count) => {
+          if (!finished) setSubtitleCount(count);
+        }
       );
 
-      if (!mountedRef.current) return;
+      if (finished || !mountedRef.current) return;
 
-      // Stage 3: Hold the full text on the banner for 2 full seconds so the user can read what is written
+      // Stage 3: Hold briefly before transitioning out (2.4s safety timer also caps total duration)
       setSplashPhase('hold');
       await wait(BANNER_HOLD_AFTER_TEXT_MS);
 
-      if (!mountedRef.current) return;
+      if (finished || !mountedRef.current) return;
 
       // Flush the loaded first batch of news once right before the banner exits
       sync?.flushPriorityBatch();
       await wait(40);
 
-      if (mountedRef.current) setSplashPhase('exit');
+      if (finished || !mountedRef.current) return;
+      setSplashPhase('exit');
 
       await wait(BANNER_EXIT_ANIM_MS);
-      if (mountedRef.current) setSplashPhase('gone');
+      finishSplashNow();
     } finally {
       clearTimeout(safetyTimer);
       notifyBannerOpened();
@@ -459,11 +475,15 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
         {children}
       </div>
 
-      {/* Splash banner — rendered on top */}
+      {/* Splash banner — rendered on top; tap anywhere to dismiss immediately */}
       <SplashScreen
         phase={splashPhase}
         headlineCount={headlineCount}
         subtitleCount={subtitleCount}
+        onDismiss={() => {
+          dismissSplashRef.current?.();
+          setSplashPhase('gone');
+        }}
       />
     </div>
   );

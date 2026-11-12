@@ -558,17 +558,46 @@ const ALLOWED_ORIGINS = new Set<string>([
     : []),
 ]);
 
+function isTrustedOrigin(origin?: string): boolean {
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  try {
+    const parsed = new URL(origin);
+    const host = parsed.hostname.toLowerCase();
+    if (
+      parsed.protocol === 'https:' &&
+      (host.endsWith('.run.app') ||
+        host.endsWith('.usercontent.goog') ||
+        host.endsWith('.aistudio.google.com'))
+    ) {
+      return true;
+    }
+    if (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      (host === 'localhost' || host === '127.0.0.1')
+    ) {
+      return true;
+    }
+    if (parsed.protocol === 'capacitor:' || parsed.protocol === 'ionic:') {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 // Explicit origin allowlist CORS (no wildcard '*')
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   res.header('Vary', 'Origin');
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
+  if (origin && isTrustedOrigin(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Chinta-Client');
   }
   if (req.method === 'OPTIONS') {
-    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    if (origin && !isTrustedOrigin(origin)) {
       res.sendStatus(403);
       return;
     }
@@ -623,7 +652,7 @@ function requireApiAccess(req: Request, res: Response, next: NextFunction) {
     }
   }
   const origin = req.headers.origin;
-  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+  if (origin && !isTrustedOrigin(origin)) {
     res.status(403).json({ success: false, error: 'Origin not permitted' });
     return;
   }

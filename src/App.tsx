@@ -10,9 +10,10 @@ import {
   Rows3,
   Folder,
   X,
-  Flame,
+  BarChart3,
   BookOpen,
   CheckCircle2,
+  Rss,
 } from 'lucide-react';
 import { IPhoneFrame } from './components/IPhoneFrame';
 import { ArticleCard } from './components/ArticleCard';
@@ -53,6 +54,7 @@ import {
   buildDailyBriefing,
   normalizeReadingHabitState,
   recordArticleReadInHabit,
+  computeSpotifyReadingStats,
   findNewIncomingArticles,
   toDateKey,
   type ReadingHabitState,
@@ -169,6 +171,7 @@ export default function App() {
   const [perspectiveArticle, setPerspectiveArticle] = useState<FeedItem | null>(null);
   const [isScanningPerspectiveSources, setIsScanningPerspectiveSources] = useState(false);
   const [isOpeningFullArticle, setIsOpeningFullArticle] = useState(false);
+  const [loadingArticleId, setLoadingArticleId] = useState<string | null>(null);
   const [pendingNewArticles, setPendingNewArticles] = useState<FeedItem[]>([]);
   const [readerInitialScrollTop, setReaderInitialScrollTop] = useState(0);
 
@@ -481,16 +484,15 @@ export default function App() {
     setRefreshFailed(false);
     setIsRefreshing(true);
     try {
-      const incomingItems: FeedItem[] = [];
       let failedCount = 0;
       await runPool(folderFeeds, 4, async (f) => {
         const result = await syncFeed(f);
-        if (result === null) failedCount += 1;
-        else incomingItems.push(...result);
+        if (result === null) {
+          failedCount += 1;
+        } else if (result.length > 0) {
+          setArticles((prev) => mergeFeedItems(prev, result));
+        }
       });
-      if (incomingItems.length > 0) {
-        setArticles((prev) => mergeFeedItems(prev, incomingItems));
-      }
       if (failedCount === folderFeeds.length) {
         setRefreshFailed(true);
       }
@@ -539,20 +541,24 @@ export default function App() {
       return;
     }
 
+    if (feeds.length === 0) {
+      notify('Add a source in the Sources tab to fetch stories');
+      return;
+    }
+
     setRefreshFailed(false);
     setIsRefreshing(true);
     try {
-      const incomingItems: FeedItem[] = [];
       let failedCount = 0;
       await runPool(feeds, 4, async (f) => {
         const result = await syncFeed(f);
-        if (result === null) failedCount += 1;
-        else incomingItems.push(...result);
+        if (result === null) {
+          failedCount += 1;
+        } else if (result.length > 0) {
+          setArticles((prev) => mergeFeedItems(prev, result));
+        }
       });
 
-      if (incomingItems.length > 0) {
-        setArticles((prev) => mergeFeedItems(prev, incomingItems));
-      }
       // Error feedback only when nothing could be refreshed; a partial refresh still counts as done
       if (failedCount === feeds.length) setRefreshFailed(true);
       if (failedCount > 0) {
@@ -760,7 +766,7 @@ export default function App() {
     );
   };
 
-  // Open article fully loaded in ReaderView and record mindful reading habit progress
+  // Open article fully loaded in ReaderView and record Spotify-style reading stats & habit
   const handleOpenArticle = async (article: FeedItem, resumeScrollTop = 0) => {
     const latest = articles.find((a) => a.id === article.id) || article;
     setReaderInitialScrollTop(resumeScrollTop);
@@ -769,7 +775,16 @@ export default function App() {
       const { nextState, justHitDailyGoal } = recordArticleReadInHabit(
         prev,
         latest.id,
-        latest.readTimeMin || 3
+        latest.readTimeMin || 3,
+        toDateKey(),
+        {
+          title: latest.title,
+          feedId: latest.feedId,
+          feedTitle: latest.feedTitle,
+          feedUrl: latest.feedUrl,
+          imageUrl: latest.imageUrl,
+          tags: latest.tags,
+        }
       );
       if (justHitDailyGoal) {
         setTimeout(() => {
@@ -789,6 +804,7 @@ export default function App() {
       !/\/video\//i.test(latest.link) &&
       !/news\.google\.com\/rss\/articles\//i.test(latest.link)
     ) {
+      setLoadingArticleId(latest.id);
       setIsOpeningFullArticle(true);
       try {
         const extractionPromise = extractArticleWithFallback(latest.link);
@@ -825,15 +841,16 @@ export default function App() {
               contentClean: fullyLoadedArticle.contentClean,
               contentHtml: fullyLoadedArticle.contentHtml,
             });
-            setIsOpeningFullArticle(false);
             setActiveArticle(fullyLoadedArticle);
             return;
           }
         }
       } catch {
         // Fallback to existing content
+      } finally {
+        setLoadingArticleId(null);
+        setIsOpeningFullArticle(false);
       }
-      setIsOpeningFullArticle(false);
     }
 
     setActiveArticle(latest);
@@ -920,7 +937,16 @@ export default function App() {
         const { nextState, justHitDailyGoal } = recordArticleReadInHabit(
           prev,
           target.id,
-          target.readTimeMin || 3
+          target.readTimeMin || 3,
+          toDateKey(),
+          {
+            title: target.title,
+            feedId: target.feedId,
+            feedTitle: target.feedTitle,
+            feedUrl: target.feedUrl,
+            imageUrl: target.imageUrl,
+            tags: target.tags,
+          }
         );
         if (justHitDailyGoal) {
           triggerHapticComplete();
@@ -1214,9 +1240,13 @@ export default function App() {
     !searchQuery &&
     dailyBriefing.stories.length >= 3;
 
+  const spotifyStats = useMemo(
+    () => computeSpotifyReadingStats(readingHabit, articles, feeds, tags),
+    [readingHabit, articles, feeds, tags]
+  );
+
   const habitReadToday = readingHabit.todayReadIds.length;
   const habitGoal = Math.max(1, readingHabit.dailyGoal || 3);
-  const habitGoalDone = habitReadToday >= habitGoal;
 
   return (
     <IPhoneFrame
@@ -1262,30 +1292,21 @@ export default function App() {
                 }`}
               >
                 <div className="flex items-center justify-between gap-2 pt-1">
-                  {/* Top-Left: Daily Reading Habit Ring & Active Filter Pill */}
+                  {/* Top-Left: Spotify-Style Reading Stats Pill & Active Filter Pill */}
                   <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
-                    {/* Mindful Reading Goal Ring & Streak Button */}
                     <button
                       type="button"
                       onClick={() => {
                         triggerHapticSelection();
                         setIsHabitSheetOpen(true);
                       }}
-                      aria-label="Open Daily Reading Habit and Streak"
-                      title="Daily Mindful Reading Goal & Streak"
+                      aria-label="Open Chinta Wrapped Reading Stats"
+                      title="Chinta Wrapped · Reading Stats & Story Sharing"
                       className="liquid-glass-pill h-10 px-3 rounded-full flex items-center gap-2 text-xs font-semibold text-stone-900 dark:text-white active:scale-95 transition-transform shrink-0"
                     >
-                      <Flame
-                        className={`w-3.5 h-3.5 ${
-                          habitGoalDone ? 'text-emerald-400' : 'text-[#FF6719]'
-                        }`}
-                      />
+                      <BarChart3 className="w-3.5 h-3.5 text-[#1DB954]" />
                       <span className="font-mono tabular-nums">
-                        {habitReadToday}/{habitGoal}
-                      </span>
-                      <span aria-hidden="true" className="opacity-40">·</span>
-                      <span className="font-mono tabular-nums text-[11px] opacity-85">
-                        {readingHabit.streakDays}d
+                        Stats · {spotifyStats.totalMinutesRead}m
                       </span>
                     </button>
 
@@ -1491,6 +1512,7 @@ export default function App() {
                       article={cluster.primary}
                       perspectives={cluster.perspectives}
                       viewMode={feedViewMode}
+                      isLoadingArticleId={loadingArticleId}
                       onSelect={(art) => handleOpenArticle(art, 0)}
                       onToggleBookmark={handleToggleBookmark}
                       onToggleRead={handleToggleRead}
@@ -1532,28 +1554,52 @@ export default function App() {
                   </div>
                 )}
 
-                {displayedArticles.length === 0 && (
-                  <div className="py-16 px-6 text-center text-stone-500">
-                    <p className="font-serif text-base text-stone-800 dark:text-stone-200 mb-1">
-                      No stories found for this filter
-                    </p>
-                    <p className="text-xs mb-4">
-                      Try switching filters or pull down to check for new articles.
+                {feeds.length === 0 && displayedArticles.length === 0 ? (
+                  <div className="mx-4 my-10 p-6 rounded-3xl liquid-glass border border-stone-200/70 dark:border-white/[0.08] text-center">
+                    <div className="w-12 h-12 rounded-2xl bg-[#FF6719]/15 text-[#FF6719] flex items-center justify-center mx-auto mb-3.5">
+                      <Rss className="w-6 h-6" />
+                    </div>
+                    <h3 className="font-serif text-lg font-bold text-stone-900 dark:text-stone-100 mb-1.5">
+                      Your Newsfeed is Empty
+                    </h3>
+                    <p className="text-xs text-stone-500 dark:text-stone-400 leading-relaxed max-w-xs mx-auto mb-5">
+                      No preloaded sources are enabled. Add any newspaper, website URL, or RSS link in the Sources tab to build your personal feed.
                     </p>
                     <button
                       type="button"
                       onClick={() => {
-                        setFilterMode('all');
-                        setSearchQuery('');
-                        setSelectedTagId(null);
-                        setSelectedFeedId(null);
-                        setSelectedFolder(null);
+                        triggerHapticSelection();
+                        setCurrentTab('feeds');
                       }}
-                      className="px-3.5 py-1.5 rounded-full text-xs font-medium liquid-glass-pill text-stone-800 dark:text-stone-200"
+                      className="px-5 py-2.5 rounded-full text-xs font-semibold bg-[#FF6719] text-white shadow-lg shadow-[#FF6719]/25 active:scale-95 transition-transform"
                     >
-                      Show All Stories
+                      Add Your First Source →
                     </button>
                   </div>
+                ) : (
+                  displayedArticles.length === 0 && (
+                    <div className="py-16 px-6 text-center text-stone-500">
+                      <p className="font-serif text-base text-stone-800 dark:text-stone-200 mb-1">
+                        No stories found for this filter
+                      </p>
+                      <p className="text-xs mb-4">
+                        Try switching filters or pull down to check for new articles.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFilterMode('all');
+                          setSearchQuery('');
+                          setSelectedTagId(null);
+                          setSelectedFeedId(null);
+                          setSelectedFolder(null);
+                        }}
+                        className="px-3.5 py-1.5 rounded-full text-xs font-medium liquid-glass-pill text-stone-800 dark:text-stone-200"
+                      >
+                        Show All Stories
+                      </button>
+                    </div>
+                  )
                 )}
               </PullToRefresh>
 
@@ -1721,6 +1767,7 @@ export default function App() {
                     key={article.id}
                     article={article}
                     viewMode={feedViewMode}
+                    isLoadingArticleId={loadingArticleId}
                     onSelect={(art) => handleOpenArticle(art, 0)}
                     onToggleBookmark={handleToggleBookmark}
                     onToggleRead={handleToggleRead}
@@ -1861,6 +1908,7 @@ export default function App() {
         isOpen={isHabitSheetOpen}
         onClose={() => setIsHabitSheetOpen(false)}
         habit={readingHabit}
+        stats={spotifyStats}
         onChangeDailyGoal={(goal) => {
           setReadingHabit((prev) => ({ ...prev, dailyGoal: goal }));
           notify(`Daily reading goal set to ${goal} stories`);

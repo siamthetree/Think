@@ -12,80 +12,7 @@ export const DEFAULT_TAGS: Tag[] = [
   { id: 'tag_breaking', name: 'Breaking News', color: '#DC2626' },
 ];
 
-export const INITIAL_FEEDS: Feed[] = [
-  {
-    id: 'daily_star',
-    title: 'The Daily Star',
-    url: 'https://www.thedailystar.net/rss.xml',
-    siteUrl: 'https://www.thedailystar.net',
-    description: 'Leading English-language daily newspaper in Bangladesh.',
-    category: 'Bangladesh',
-    defaultTags: ['tag_bd', 'tag_investigative'],
-  },
-  {
-    id: 'prothom_alo_en',
-    title: 'Prothom Alo (English)',
-    url: 'https://en.prothomalo.com/feed',
-    siteUrl: 'https://en.prothomalo.com',
-    description: 'National news, politics, economy, and views from Dhaka.',
-    category: 'Bangladesh',
-    defaultTags: ['tag_bd', 'tag_world'],
-  },
-  {
-    id: 'prothom_alo_bn',
-    title: 'প্রথম আলো (Prothom Alo Bangla)',
-    url: 'https://www.prothomalo.com/feed',
-    siteUrl: 'https://www.prothomalo.com',
-    description: 'বাংলাদেশের শীর্ষস্থানীয় বাংলা দৈনিক পত্রিকা (Direct & Feed Reader)।',
-    category: 'Bangladesh (বাংলা)',
-    defaultTags: ['tag_bd'],
-  },
-  {
-    id: 'tbs_news',
-    title: 'The Business Standard (TBS)',
-    url: 'https://www.tbsnews.net/top-news/rss.xml',
-    siteUrl: 'https://www.tbsnews.net',
-    description: 'Business, economy, and policy journalism in Bangladesh.',
-    category: 'Bangladesh Finance',
-    defaultTags: ['tag_bd', 'tag_markets'],
-  },
-  {
-    id: 'bbc_world',
-    title: 'BBC News',
-    url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
-    siteUrl: 'https://bbc.com/news',
-    description: 'Global news, correspondents, and impartial reporting.',
-    category: 'World',
-    defaultTags: ['tag_world', 'tag_breaking'],
-  },
-  {
-    id: 'bdnews24',
-    title: 'bdnews24.com',
-    url: 'https://bdnews24.com',
-    siteUrl: 'https://bdnews24.com',
-    description: 'Direct Portal Reader - Loads stories directly from bdnews24.com without needing RSS.',
-    category: 'Bangladesh (Direct URL)',
-    defaultTags: ['tag_bd', 'tag_breaking'],
-  },
-  {
-    id: 'fe_bd',
-    title: 'The Financial Express (BD)',
-    url: 'https://thefinancialexpress.com.bd',
-    siteUrl: 'https://thefinancialexpress.com.bd',
-    description: 'Direct Portal Reader - Trade, banking, and economic news from Bangladesh.',
-    category: 'Bangladesh Finance',
-    defaultTags: ['tag_bd', 'tag_markets'],
-  },
-  {
-    id: 'dhaka_tribune',
-    title: 'Dhaka Tribune',
-    url: 'https://www.dhakatribune.com',
-    siteUrl: 'https://www.dhakatribune.com',
-    description: 'Direct Portal Reader - National politics, foreign affairs, and Dhaka dispatches.',
-    category: 'Bangladesh',
-    defaultTags: ['tag_bd', 'tag_opinion'],
-  },
-];
+export const INITIAL_FEEDS: Feed[] = [];
 
 const STORAGE_KEYS = {
   FEEDS: 'paperpress_feeds_v2',
@@ -95,12 +22,7 @@ const STORAGE_KEYS = {
   FOLDERS: 'paperpress_folders_v1',
 };
 
-export const DEFAULT_FOLDERS: string[] = [
-  'Bangladesh',
-  'Bangladesh (বাংলা)',
-  'Bangladesh Finance',
-  'World',
-];
+export const DEFAULT_FOLDERS: string[] = [];
 
 export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   font: 'serif',
@@ -178,8 +100,8 @@ export function pruneArticles(articles: FeedItem[], maxUnsaved = MAX_UNSAVED_ART
 
 export function loadFeedsFromStorage(): Feed[] {
   const stored = readArray<Feed>(STORAGE_KEYS.FEEDS);
-  if (!stored || stored.length === 0) return INITIAL_FEEDS;
-  // Upgrade legacy slow homepage URLs for built-in sources to their fast XML feed endpoints
+  if (!stored) return INITIAL_FEEDS;
+  // Upgrade legacy slow homepage URLs if present in existing user storage
   return stored.map((f) => {
     if (f.id === 'prothom_alo_en' && f.url === 'https://en.prothomalo.com') {
       return { ...f, url: 'https://en.prothomalo.com/feed' };
@@ -343,7 +265,7 @@ export function savePreferencesToStorage(prefs: ReaderPreferences): void {
 export function loadFoldersFromStorage(): string[] {
   const stored = readArray<string>(STORAGE_KEYS.FOLDERS);
   if (stored && stored.length > 0) {
-    return Array.from(new Set([...DEFAULT_FOLDERS, ...stored.map((s) => s.trim()).filter(Boolean)]));
+    return Array.from(new Set(stored.map((s) => s.trim()).filter(Boolean)));
   }
   return DEFAULT_FOLDERS;
 }

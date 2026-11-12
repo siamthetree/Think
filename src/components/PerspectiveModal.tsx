@@ -8,7 +8,7 @@ import {
   Search,
 } from 'lucide-react';
 import type { Feed, FeedItem } from '../types';
-import { searchPerspectivesAcrossSources } from '../utils/feedIntelligence';
+import { findPerspectivesAcrossSources } from '../utils/feedIntelligence';
 import { formatRelativeTime } from '../utils/feedParser';
 import { SourceAvatar } from './SourceAvatar';
 import { PerspectiveLogo } from './PerspectiveLogo';
@@ -79,7 +79,7 @@ export const PerspectiveModal: React.FC<PerspectiveModalProps> = ({
   // Run cross-source Perspective search across all articles in the app
   const perspectiveResult = useMemo(() => {
     if (!targetArticle) return null;
-    return searchPerspectivesAcrossSources(targetArticle, allArticles);
+    return findPerspectivesAcrossSources(targetArticle, allArticles);
   }, [targetArticle, allArticles]);
 
   const filteredMatches = useMemo(() => {
@@ -342,7 +342,7 @@ export const PerspectiveModal: React.FC<PerspectiveModalProps> = ({
                 <RefreshCw
                   className={`w-3 h-3 text-[#FF6719] ${isScanningSources ? 'animate-spin' : ''}`}
                 />
-                <span>{isScanningSources ? 'Scanning…' : 'Scan Sources'}</span>
+                <span>{isScanningSources ? 'Syncing…' : 'Sync All'}</span>
               </button>
             )}
 
@@ -545,7 +545,7 @@ export const PerspectiveModal: React.FC<PerspectiveModalProps> = ({
                   : 'No other sources have published this exact story yet'}
               </p>
               <p className="text-xs text-stone-500 dark:text-stone-400 mb-3">
-                Tap Scan Sources to check all {feeds.length} configured RSS feeds for the latest updates.
+                Tap Sync All to query all {feeds.length} added RSS sources for new coverage of this topic.
               </p>
               {onScanAllSources && !isScanningSources && (
                 <button
@@ -556,7 +556,7 @@ export const PerspectiveModal: React.FC<PerspectiveModalProps> = ({
                   }}
                   className="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#FF6719] text-white shadow-sm active:scale-95 transition-transform"
                 >
-                  Scan All Sources Now
+                  Sync All Sources Now
                 </button>
               )}
             </div>

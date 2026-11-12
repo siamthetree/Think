@@ -2,13 +2,14 @@ import React, { useState, useRef } from 'react';
 import {
   Bookmark,
   Share2,
-  Heart,
   Repeat2,
   Sparkles,
   CheckCircle2,
   Clock,
   ChevronDown,
   ChevronUp,
+  Layers,
+  Loader2,
 } from 'lucide-react';
 import type { FeedItem } from '../types';
 import { formatRelativeTime } from '../utils/feedParser';
@@ -25,7 +26,6 @@ import {
   computeSwipeActionState,
   computeReleaseVelocity,
   shouldCommitSwipeAction,
-  isDoubleTapGesture,
   type SwipeActionState,
   type GestureAxisLock,
   type VelocitySample,
@@ -35,6 +35,7 @@ interface ArticleCardProps {
   article: FeedItem;
   perspectives?: FeedItem[];
   viewMode?: 'magazine' | 'compact';
+  isLoadingArticleId?: string | null;
   onSelect: (article: FeedItem) => void;
   onToggleBookmark: (id: string, e?: React.MouseEvent) => void;
   onToggleRead: (id: string, e?: React.MouseEvent) => void;
@@ -55,6 +56,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   article,
   perspectives = [],
   viewMode = 'magazine',
+  isLoadingArticleId = null,
   onSelect,
   onToggleBookmark,
   onToggleRead,
@@ -62,8 +64,8 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   onOpenPerspective,
 }) => {
   const readTime = article.readTimeMin || 3;
+  const isLoadingThis = isLoadingArticleId === article.id;
 
-  // Stable pseudo-random engagement counts based on article ID hash
   const pseudoCount = (seed: string, min: number, max: number) => {
     let hash = 0;
     for (let i = 0; i < seed.length; i++) {
@@ -73,16 +75,11 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     return min + (Math.abs(hash) % (max - min + 1));
   };
 
-  const initialLikes = pseudoCount(article.id + '_like', 4, 68);
   const initialRestacks = pseudoCount(article.id + '_re', 1, 19);
 
-  const [isLiked, setIsLiked] = useState(false);
-  const [likesCount, setLikesCount] = useState(initialLikes);
   const [isRestacked, setIsRestacked] = useState(false);
   const [restacksCount, setRestacksCount] = useState(initialRestacks);
   const [isCopied, setIsCopied] = useState(false);
-  const [likePopping, setLikePopping] = useState(false);
-  const [doubleTapHeartBurst, setDoubleTapHeartBurst] = useState(false);
   const [cardPressed, setCardPressed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
   const [showPerspectives, setShowPerspectives] = useState(false);
@@ -91,7 +88,6 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const [swipeState, setSwipeState] = useState<SwipeActionState>(INITIAL_SWIPE_STATE);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const coverTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchSessionRef = useRef<{
     pointerId: number;
     startX: number;
@@ -101,7 +97,6 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     samples: VelocitySample[];
   } | null>(null);
   const suppressNextClickRef = useRef(false);
-  const lastCoverTapRef = useRef<{ time: number; x: number; y: number }>({ time: 0, x: 0, y: 0 });
 
   const extractedSummary =
     article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
@@ -248,60 +243,14 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     onSelect(article);
   };
 
-  // Cover Image supports Double-Tap Heart Burst (while single tap still opens the article)
+  // Single-tap on cover image opens the full story immediately
   const handleCoverClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (suppressNextClickRef.current) {
       suppressNextClickRef.current = false;
       return;
     }
-
-    const now = Date.now();
-    const isDouble = isDoubleTapGesture({
-      lastTapTime: lastCoverTapRef.current.time,
-      currentTime: now,
-      lastX: lastCoverTapRef.current.x,
-      lastY: lastCoverTapRef.current.y,
-      currentX: e.clientX,
-      currentY: e.clientY,
-    });
-
-    if (isDouble) {
-      if (coverTapTimerRef.current) {
-        clearTimeout(coverTapTimerRef.current);
-        coverTapTimerRef.current = null;
-      }
-      lastCoverTapRef.current = { time: 0, x: 0, y: 0 };
-      triggerHapticComplete();
-      setLikePopping(true);
-      setDoubleTapHeartBurst(true);
-      setTimeout(() => setLikePopping(false), 450);
-      setTimeout(() => setDoubleTapHeartBurst(false), 680);
-      if (!isLiked) {
-        setIsLiked(true);
-        setLikesCount((c) => c + 1);
-      }
-      return;
-    }
-
-    lastCoverTapRef.current = { time: now, x: e.clientX, y: e.clientY };
-    if (coverTapTimerRef.current) clearTimeout(coverTapTimerRef.current);
-    coverTapTimerRef.current = setTimeout(() => {
-      coverTapTimerRef.current = null;
-      onSelect(article);
-    }, 200);
-  };
-
-  const handleLike = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    triggerHapticSelection();
-    setLikePopping(true);
-    setTimeout(() => setLikePopping(false), 400);
-    setIsLiked((prev) => {
-      const next = !prev;
-      setLikesCount((c) => (next ? c + 1 : c - 1));
-      return next;
-    });
+    onSelect(article);
   };
 
   const handleRestack = (e: React.MouseEvent) => {
@@ -445,6 +394,14 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           </div>
 
           <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+            {isLoadingThis && (
+              <span
+                className="p-1.5 text-[#FF6719] flex items-center"
+                aria-label="Loading full story"
+              >
+                <Loader2 className="w-4 h-4 animate-spin" />
+              </span>
+            )}
             {onOpenPerspective && (
               <button
                 type="button"
@@ -452,11 +409,11 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                   triggerHapticSelection();
                   onOpenPerspective(article);
                 }}
-                aria-label={`Perspective for ${article.title}`}
-                title="Perspective — Search same news across all sources"
+                aria-label={`Perspectives for ${article.title}`}
+                title="Perspectives — Search same news across all sources"
                 className="p-2 rounded-full text-stone-400 hover:text-[#FF6719] transition-colors active:scale-90 flex items-center gap-1"
               >
-                <PerspectiveLogo className="w-4 h-4 text-[#FF6719]" />
+                <Layers className="w-4 h-4 text-[#FF6719]" />
                 {perspectives.length > 0 && (
                   <span className="text-[10px] font-bold text-[#FF6719] tabular-nums">
                     +{perspectives.length}
@@ -535,15 +492,11 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                 : 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)',
         }}
       >
-        {/* Double-Tap Heart Burst Overlay */}
-        {doubleTapHeartBurst && (
-          <div
-            aria-hidden="true"
-            className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none animate-in zoom-in-75 fade-in duration-150"
-          >
-            <div className="w-16 h-16 rounded-full liquid-glass-pill flex items-center justify-center shadow-2xl">
-              <Heart className="w-8 h-8 fill-[#FF4B4B] text-[#FF4B4B] like-pop" />
-            </div>
+        {/* Pre-Loading Spinner Badge Overlay when fetching full story */}
+        {isLoadingThis && (
+          <div className="absolute top-3.5 right-4 z-20 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#FF6719]/15 text-[#FF6719] text-[11px] font-semibold">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            <span>Loading…</span>
           </div>
         )}
 
@@ -718,36 +671,18 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           </div>
         )}
 
-        {/* 5. Minimal Social & Utility Action Ribbon (Like, Restack, Perspective, TL;DR Quick Peek, Share & Bookmark) */}
+        {/* 5. Minimal Utility Action Ribbon (Restack, Perspectives, TL;DR Quick Peek, Share & Bookmark) */}
         <div
           className="flex items-center justify-between text-xs text-stone-500 dark:text-stone-400 pt-1 border-t border-stone-100 dark:border-white/[0.05]"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Left: Like, Restack, Perspective, Quick TL;DR Peek */}
+          {/* Left: Restack, Perspectives, Quick TL;DR Peek */}
           <div className="flex items-center gap-3.5 sm:gap-4">
-            <button
-              type="button"
-              onClick={handleLike}
-              aria-label="Like story"
-              className={`flex items-center gap-1.5 py-1 px-1 -ml-1 rounded-lg transition-all tabular-nums ${
-                isLiked
-                  ? 'text-[#FF4B4B] font-semibold'
-                  : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-              }`}
-            >
-              <Heart
-                className={`w-4 h-4 transition-transform active:scale-125 duration-150 ${
-                  isLiked ? 'fill-[#FF4B4B] text-[#FF4B4B]' : 'stroke-[1.75]'
-                } ${likePopping ? 'like-pop' : ''}`}
-              />
-              <span className="text-[12px]">{likesCount}</span>
-            </button>
-
             <button
               type="button"
               onClick={handleRestack}
               aria-label="Restack story"
-              className={`flex items-center gap-1.5 py-1 px-1 rounded-lg transition-all tabular-nums ${
+              className={`flex items-center gap-1.5 py-1 px-1 -ml-1 rounded-lg transition-all tabular-nums ${
                 isRestacked
                   ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
                   : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
@@ -768,12 +703,12 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                   triggerHapticSelection();
                   onOpenPerspective(article);
                 }}
-                aria-label={`Perspective for ${article.title}`}
-                title="Perspective — Search all matching news across app sources"
+                aria-label={`Perspectives for ${article.title}`}
+                title="Perspectives — Search all matching news across app sources"
                 className="flex items-center gap-1.5 py-1 px-1.5 rounded-lg text-stone-600 dark:text-stone-300 hover:text-[#FF6719] dark:hover:text-[#FF6719] transition-colors whitespace-nowrap active:scale-95"
               >
-                <PerspectiveLogo className="w-3.5 h-3.5 text-[#FF6719]" />
-                <span className="text-[12px] font-medium">Perspective</span>
+                <Layers className="w-3.5 h-3.5 text-[#FF6719]" />
+                <span className="text-[12px] font-medium">Perspectives</span>
                 {perspectives.length > 0 && (
                   <span className="px-1.5 py-0.2 rounded-full bg-[#FF6719]/15 text-[#FF6719] text-[10px] font-bold tabular-nums">
                     +{perspectives.length}

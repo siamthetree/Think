@@ -1,4 +1,4 @@
-import type { FeedItem } from '../types';
+import type { Feed, FeedItem, Tag } from '../types';
 
 export interface StoryCluster {
   id: string;
@@ -14,6 +14,18 @@ export interface DailyBriefingEdition {
   totalReadMinutes: number;
 }
 
+export interface ReadHistoryEntry {
+  id: string;
+  title: string;
+  feedId: string;
+  feedTitle: string;
+  feedUrl?: string;
+  timestamp: number;
+  readTimeMin: number;
+  imageUrl?: string;
+  tags?: string[];
+}
+
 export interface ReadingHabitState {
   dailyGoal: number;
   todayDate: string; // YYYY-MM-DD
@@ -21,6 +33,10 @@ export interface ReadingHabitState {
   todayMinutes: number;
   streakDays: number;
   lastCompletedDate: string | null;
+  totalReadIds?: string[];
+  totalMinutes?: number;
+  sourceReadCounts?: Record<string, number>;
+  readHistory?: ReadHistoryEntry[];
 }
 
 export interface ReadingProgressItem {
@@ -32,30 +48,148 @@ export interface ReadingProgressItem {
   updatedAt: number;
 }
 
+export interface SpotifyTopSourceStat {
+  rank: number;
+  feedId: string;
+  title: string;
+  feedUrl?: string;
+  storyCount: number;
+  minutes: number;
+  sharePercent: number;
+}
+
+export interface SpotifyTopGenreStat {
+  rank: number;
+  tagId: string;
+  name: string;
+  color: string;
+  storyCount: number;
+  sharePercent: number;
+}
+
+export interface SpotifyReaderAura {
+  title:
+    | 'Signal Seeker'
+    | 'The Synthesis Architect'
+    | 'The Policy Strategist'
+    | 'Macro Pulse Analyst'
+    | 'Frontier Technologist';
+  subtitle: string;
+  gradientFrom: string;
+  gradientTo: string;
+}
+
+export interface SpotifyReadingStats {
+  totalMinutesRead: number;
+  totalStoriesRead: number;
+  todayMinutesRead: number;
+  todayStoriesRead: number;
+  streakDays: number;
+  estimatedWordsRead: number;
+  topSources: SpotifyTopSourceStat[];
+  topGenres: SpotifyTopGenreStat[];
+  recentStories: ReadHistoryEntry[];
+  readerAura: SpotifyReaderAura;
+}
+
 const STOP_WORDS = new Set([
+  // Common English function words & reporting verbs
   'the', 'and', 'for', 'that', 'with', 'from', 'this', 'have', 'will', 'your',
   'about', 'into', 'after', 'over', 'under', 'between', 'what', 'when', 'where',
   'which', 'their', 'there', 'been', 'were', 'they', 'more', 'some', 'than',
-  'news', 'report', 'says', 'amid', 'new', 'how', 'why', 'who', 'its', 'are',
-  'was', 'has', 'had', 'not', 'but', 'you', 'all', 'can', 'her', 'his', 'our',
-  'out', 'day', 'get', 'make', 'made', 'just', 'like', 'know', 'take', 'year',
-  'এবং', 'থেকে', 'করে', 'জন্য', 'হয়েছে', 'বলে', 'সাথে', 'নিয়ে', 'মধ্যে', 'কিন্তু',
-  'আরও', 'একটি', 'হবে', 'হয়', 'বা', 'না', 'ও', 'এই', 'তার', 'করা', 'পর', 'দুই',
+  'news', 'report', 'reports', 'reported', 'says', 'said', 'amid', 'new', 'how',
+  'why', 'who', 'its', 'are', 'was', 'has', 'had', 'not', 'but', 'you', 'all',
+  'can', 'her', 'his', 'our', 'out', 'day', 'days', 'get', 'make', 'made',
+  'just', 'like', 'know', 'take', 'year', 'years', 'month', 'week', 'today',
+  'latest', 'update', 'updates', 'live', 'breaking', 'story', 'stories', 'read',
+  'first', 'second', 'third', 'former', 'current', 'official', 'officials',
+  'people', 'public', 'country', 'state', 'city', 'high', 'rise', 'falls',
+  'percent', 'million', 'billion', 'crore', 'lakh', 'taka', 'dollar', 'dollars',
+  'also', 'still', 'back', 'even', 'many', 'most', 'much', 'very', 'only',
+  'could', 'would', 'should', 'must', 'being', 'before', 'while', 'during',
+  'through', 'against', 'around', 'among', 'within', 'without', 'another',
+  // Broad geographic & category words (prevent unrelated same-beat collisions)
+  'bangladesh', 'bangladeshi', 'dhaka', 'chattogram', 'chittagong', 'sylhet',
+  'rajshahi', 'khulna', 'india', 'indian', 'pakistan', 'china', 'chinese',
+  'america', 'american', 'europe', 'european', 'britain', 'british', 'russia',
+  'world', 'global', 'national', 'international', 'local', 'regional', 'foreign',
+  'government', 'govt', 'minister', 'ministry', 'prime', 'president', 'chief',
+  'parliament', 'election', 'party', 'political', 'politics', 'policy',
+  'economy', 'economic', 'market', 'markets', 'business', 'trade', 'finance',
+  'financial', 'bank', 'banks', 'banking', 'central', 'industry', 'sector',
+  'police', 'court', 'courts', 'highcourt', 'judge', 'legal', 'case', 'cases',
+  'crime', 'security', 'military', 'army', 'defense', 'defence',
+  'health', 'medical', 'hospital', 'education', 'school', 'university', 'student',
+  'students', 'sports', 'sport', 'cricket', 'football', 'match', 'team',
+  'tech', 'technology', 'digital', 'company', 'companies', 'firm', 'firms',
+  // Bengali stop words & broad geographic/category words
+  'এবং', 'থেকে', 'করে', 'জন্য', 'হয়েছে', 'হয়েছে', 'বলে', 'বলেন', 'জানান',
+  'সাথে', 'সঙ্গে', 'নিয়ে', 'নিয়ে', 'মধ্যে', 'কিন্তু', 'আরও', 'একটি', 'হবে',
+  'হয়', 'হয়', 'বা', 'না', 'ও', 'এই', 'তার', 'করা', 'পর', 'দুই', 'তিন',
+  'বাংলাদেশ', 'বাংলাদেশের', 'ঢাকা', 'ঢাকার', 'সরকার', 'সরকারি', 'মন্ত্রী',
+  'প্রধানমন্ত্রী', 'অর্থনীতি', 'বাজার', 'ব্যাংক', 'পুলিশ', 'আদালত', 'বিশ্ব',
+  'জাতীয়', 'জাতীয়', 'আন্তর্জাতিক', 'রাজনীতি', 'বাণিজ্য', 'খেলা', 'সংবাদ',
+  'খবর', 'সর্বশেষ', 'আজ', 'নতুন', 'দেশ', 'দেশের', 'মানুষ', 'জানা', 'গেছে',
 ]);
 
 /**
- * Extracts normalized significant tokens (English & Bengali words >= 3 chars)
+ * Lightweight English/Bengali stemmer so inflections (tighten/tightened/tightening, rates/rate) unify.
+ */
+export function normalizeTopicToken(token: string): string {
+  const clean = token.trim().toLowerCase();
+  if (!clean || clean.length < 3) return clean;
+  // Skip non-ASCII (e.g. Bengali) suffix stripping so Bengali conjuncts remain intact
+  if (/[^\x00-\x7F]/.test(clean)) return clean;
+
+  if (clean.length > 6 && clean.endsWith('ations')) return clean.slice(0, -1);
+  if (clean.length > 5 && clean.endsWith('ments')) return clean.slice(0, -1);
+  if (clean.length > 5 && clean.endsWith('ings')) return clean.slice(0, -4);
+  if (clean.length > 5 && clean.endsWith('ing')) return clean.slice(0, -3);
+  if (clean.length > 4 && clean.endsWith('ies')) return `${clean.slice(0, -3)}y`;
+  if (clean.length > 4 && clean.endsWith('ied')) return `${clean.slice(0, -3)}y`;
+  if (clean.length > 4 && clean.endsWith('ers')) return clean.slice(0, -3);
+  if (clean.length > 4 && clean.endsWith('ed')) return clean.slice(0, -2);
+  if (clean.length > 4 && /(?:ch|sh|x|z|ss|o)es$/.test(clean)) return clean.slice(0, -2);
+  if (clean.length > 3 && clean.endsWith('s') && !clean.endsWith('ss')) {
+    return clean.slice(0, -1);
+  }
+  return clean;
+}
+
+/**
+ * Extracts normalized significant unigram tokens (English & Bengali words >= 3 chars).
  */
 export function extractSignificantTokens(text: string): string[] {
   if (!text) return [];
-  const cleaned = text
+  const rawWords = text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .split(/\s+/)
     .map((w) => w.trim())
-    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w) && !/^\d+$/.test(w));
+    .filter((w) => w.length >= 3 && !/^\d+$/.test(w));
 
-  return Array.from(new Set(cleaned));
+  const out: string[] = [];
+  for (const w of rawWords) {
+    if (STOP_WORDS.has(w)) continue;
+    const stemmed = normalizeTopicToken(w);
+    if (stemmed.length >= 3 && !STOP_WORDS.has(stemmed)) {
+      out.push(stemmed);
+    }
+  }
+
+  return Array.from(new Set(out));
+}
+
+/**
+ * Extracts ordered 2-word topic bigrams from already-filtered significant tokens.
+ */
+export function extractTopicBigrams(tokens: string[]): string[] {
+  if (!tokens || tokens.length < 2) return [];
+  const bigrams: string[] = [];
+  for (let i = 0; i < tokens.length - 1; i++) {
+    bigrams.push(`${tokens[i]}_${tokens[i + 1]}`);
+  }
+  return Array.from(new Set(bigrams));
 }
 
 export interface PerspectiveMatch {
@@ -74,50 +208,66 @@ export interface PerspectiveSearchResult {
 }
 
 /**
- * Computes token similarity between two headlines/summaries/bodies
+ * Computes token & bigram similarity between two stories strictly on specific subjects.
  */
 export function computeStorySimilarity(a: FeedItem, b: FeedItem): {
   score: number;
   sharedKeywords: string[];
+  headlineOverlapCount: number;
 } {
+  const headA = extractSignificantTokens(a.title);
+  const headB = extractSignificantTokens(b.title);
   const tokensA = extractSignificantTokens(`${a.title} ${a.summary?.slice(0, 160) || ''}`);
   const tokensB = extractSignificantTokens(`${b.title} ${b.summary?.slice(0, 160) || ''}`);
+
   if (tokensA.length === 0 || tokensB.length === 0) {
-    return { score: 0, sharedKeywords: [] };
+    return { score: 0, sharedKeywords: [], headlineOverlapCount: 0 };
   }
+
+  const headSetB = new Set(headB);
+  const sharedHead = headA.filter((t) => headSetB.has(t));
 
   const setB = new Set(tokensB);
   const shared = tokensA.filter((t) => setB.has(t));
   if (shared.length === 0) {
-    return { score: 0, sharedKeywords: [] };
+    return { score: 0, sharedKeywords: [], headlineOverlapCount: 0 };
   }
 
+  const bigramsA = extractTopicBigrams(headA);
+  const bigramsB = new Set(extractTopicBigrams(headB));
+  const sharedBigrams = bigramsA.filter((bg) => bigramsB.has(bg));
+
   const minLen = Math.min(tokensA.length, tokensB.length);
-  const overlapScore = shared.length / Math.max(1, minLen);
+  const overlapScore = shared.length / Math.max(1, minLen) + sharedBigrams.length * 0.16;
+
   return {
-    score: overlapScore,
-    sharedKeywords: shared.slice(0, 4),
+    score: Math.min(1.5, overlapScore),
+    sharedKeywords: Array.from(new Set([...sharedHead, ...shared])).slice(0, 5),
+    headlineOverlapCount: sharedHead.length,
   };
 }
 
 /**
- * Searches across all articles from all app sources to find every available perspective
- * on the target story, ranking exact/same-event coverage first followed by related perspectives.
+ * Topic-strict cross-source Perspective search across all articles from all app sources.
+ * Excludes broad geographic/category words and matches strictly on shared headline tokens,
+ * bigrams, and specific story subjects.
  */
-export function searchPerspectivesAcrossSources(
+export function findPerspectivesAcrossSources(
   target: FeedItem,
   allArticles: FeedItem[]
 ): PerspectiveSearchResult {
   const titleTokens = extractSignificantTokens(target.title);
+  const titleBigrams = extractTopicBigrams(titleTokens);
   const summaryTokens = extractSignificantTokens(
     `${target.summary?.slice(0, 240) || ''} ${target.contentClean?.slice(0, 300) || ''}`
   );
-  const queryKeywords = Array.from(new Set([...titleTokens, ...summaryTokens.slice(0, 8)])).slice(
+  const queryKeywords = Array.from(new Set([...titleTokens, ...summaryTokens.slice(0, 6)])).slice(
     0,
     8
   );
 
   const titleTokenSet = new Set(titleTokens);
+  const titleBigramSet = new Set(titleBigrams);
   const allTargetTokenSet = new Set([...titleTokens, ...summaryTokens]);
 
   const matches: PerspectiveMatch[] = [];
@@ -129,20 +279,21 @@ export function searchPerspectivesAcrossSources(
     const normLink = (candidate.link || '').trim().toLowerCase();
     if (normLink && seenLinks.has(normLink)) continue;
 
-    // Exact normalized headline match across sources
     const normTargetTitle = target.title.trim().toLowerCase();
     const normCandidateTitle = candidate.title.trim().toLowerCase();
 
     const candTitleTokens = extractSignificantTokens(candidate.title);
+    const candTitleBigrams = extractTopicBigrams(candTitleTokens);
     const candBodyTokens = extractSignificantTokens(
       `${candidate.summary?.slice(0, 240) || ''} ${candidate.contentClean?.slice(0, 300) || ''}`
     );
     const candAllTokens = Array.from(new Set([...candTitleTokens, ...candBodyTokens]));
 
     const sharedHeadlineTokens = candTitleTokens.filter((t) => titleTokenSet.has(t));
-    const sharedAllTokens = candAllTokens.filter((t) => allTargetTokenSet.has(t));
+    const sharedBigrams = candTitleBigrams.filter((bg) => titleBigramSet.has(bg));
+    const sharedKeywords = candAllTokens.filter((t) => allTargetTokenSet.has(t));
 
-    if (sharedAllTokens.length === 0 && normTargetTitle !== normCandidateTitle) {
+    if (sharedKeywords.length === 0 && normTargetTitle !== normCandidateTitle) {
       continue;
     }
 
@@ -151,44 +302,47 @@ export function searchPerspectivesAcrossSources(
       candidate.feedTitle.trim().toLowerCase() !== target.feedTitle.trim().toLowerCase();
 
     const minTitleLen = Math.max(1, Math.min(titleTokens.length, candTitleTokens.length));
-    const headlineOverlap = sharedHeadlineTokens.length / minTitleLen;
-    const bodyOverlap =
-      sharedAllTokens.length / Math.max(1, Math.min(allTargetTokenSet.size, candAllTokens.length));
+    const headlineOverlapRatio = sharedHeadlineTokens.length / minTitleLen;
+    const bodyOverlapRatio =
+      sharedKeywords.length / Math.max(1, Math.min(allTargetTokenSet.size, candAllTokens.length));
 
     let score =
-      headlineOverlap * 0.65 +
-      bodyOverlap * 0.35 +
-      sharedHeadlineTokens.length * 0.14 +
-      sharedAllTokens.length * 0.06 +
-      (isDifferentSource ? 0.12 : 0);
+      headlineOverlapRatio * 0.62 +
+      bodyOverlapRatio * 0.28 +
+      sharedBigrams.length * 0.22 +
+      sharedHeadlineTokens.length * 0.08;
 
     if (normTargetTitle === normCandidateTitle) {
       score += 1.0;
     }
 
+    const headlineOverlapCount = sharedHeadlineTokens.length;
+    const passesStrictThreshold =
+      normTargetTitle === normCandidateTitle ||
+      (headlineOverlapCount >= 1 && sharedKeywords.length >= 2) ||
+      (headlineOverlapCount >= 2 && score >= 0.28) ||
+      score >= 0.42;
+
+    if (!passesStrictThreshold) continue;
+
     const isSameStory =
       normTargetTitle === normCandidateTitle ||
-      sharedHeadlineTokens.length >= 2 ||
-      headlineOverlap >= 0.34 ||
-      (sharedHeadlineTokens.length >= 1 && sharedAllTokens.length >= 3);
+      sharedBigrams.length >= 1 ||
+      headlineOverlapCount >= 2 ||
+      (headlineOverlapCount >= 1 && score >= 0.48);
 
-    const isRelatedPerspective =
-      !isSameStory &&
-      (sharedHeadlineTokens.length >= 1 || sharedAllTokens.length >= 2 || score >= 0.24);
+    if (normLink) seenLinks.add(normLink);
+    const displayKeywords = Array.from(
+      new Set([...sharedHeadlineTokens, ...sharedKeywords])
+    ).slice(0, 4);
 
-    if (isSameStory || isRelatedPerspective) {
-      if (normLink) seenLinks.add(normLink);
-      const keywords = Array.from(
-        new Set([...sharedHeadlineTokens, ...sharedAllTokens])
-      ).slice(0, 4);
-      matches.push({
-        article: candidate,
-        score: Number(score.toFixed(4)),
-        sharedKeywords: keywords,
-        isDifferentSource,
-        matchType: isSameStory ? 'same-story' : 'related-perspective',
-      });
-    }
+    matches.push({
+      article: candidate,
+      score: Number(score.toFixed(4)),
+      sharedKeywords: displayKeywords,
+      isDifferentSource,
+      matchType: isSameStory ? 'same-story' : 'related-perspective',
+    });
   }
 
   matches.sort((a, b) => {
@@ -217,9 +371,12 @@ export function searchPerspectivesAcrossSources(
   };
 }
 
+/** Backwards-compatible alias for cross-source Perspective search */
+export const searchPerspectivesAcrossSources = findPerspectivesAcrossSources;
+
 /**
  * Groups related articles into Perspective Clusters while keeping chronological feed order.
- * Requires at least 2 shared significant tokens or >= 0.34 overlap score within a 36-hour window.
+ * Uses strict topic matching so unrelated category articles never falsely cluster.
  */
 export function clusterStoriesByTopic(articles: FeedItem[]): StoryCluster[] {
   const assigned = new Set<string>();
@@ -239,8 +396,15 @@ export function clusterStoriesByTopic(articles: FeedItem[]): StoryCluster[] {
       if (assigned.has(candidate.id)) continue;
       if (Math.abs(primary.timestamp - candidate.timestamp) > MAX_TIME_GAP_MS) continue;
 
-      const { score, sharedKeywords } = computeStorySimilarity(primary, candidate);
-      if (sharedKeywords.length >= 2 || score >= 0.34) {
+      const { score, sharedKeywords, headlineOverlapCount } = computeStorySimilarity(
+        primary,
+        candidate
+      );
+      if (
+        (headlineOverlapCount >= 1 && sharedKeywords.length >= 2) ||
+        (headlineOverlapCount >= 2 && score >= 0.28) ||
+        score >= 0.42
+      ) {
         perspectives.push(candidate);
         assigned.add(candidate.id);
         sharedKeywords.forEach((k) => keywordSet.add(k));
@@ -281,7 +445,6 @@ export function buildDailyBriefing(
     subtitle = 'Late-hour wrap of the day’s most significant reporting';
   }
 
-  // Prefer unread stories first, then newest, diversifying by publisher (feedId)
   const sorted = [...articles].sort((a, b) => {
     if (a.isRead !== b.isRead) return a.isRead ? 1 : -1;
     return b.timestamp - a.timestamp;
@@ -298,7 +461,6 @@ export function buildDailyBriefing(
     }
   }
 
-  // Fill remaining slots up to 5 if fewer than 5 unique feeds exist
   if (selected.length < 5) {
     const selectedIds = new Set(selected.map((s) => s.id));
     for (const item of sorted) {
@@ -310,7 +472,6 @@ export function buildDailyBriefing(
     }
   }
 
-  // If the first briefing slide is identical to the first card in the feed below, rotate so slide 1 highlights another publisher first
   const orderedStories =
     selected.length >= 2 && articles.length > 0 && selected[0].id === articles[0].id
       ? [...selected.slice(1), selected[0]]
@@ -346,7 +507,6 @@ export function generateQuickTldrBullets(article: FeedItem): string[] {
     ];
   }
 
-  // Split on sentence boundaries (English '.', '!', '?' and Bengali dari '।')
   const sentences = rawSource
     .split(/(?<=[.!?।])\s+/)
     .map((s) => s.trim())
@@ -405,17 +565,30 @@ export function isYesterdayOf(dateA: string | null, dateB: string): boolean {
 }
 
 /**
- * Normalizes stored ReadingHabitState to the current calendar date so stale days roll over cleanly
+ * Normalizes stored ReadingHabitState to the current calendar date while preserving persistent Wrapped history.
  */
 export function normalizeReadingHabitState(
   state: ReadingHabitState,
   todayKey: string = toDateKey()
 ): ReadingHabitState {
+  const baseTotalReadIds = Array.isArray(state.totalReadIds) ? state.totalReadIds : [];
+  const baseTotalMinutes = typeof state.totalMinutes === 'number' ? state.totalMinutes : state.todayMinutes || 0;
+  const baseSourceCounts =
+    state.sourceReadCounts && typeof state.sourceReadCounts === 'object'
+      ? state.sourceReadCounts
+      : {};
+  const baseHistory = Array.isArray(state.readHistory) ? state.readHistory : [];
+
   if (state.todayDate === todayKey) {
-    return state;
+    return {
+      ...state,
+      totalReadIds: baseTotalReadIds,
+      totalMinutes: baseTotalMinutes,
+      sourceReadCounts: baseSourceCounts,
+      readHistory: baseHistory,
+    };
   }
 
-  // If the user neither completed yesterday nor read today, check if streak is still alive from yesterday
   const streakStillValid =
     state.lastCompletedDate === todayKey ||
     isYesterdayOf(state.lastCompletedDate, todayKey);
@@ -427,26 +600,56 @@ export function normalizeReadingHabitState(
     todayMinutes: 0,
     streakDays: streakStillValid ? state.streakDays : 0,
     lastCompletedDate: state.lastCompletedDate,
+    totalReadIds: baseTotalReadIds,
+    totalMinutes: baseTotalMinutes,
+    sourceReadCounts: baseSourceCounts,
+    readHistory: baseHistory,
   };
 }
 
 /**
- * Records a completed story read into the user's daily reading habit state.
+ * Records a completed story read into the user's daily reading habit & persistent Spotify-style stats history.
  */
 export function recordArticleReadInHabit(
   prevState: ReadingHabitState,
   articleId: string,
   readTimeMin: number,
-  todayKey: string = toDateKey()
+  todayKey: string = toDateKey(),
+  articleMeta?: Partial<ReadHistoryEntry>
 ): { nextState: ReadingHabitState; justHitDailyGoal: boolean } {
   const current = normalizeReadingHabitState(prevState, todayKey);
+  const clampedMin = Math.max(1, Math.min(15, readTimeMin || 3));
+
+  const prevTotalReadIds = current.totalReadIds || [];
+  const alreadyRecordedEver = prevTotalReadIds.includes(articleId);
 
   if (current.todayReadIds.includes(articleId)) {
+    // Still ensure metadata is present in readHistory if passed
+    if (articleMeta && !(current.readHistory || []).some((h) => h.id === articleId)) {
+      const entry: ReadHistoryEntry = {
+        id: articleId,
+        title: articleMeta.title || 'Story',
+        feedId: articleMeta.feedId || 'unknown',
+        feedTitle: articleMeta.feedTitle || 'News Source',
+        feedUrl: articleMeta.feedUrl,
+        timestamp: articleMeta.timestamp || Date.now(),
+        readTimeMin: clampedMin,
+        imageUrl: articleMeta.imageUrl,
+        tags: articleMeta.tags || [],
+      };
+      return {
+        nextState: {
+          ...current,
+          readHistory: [entry, ...(current.readHistory || [])].slice(0, 60),
+        },
+        justHitDailyGoal: false,
+      };
+    }
     return { nextState: current, justHitDailyGoal: false };
   }
 
   const nextReadIds = [...current.todayReadIds, articleId];
-  const nextMinutes = current.todayMinutes + Math.max(1, Math.min(15, readTimeMin || 3));
+  const nextMinutes = current.todayMinutes + clampedMin;
   const wasBelowGoal = current.todayReadIds.length < current.dailyGoal;
   const nowMeetsGoal = nextReadIds.length >= current.dailyGoal;
   const justHitDailyGoal = wasBelowGoal && nowMeetsGoal;
@@ -465,6 +668,33 @@ export function recordArticleReadInHabit(
     nextStreak = 1;
   }
 
+  const nextTotalReadIds = alreadyRecordedEver
+    ? prevTotalReadIds
+    : [...prevTotalReadIds, articleId].slice(-500);
+  const nextTotalMinutes = (current.totalMinutes || 0) + (alreadyRecordedEver ? 0 : clampedMin);
+
+  const nextSourceCounts = { ...(current.sourceReadCounts || {}) };
+  const sourceKey = articleMeta?.feedId || articleMeta?.feedTitle;
+  if (sourceKey && !alreadyRecordedEver) {
+    nextSourceCounts[sourceKey] = (nextSourceCounts[sourceKey] || 0) + 1;
+  }
+
+  let nextHistory = current.readHistory || [];
+  if (articleMeta?.title) {
+    const newEntry: ReadHistoryEntry = {
+      id: articleId,
+      title: articleMeta.title,
+      feedId: articleMeta.feedId || 'unknown',
+      feedTitle: articleMeta.feedTitle || 'News Source',
+      feedUrl: articleMeta.feedUrl,
+      timestamp: Date.now(),
+      readTimeMin: clampedMin,
+      imageUrl: articleMeta.imageUrl,
+      tags: articleMeta.tags || [],
+    };
+    nextHistory = [newEntry, ...nextHistory.filter((h) => h.id !== articleId)].slice(0, 60);
+  }
+
   return {
     nextState: {
       ...current,
@@ -472,8 +702,270 @@ export function recordArticleReadInHabit(
       todayMinutes: nextMinutes,
       streakDays: nextStreak,
       lastCompletedDate: nextLastCompleted,
+      totalReadIds: nextTotalReadIds,
+      totalMinutes: nextTotalMinutes,
+      sourceReadCounts: nextSourceCounts,
+      readHistory: nextHistory,
     },
     justHitDailyGoal,
+  };
+}
+
+/**
+ * Computes Spotify Wrapped-style Reading Stats from persistent habit history and loaded articles.
+ */
+export function computeSpotifyReadingStats(
+  habit: ReadingHabitState,
+  articles: FeedItem[],
+  feeds: Feed[],
+  tags: Tag[]
+): SpotifyReadingStats {
+  const normalized = normalizeReadingHabitState(habit);
+  const articleMap = new Map(articles.map((a) => [a.id, a]));
+  const feedMap = new Map(feeds.map((f) => [f.id, f]));
+  const tagMap = new Map(tags.map((t) => [t.id, t]));
+
+  const history = normalized.readHistory || [];
+  const readArticlesFromFeed = articles.filter((a) => a.isRead);
+
+  // Unify read story IDs across persistent log + currently read items
+  const allReadIds = new Set<string>([
+    ...(normalized.totalReadIds || []),
+    ...normalized.todayReadIds,
+    ...history.map((h) => h.id),
+    ...readArticlesFromFeed.map((a) => a.id),
+  ]);
+
+  const totalStoriesRead = Math.max(allReadIds.size, normalized.todayReadIds.length);
+
+  // Accumulate minutes & per-source stats
+  let accumulatedHistoryMin = 0;
+  const sourceAgg = new Map<
+    string,
+    { feedId: string; title: string; feedUrl?: string; storyCount: number; minutes: number }
+  >();
+  const tagAgg = new Map<string, { tagId: string; storyCount: number }>();
+
+  const countedIds = new Set<string>();
+
+  const addStoryStat = (item: {
+    id: string;
+    feedId: string;
+    feedTitle: string;
+    feedUrl?: string;
+    readTimeMin: number;
+    tags?: string[];
+  }) => {
+    if (countedIds.has(item.id)) return;
+    countedIds.add(item.id);
+    const min = Math.max(1, item.readTimeMin || 3);
+    accumulatedHistoryMin += min;
+
+    const feedObj = feedMap.get(item.feedId);
+    const key = (item.feedId && item.feedId !== 'unknown' ? item.feedId : item.feedTitle).toLowerCase();
+    const existing = sourceAgg.get(key) || {
+      feedId: item.feedId,
+      title: feedObj?.title || item.feedTitle || 'News Source',
+      feedUrl: feedObj?.url || item.feedUrl,
+      storyCount: 0,
+      minutes: 0,
+    };
+    existing.storyCount += 1;
+    existing.minutes += min;
+    sourceAgg.set(key, existing);
+
+    const itemTags = item.tags && item.tags.length > 0 ? item.tags : feedObj?.defaultTags || [];
+    for (const tid of itemTags) {
+      const prev = tagAgg.get(tid) || { tagId: tid, storyCount: 0 };
+      prev.storyCount += 1;
+      tagAgg.set(tid, prev);
+    }
+  };
+
+  for (const h of history) {
+    const live = articleMap.get(h.id);
+    addStoryStat({
+      id: h.id,
+      feedId: live?.feedId || h.feedId,
+      feedTitle: live?.feedTitle || h.feedTitle,
+      feedUrl: live?.feedUrl || h.feedUrl,
+      readTimeMin: live?.readTimeMin || h.readTimeMin || 3,
+      tags: live?.tags && live.tags.length > 0 ? live.tags : h.tags,
+    });
+  }
+
+  for (const art of readArticlesFromFeed) {
+    addStoryStat(art);
+  }
+
+  // Fold in persistent sourceReadCounts if older entries aren't in history anymore
+  if (normalized.sourceReadCounts) {
+    for (const [key, count] of Object.entries(normalized.sourceReadCounts)) {
+      if (!count) continue;
+      const feedObj = feedMap.get(key);
+      const mapKey = key.toLowerCase();
+      const existing = sourceAgg.get(mapKey);
+      if (!existing) {
+        sourceAgg.set(mapKey, {
+          feedId: key,
+          title: feedObj?.title || key,
+          feedUrl: feedObj?.url,
+          storyCount: count,
+          minutes: count * 3,
+        });
+      } else if (existing.storyCount < count) {
+        const diff = count - existing.storyCount;
+        existing.storyCount = count;
+        existing.minutes += diff * 3;
+      }
+    }
+  }
+
+  const totalMinutesRead = Math.max(
+    normalized.totalMinutes || 0,
+    normalized.todayMinutes || 0,
+    accumulatedHistoryMin
+  );
+  const estimatedWordsRead = totalMinutesRead * 220;
+
+  // Ranked #1-#5 Top Publishers
+  const sortedSources = Array.from(sourceAgg.values())
+    .sort((a, b) => b.storyCount - a.storyCount || b.minutes - a.minutes)
+    .slice(0, 5);
+  const totalSourceStories = Math.max(
+    1,
+    sortedSources.reduce((s, item) => s + item.storyCount, 0)
+  );
+  const topSources: SpotifyTopSourceStat[] = sortedSources.map((s, idx) => ({
+    rank: idx + 1,
+    feedId: s.feedId,
+    title: s.title,
+    feedUrl: s.feedUrl,
+    storyCount: s.storyCount,
+    minutes: s.minutes,
+    sharePercent: Math.round((s.storyCount / totalSourceStories) * 100),
+  }));
+
+  // Ranked #1-#4 Top Beats / Genres
+  const sortedTags = Array.from(tagAgg.values())
+    .sort((a, b) => b.storyCount - a.storyCount)
+    .slice(0, 4);
+  const totalTagHits = Math.max(
+    1,
+    sortedTags.reduce((s, t) => s + t.storyCount, 0)
+  );
+  const topGenres: SpotifyTopGenreStat[] = sortedTags.map((t, idx) => {
+    const tagObj = tagMap.get(t.tagId);
+    return {
+      rank: idx + 1,
+      tagId: t.tagId,
+      name: tagObj?.name || t.tagId.replace(/^tag_/, ''),
+      color: tagObj?.color || '#1DB954',
+      storyCount: t.storyCount,
+      sharePercent: Math.round((t.storyCount / totalTagHits) * 100),
+    };
+  });
+
+  // Recent stories ready to share as Spotify Song cards
+  const recentMerged: ReadHistoryEntry[] = [];
+  const seenRecent = new Set<string>();
+  for (const h of history) {
+    if (seenRecent.has(h.id)) continue;
+    seenRecent.add(h.id);
+    const live = articleMap.get(h.id);
+    recentMerged.push({
+      id: h.id,
+      title: live?.title || h.title,
+      feedId: live?.feedId || h.feedId,
+      feedTitle: live?.feedTitle || h.feedTitle,
+      feedUrl: live?.feedUrl || h.feedUrl,
+      timestamp: h.timestamp || live?.timestamp || Date.now(),
+      readTimeMin: live?.readTimeMin || h.readTimeMin || 3,
+      imageUrl: live?.imageUrl || h.imageUrl,
+      tags: live?.tags || h.tags || [],
+    });
+  }
+  for (const art of readArticlesFromFeed) {
+    if (seenRecent.has(art.id)) continue;
+    seenRecent.add(art.id);
+    recentMerged.push({
+      id: art.id,
+      title: art.title,
+      feedId: art.feedId,
+      feedTitle: art.feedTitle,
+      feedUrl: art.feedUrl,
+      timestamp: art.timestamp,
+      readTimeMin: art.readTimeMin || 3,
+      imageUrl: art.imageUrl,
+      tags: art.tags || [],
+    });
+  }
+  // If user hasn't read anything yet, offer latest unread feed stories for Song Share preview
+  if (recentMerged.length === 0 && articles.length > 0) {
+    for (const art of articles.slice(0, 4)) {
+      recentMerged.push({
+        id: art.id,
+        title: art.title,
+        feedId: art.feedId,
+        feedTitle: art.feedTitle,
+        feedUrl: art.feedUrl,
+        timestamp: art.timestamp,
+        readTimeMin: art.readTimeMin || 3,
+        imageUrl: art.imageUrl,
+        tags: art.tags || [],
+      });
+    }
+  }
+
+  // Determine Reader Aura persona
+  const leadBeat = topGenres[0]?.tagId || '';
+  let readerAura: SpotifyReaderAura = {
+    title: 'Signal Seeker',
+    subtitle: 'Curating distraction-free reporting across independent outlets.',
+    gradientFrom: '#1DB954',
+    gradientTo: '#0B3B24',
+  };
+  if (leadBeat.includes('tech')) {
+    readerAura = {
+      title: 'Frontier Technologist',
+      subtitle: 'Tracking breakthroughs in computing, infrastructure, and digital craft.',
+      gradientFrom: '#6366F1',
+      gradientTo: '#1E1B4B',
+    };
+  } else if (leadBeat.includes('markets') || leadBeat.includes('finance')) {
+    readerAura = {
+      title: 'Macro Pulse Analyst',
+      subtitle: 'Following capital flows, monetary shifts, and structural trade signals.',
+      gradientFrom: '#10B981',
+      gradientTo: '#064E3B',
+    };
+  } else if (leadBeat.includes('investigative') || leadBeat.includes('world') || leadBeat.includes('opinion')) {
+    readerAura = {
+      title: 'The Policy Strategist',
+      subtitle: 'Connecting long-form investigations and global affairs without noise.',
+      gradientFrom: '#FF6719',
+      gradientTo: '#7C2D12',
+    };
+  } else if (topSources.length >= 3 || totalStoriesRead >= 6) {
+    readerAura = {
+      title: 'The Synthesis Architect',
+      subtitle: 'Cross-referencing multiple newsrooms to build a sharper worldview.',
+      gradientFrom: '#EC4899',
+      gradientTo: '#4C1D95',
+    };
+  }
+
+  return {
+    totalMinutesRead,
+    totalStoriesRead,
+    todayMinutesRead: normalized.todayMinutes,
+    todayStoriesRead: normalized.todayReadIds.length,
+    streakDays: normalized.streakDays,
+    estimatedWordsRead,
+    topSources,
+    topGenres,
+    recentStories: recentMerged.slice(0, 8),
+    readerAura,
   };
 }
 

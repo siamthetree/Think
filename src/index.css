@@ -717,13 +717,91 @@
 .pt-safe { padding-top:    env(safe-area-inset-top,    12px); }
 
 /* ─────────────────────────────────────────────────────────────
-   READER THEME PRESETS
+   READER THEME PRESETS (Dynamic CSS Variables)
 ───────────────────────────────────────────────────────────── */
-.reader-theme-paper  { background-color: #FBF9F5; color: #1C1917; }
-.reader-theme-sepia  { background-color: #F4ECD8; color: #382F2D; }
-.reader-theme-clean  { background-color: #FFFFFF;  color: #111827; }
-.reader-theme-slate  { background-color: #1E232A; color: #E2E8F0; }
-.reader-theme-oled   { background-color: #000000;  color: #D1D5DB; }
+:root {
+  --reader-bg: #181818;
+  --reader-surface: rgba(255, 255, 255, 0.04);
+  --reader-surface-strong: rgba(255, 255, 255, 0.08);
+  --reader-text: #E6E6E6;
+  --reader-heading: #EDEDED;
+  --reader-muted: #9E9E9E;
+  --reader-border: #2C2C2C;
+  --reader-quote-border: rgba(255, 255, 255, 0.28);
+  --reader-quote-text: #CFCFCF;
+  --reader-link-underline: rgba(255, 255, 255, 0.45);
+}
+
+.reader-theme-paper {
+  --reader-bg: #FBF9F5;
+  --reader-surface: rgba(28, 25, 23, 0.04);
+  --reader-surface-strong: rgba(28, 25, 23, 0.08);
+  --reader-text: #292524;
+  --reader-heading: #1C1917;
+  --reader-muted: #78716C;
+  --reader-border: rgba(28, 25, 23, 0.12);
+  --reader-quote-border: rgba(255, 103, 25, 0.55);
+  --reader-quote-text: #44403C;
+  --reader-link-underline: rgba(28, 25, 23, 0.35);
+  background-color: var(--reader-bg);
+  color: var(--reader-text);
+}
+.reader-theme-sepia {
+  --reader-bg: #F4ECD8;
+  --reader-surface: rgba(56, 47, 45, 0.05);
+  --reader-surface-strong: rgba(56, 47, 45, 0.10);
+  --reader-text: #433422;
+  --reader-heading: #2B2118;
+  --reader-muted: #7C6A58;
+  --reader-border: rgba(67, 52, 34, 0.15);
+  --reader-quote-border: rgba(180, 83, 9, 0.5);
+  --reader-quote-text: #5B4636;
+  --reader-link-underline: rgba(67, 52, 34, 0.4);
+  background-color: var(--reader-bg);
+  color: var(--reader-text);
+}
+.reader-theme-clean {
+  --reader-bg: #FFFFFF;
+  --reader-surface: rgba(17, 24, 39, 0.04);
+  --reader-surface-strong: rgba(17, 24, 39, 0.08);
+  --reader-text: #1F2937;
+  --reader-heading: #111827;
+  --reader-muted: #6B7280;
+  --reader-border: rgba(17, 24, 39, 0.12);
+  --reader-quote-border: rgba(255, 103, 25, 0.6);
+  --reader-quote-text: #374151;
+  --reader-link-underline: rgba(17, 24, 39, 0.35);
+  background-color: var(--reader-bg);
+  color: var(--reader-text);
+}
+.reader-theme-slate {
+  --reader-bg: #181818;
+  --reader-surface: rgba(255, 255, 255, 0.04);
+  --reader-surface-strong: rgba(255, 255, 255, 0.08);
+  --reader-text: #E6E6E6;
+  --reader-heading: #EDEDED;
+  --reader-muted: #9E9E9E;
+  --reader-border: #2C2C2C;
+  --reader-quote-border: rgba(255, 255, 255, 0.28);
+  --reader-quote-text: #CFCFCF;
+  --reader-link-underline: rgba(255, 255, 255, 0.45);
+  background-color: var(--reader-bg);
+  color: var(--reader-text);
+}
+.reader-theme-oled {
+  --reader-bg: #000000;
+  --reader-surface: rgba(255, 255, 255, 0.05);
+  --reader-surface-strong: rgba(255, 255, 255, 0.10);
+  --reader-text: #D1D5DB;
+  --reader-heading: #F9FAFB;
+  --reader-muted: #9CA3AF;
+  --reader-border: rgba(255, 255, 255, 0.14);
+  --reader-quote-border: rgba(255, 255, 255, 0.3);
+  --reader-quote-text: #D1D5DB;
+  --reader-link-underline: rgba(255, 255, 255, 0.45);
+  background-color: var(--reader-bg);
+  color: var(--reader-text);
+}
 
 /* ─────────────────────────────────────────────────────────────
    FEED ROW CHIPS (category filter)
@@ -833,13 +911,13 @@
 ───────────────────────────────────────────────────────────── */
 .article-prose p {
   margin-bottom: 1.35em;
-  color: #E6E6E6;
+  color: var(--reader-text);
 }
 .article-prose h2 {
   font-family: var(--font-sans);
   font-weight: 700;
   font-size: 1.3em;
-  color: #F0F0F0;
+  color: var(--reader-heading);
   margin: 1.7em 0 0.65em;
   letter-spacing: -0.015em;
 }
@@ -847,13 +925,13 @@
   font-family: var(--font-sans);
   font-weight: 600;
   font-size: 1.12em;
-  color: #ECECEC;
+  color: var(--reader-heading);
   margin: 1.4em 0 0.5em;
 }
 .article-prose blockquote {
   padding: 0.5em 1.15em;
-  border-left: 2px solid rgba(255, 255, 255, 0.28);
-  color: #CFCFCF;
+  border-left: 2px solid var(--reader-quote-border);
+  color: var(--reader-quote-text);
   font-style: italic;
   margin: 1.5em 0;
 }
@@ -866,7 +944,7 @@
 .article-prose a {
   color: inherit;
   text-decoration: underline;
-  text-decoration-color: rgba(255, 255, 255, 0.55);
+  text-decoration-color: var(--reader-link-underline);
   text-underline-offset: 4px;
 }
 

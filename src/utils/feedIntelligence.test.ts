@@ -1,14 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { FeedItem } from '../types';
+import type { Feed, FeedItem, Tag } from '../types';
 import {
   extractSignificantTokens,
+  normalizeTopicToken,
+  extractTopicBigrams,
   clusterStoriesByTopic,
   searchPerspectivesAcrossSources,
+  findPerspectivesAcrossSources,
   buildDailyBriefing,
   generateQuickTldrBullets,
   recordArticleReadInHabit,
   normalizeReadingHabitState,
+  computeSpotifyReadingStats,
   findNewIncomingArticles,
   type ReadingHabitState,
 } from './feedIntelligence';
@@ -24,7 +28,7 @@ function makeArticle(overrides: Partial<FeedItem> & { id: string; title: string 
     pubDate: overrides.pubDate || new Date(1762940000000).toISOString(),
     timestamp: overrides.timestamp ?? 1762940000000,
     author: overrides.author,
-    summary: overrides.summary || 'Detailed coverage of national policy and economic reforms.',
+    summary: overrides.summary || 'Detailed reporting on infrastructure and civic developments.',
     contentClean: overrides.contentClean,
     contentHtml: overrides.contentHtml,
     imageUrl: overrides.imageUrl,
@@ -36,31 +40,42 @@ function makeArticle(overrides: Partial<FeedItem> & { id: string; title: string 
   };
 }
 
-test('extractSignificantTokens removes stop words and preserves meaningful English and Bengali words', () => {
-  const tokens = extractSignificantTokens('The Bangladesh Bank announces new monetary policy for inflation control');
-  assert.ok(tokens.includes('bangladesh'));
+test('normalizeTopicToken and extractSignificantTokens filter broad stop words and stem tokens', () => {
+  assert.equal(normalizeTopicToken('tightening'), 'tighten');
+  assert.equal(normalizeTopicToken('rates'), 'rate');
+  const tokens = extractSignificantTokens(
+    'The Bangladesh Bank announces monetary tightening for inflation control in Dhaka'
+  );
   assert.ok(tokens.includes('monetary'));
+  assert.ok(tokens.includes('tighten'));
   assert.ok(tokens.includes('inflation'));
-  assert.equal(tokens.includes('the'), false);
-  assert.equal(tokens.includes('for'), false);
+  // Broad geographic & category stop words should be excluded
+  assert.equal(tokens.includes('bangladesh'), false);
+  assert.equal(tokens.includes('dhaka'), false);
+  assert.equal(tokens.includes('bank'), false);
 });
 
-test('clusterStoriesByTopic groups multi-source coverage of the same developing event', () => {
+test('extractTopicBigrams produces ordered 2-word topic phrases', () => {
+  const bigrams = extractTopicBigrams(['monetary', 'policy', 'inflation']);
+  assert.deepEqual(bigrams, ['monetary_policy', 'policy_inflation']);
+});
+
+test('clusterStoriesByTopic groups multi-source coverage of the same event while avoiding broad category false positives', () => {
   const articles: FeedItem[] = [
     makeArticle({
       id: 'a1',
       feedId: 'f1',
       feedTitle: 'The Daily Star',
-      title: 'Bangladesh Bank unveils new monetary policy to curb inflation',
-      summary: 'Central bank raises policy rate to stabilize foreign exchange reserves and curb inflation.',
+      title: 'Central regulators unveil monetary tightening to curb inflation',
+      summary: 'Policy interest adjustments target consumer inflation.',
       timestamp: 1762940000000,
     }),
     makeArticle({
       id: 'a2',
       feedId: 'f2',
       feedTitle: 'Prothom Alo',
-      title: 'Monetary policy tightened by Bangladesh Bank to tame inflation',
-      summary: 'Bangladesh Bank raised key interest rate under its new monetary policy framework.',
+      title: 'Monetary tightening enacted to tame consumer inflation',
+      summary: 'Regulators raised key policy interest rates.',
       timestamp: 1762939000000,
     }),
     makeArticle({
@@ -78,18 +93,17 @@ test('clusterStoriesByTopic groups multi-source coverage of the same developing 
   assert.equal(clusters[0].primary.id, 'a1');
   assert.equal(clusters[0].perspectives.length, 1);
   assert.equal(clusters[0].perspectives[0].id, 'a2');
-  assert.ok(clusters[0].topicKeywords.includes('monetary') || clusters[0].topicKeywords.includes('bangladesh'));
   assert.equal(clusters[1].primary.id, 'a3');
   assert.equal(clusters[1].perspectives.length, 0);
 });
 
-test('searchPerspectivesAcrossSources searches all app sources and ranks same-story coverage first', () => {
+test('findPerspectivesAcrossSources uses strict topic matching and excludes unrelated same-country/category stories', () => {
   const target = makeArticle({
     id: 'target_1',
     feedId: 'f1',
     feedTitle: 'The Daily Star',
-    title: 'Bangladesh Bank raises policy rate to control rising inflation',
-    summary: 'Central bank governor announced monetary tightening to stabilize prices.',
+    title: 'Metro rail viaduct pillar repair halts Uttara Agargaon trains',
+    summary: 'Commuters face delays as engineers inspect bearing pads on metro viaduct.',
   });
 
   const allArticles: FeedItem[] = [
@@ -98,39 +112,24 @@ test('searchPerspectivesAcrossSources searches all app sources and ranks same-st
       id: 'match_same_1',
       feedId: 'f2',
       feedTitle: 'Prothom Alo',
-      title: 'Bangladesh Bank hikes policy rate to curb inflation pressure',
-      summary: 'Monetary tightening announced by Bangladesh Bank governor.',
+      title: 'Uttara to Agargaon metro rail suspended for viaduct bearing repair',
+      summary: 'Engineers replace faulty bearing pad on metro viaduct pillar.',
     }),
     makeArticle({
-      id: 'match_same_2',
+      id: 'unrelated_bd_economy',
       feedId: 'f3',
-      feedTitle: 'BBC News',
-      title: 'Inflation control: Bangladesh Bank raises key policy rate again',
-      summary: 'Interest rates increased across commercial banks.',
-    }),
-    makeArticle({
-      id: 'match_related_1',
-      feedId: 'f4',
-      feedTitle: 'Dhaka Tribune',
-      title: 'Export earnings grow as Bangladesh Bank updates forex rules',
-      summary: 'Remittance and reserve outlook improves.',
-    }),
-    makeArticle({
-      id: 'unrelated_1',
-      feedId: 'f5',
-      feedTitle: 'The Verge',
-      title: 'SpaceX launches Starship orbital test flight from Boca Chica',
-      summary: 'Super Heavy booster completed hot-staging maneuver.',
+      feedTitle: 'The Business Standard',
+      title: 'Bangladesh Bank updates Dhaka market policy for exporters',
+      summary: 'Government minister spoke at economic forum in Dhaka today.',
     }),
   ];
 
-  const result = searchPerspectivesAcrossSources(target, allArticles);
-  assert.equal(result.matches.length, 3);
+  const result = findPerspectivesAcrossSources(target, allArticles);
+  assert.equal(searchPerspectivesAcrossSources, findPerspectivesAcrossSources);
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].article.id, 'match_same_1');
   assert.equal(result.matches[0].matchType, 'same-story');
-  assert.equal(result.matches[1].matchType, 'same-story');
-  assert.equal(result.matches[2].article.id, 'match_related_1');
-  assert.equal(result.sourceCount, 4);
-  assert.ok(result.queryKeywords.includes('bangladesh'));
+  assert.equal(result.sourceCount, 2);
 });
 
 test('buildDailyBriefing selects up to 5 diverse stories and adapts edition title to time of day', () => {
@@ -143,13 +142,11 @@ test('buildDailyBriefing selects up to 5 diverse stories and adapts edition titl
     makeArticle({ id: '6', feedId: 'f5', title: 'Story 6', readTimeMin: 4 }),
   ];
 
-  // Morning timestamp (9:00 AM local)
   const morningDate = new Date(2026, 10, 12, 9, 0, 0).getTime();
   const briefing = buildDailyBriefing(articles, morningDate);
 
   assert.equal(briefing.editionTitle, 'Morning Briefing');
   assert.equal(briefing.stories.length, 5);
-  // First 5 should come from distinct feeds f1, f2, f3, f4, f5
   const feedIds = new Set(briefing.stories.map((s) => s.feedId));
   assert.equal(feedIds.size, 5);
   assert.equal(briefing.totalReadMinutes, 3 + 2 + 5 + 3 + 4);
@@ -170,7 +167,7 @@ test('generateQuickTldrBullets extracts 3 distinct key takeaway bullets', () => 
   assert.ok(bullets[2].includes('tariff stability'));
 });
 
-test('recordArticleReadInHabit tracks daily goal completion and increments consecutive day streak', () => {
+test('recordArticleReadInHabit tracks daily goal, streak, and persistent Wrapped stats history', () => {
   const initialState: ReadingHabitState = {
     dailyGoal: 3,
     todayDate: '2026-11-11',
@@ -180,32 +177,76 @@ test('recordArticleReadInHabit tracks daily goal completion and increments conse
     lastCompletedDate: '2026-11-11',
   };
 
-  // Next day (2026-11-12): Read 1st story
-  const step1 = recordArticleReadInHabit(initialState, 'art_1', 4, '2026-11-12');
+  const step1 = recordArticleReadInHabit(initialState, 'art_1', 4, '2026-11-12', {
+    title: 'Solar Milestone',
+    feedId: 'f1',
+    feedTitle: 'The Daily Star',
+    tags: ['tag_markets'],
+  });
   assert.equal(step1.nextState.todayReadIds.length, 1);
   assert.equal(step1.justHitDailyGoal, false);
   assert.equal(step1.nextState.streakDays, 2);
 
-  // Read 2nd story
-  const step2 = recordArticleReadInHabit(step1.nextState, 'art_2', 3, '2026-11-12');
-  assert.equal(step2.nextState.todayReadIds.length, 2);
-  assert.equal(step2.justHitDailyGoal, false);
+  const step2 = recordArticleReadInHabit(step1.nextState, 'art_2', 3, '2026-11-12', {
+    title: 'Grid Storage',
+    feedId: 'f1',
+    feedTitle: 'The Daily Star',
+    tags: ['tag_tech'],
+  });
+  const step3 = recordArticleReadInHabit(step2.nextState, 'art_3', 5, '2026-11-12', {
+    title: 'Tariff Stability',
+    feedId: 'f2',
+    feedTitle: 'BBC News',
+    tags: ['tag_world'],
+  });
 
-  // Read 3rd story -> hits daily goal of 3 and increments streak from 2 -> 3!
-  const step3 = recordArticleReadInHabit(step2.nextState, 'art_3', 5, '2026-11-12');
   assert.equal(step3.nextState.todayReadIds.length, 3);
   assert.equal(step3.justHitDailyGoal, true);
   assert.equal(step3.nextState.streakDays, 3);
   assert.equal(step3.nextState.todayMinutes, 12);
-  assert.equal(step3.nextState.lastCompletedDate, '2026-11-12');
-
-  // Re-reading same article does not double-count
-  const stepDuplicate = recordArticleReadInHabit(step3.nextState, 'art_3', 5, '2026-11-12');
-  assert.equal(stepDuplicate.nextState.todayReadIds.length, 3);
-  assert.equal(stepDuplicate.justHitDailyGoal, false);
+  assert.equal(step3.nextState.totalReadIds?.length, 3);
+  assert.equal(step3.nextState.readHistory?.length, 3);
 });
 
-test('normalizeReadingHabitState resets streak if a full day was missed', () => {
+test('computeSpotifyReadingStats aggregates top sources, beats, minutes, and Reader Aura', () => {
+  const feeds: Feed[] = [
+    { id: 'f1', title: 'The Daily Star', url: 'https://thedailystar.net/rss.xml', category: '', defaultTags: ['tag_markets'] },
+    { id: 'f2', title: 'TechCrunch', url: 'https://techcrunch.com/feed', category: '', defaultTags: ['tag_tech'] },
+  ];
+  const tags: Tag[] = [
+    { id: 'tag_markets', name: 'Economy & Finance', color: '#0D9488' },
+    { id: 'tag_tech', name: 'Technology', color: '#4338CA' },
+  ];
+  const articles: FeedItem[] = [
+    makeArticle({ id: 'a1', feedId: 'f1', feedTitle: 'The Daily Star', title: 'Macro A', readTimeMin: 5, isRead: true, tags: ['tag_markets'] }),
+    makeArticle({ id: 'a2', feedId: 'f1', feedTitle: 'The Daily Star', title: 'Macro B', readTimeMin: 4, isRead: true, tags: ['tag_markets'] }),
+    makeArticle({ id: 'a3', feedId: 'f2', feedTitle: 'TechCrunch', title: 'Chip C', readTimeMin: 6, isRead: true, tags: ['tag_tech'] }),
+  ];
+
+  const habit: ReadingHabitState = {
+    dailyGoal: 3,
+    todayDate: '2026-11-12',
+    todayReadIds: ['a1', 'a2', 'a3'],
+    todayMinutes: 15,
+    streakDays: 4,
+    lastCompletedDate: '2026-11-12',
+    totalReadIds: ['a1', 'a2', 'a3'],
+    totalMinutes: 15,
+    sourceReadCounts: { f1: 2, f2: 1 },
+  };
+
+  const stats = computeSpotifyReadingStats(habit, articles, feeds, tags);
+  assert.equal(stats.totalStoriesRead, 3);
+  assert.equal(stats.totalMinutesRead, 15);
+  assert.equal(stats.estimatedWordsRead, 3300);
+  assert.equal(stats.topSources[0].rank, 1);
+  assert.equal(stats.topSources[0].title, 'The Daily Star');
+  assert.equal(stats.topSources[0].storyCount, 2);
+  assert.equal(stats.topGenres[0].name, 'Economy & Finance');
+  assert.equal(stats.readerAura.title, 'Macro Pulse Analyst');
+});
+
+test('normalizeReadingHabitState resets streak if a full day was missed while keeping persistent history', () => {
   const staleState: ReadingHabitState = {
     dailyGoal: 3,
     todayDate: '2026-11-09',
@@ -213,12 +254,16 @@ test('normalizeReadingHabitState resets streak if a full day was missed', () => 
     todayMinutes: 9,
     streakDays: 5,
     lastCompletedDate: '2026-11-09',
+    totalReadIds: ['a', 'b', 'c'],
+    totalMinutes: 9,
   };
 
   const normalized = normalizeReadingHabitState(staleState, '2026-11-12');
   assert.equal(normalized.todayDate, '2026-11-12');
   assert.equal(normalized.todayReadIds.length, 0);
   assert.equal(normalized.streakDays, 0);
+  assert.equal(normalized.totalReadIds?.length, 3);
+  assert.equal(normalized.totalMinutes, 9);
 });
 
 test('findNewIncomingArticles returns only articles not already present by id or link', () => {

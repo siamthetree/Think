@@ -1,7 +1,14 @@
-import React, { useState, useMemo, useRef } from 'react';
-import { X, Copy, Download, Check, Quote } from 'lucide-react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { X, Copy, Download, Check, Quote, Instagram, Share2 } from 'lucide-react';
 import type { FeedItem } from '../types';
 import { generateQuickTldrBullets } from '../utils/feedIntelligence';
+import {
+  SPOTIFY_BACKDROP_THEMES,
+  renderStoryCardCanvas,
+  shareSpotifyStyleStory,
+  type StoryBackdropThemeId,
+  type StoryCardMode,
+} from '../utils/storyCardRenderer';
 import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
 import { computeSheetDragState, classifyHorizontalSwipe } from '../utils/touchGestures';
 
@@ -11,8 +18,6 @@ interface QuoteShareModalProps {
   article: FeedItem;
   initialQuoteText?: string;
 }
-
-type QuoteCardStyle = 'charcoal' | 'ivory' | 'emerald';
 
 export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
   isOpen,
@@ -36,14 +41,48 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
   }, [article, initialQuoteText]);
 
   const [selectedIdx, setSelectedIdx] = useState(0);
-  const [cardStyle, setCardStyle] = useState<QuoteCardStyle>('charcoal');
+  const [storyMode, setStoryMode] = useState<StoryCardMode>('lyrics');
+  const [themeId, setThemeId] = useState<StoryBackdropThemeId>('emerald');
   const [copied, setCopied] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [dragOffsetY, setDragOffsetY] = useState(0);
   const dragStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
-  if (!isOpen) return null;
+  const activeQuote =
+    candidateQuotes[Math.min(selectedIdx, candidateQuotes.length - 1)] || article.title;
 
-  const activeQuote = candidateQuotes[Math.min(selectedIdx, candidateQuotes.length - 1)] || article.title;
+  const payload = useMemo(
+    () => ({
+      mode: storyMode,
+      themeId,
+      headline: article.title,
+      publisher: article.feedTitle,
+      author: article.author,
+      readTimeMin: article.readTimeMin || 3,
+      imageUrl: article.imageUrl,
+      quoteText: activeQuote,
+    }),
+    [storyMode, themeId, article, activeQuote]
+  );
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    renderStoryCardCanvas(payload).then((canvas) => {
+      if (cancelled) return;
+      try {
+        setPreviewUrl(canvas.toDataURL('image/png'));
+      } catch {
+        setPreviewUrl(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, payload]);
+
+  if (!isOpen) return null;
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
@@ -70,7 +109,6 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
     const dt = Math.max(1, Date.now() - start.time);
     const velocityY = dy / dt;
 
-    // Check horizontal swipe on quote card to cycle passages
     const horiz = classifyHorizontalSwipe({
       startX: start.x,
       startY: start.y,
@@ -116,93 +154,23 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
     }
   };
 
-  const handleDownloadCardPng = () => {
+  const handleStoryShare = async (platform: 'instagram' | 'facebook' | 'download') => {
     triggerHapticSelection();
-    const canvas = document.createElement('canvas');
-    canvas.width = 1080;
-    canvas.height = 1080;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Background palette
-    const palette =
-      cardStyle === 'ivory'
-        ? { bg: '#F7F4EE', text: '#18181B', muted: '#71717A', accent: '#FF6719' }
-        : cardStyle === 'emerald'
-          ? { bg: '#071F18', text: '#F4F4F5', muted: '#A1A1AA', accent: '#10B981' }
-          : { bg: '#121316', text: '#F4F4F5', muted: '#A1A1AA', accent: '#FF6719' };
-
-    ctx.fillStyle = palette.bg;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Subtle border frame
-    ctx.strokeStyle = cardStyle === 'ivory' ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(56, 56, canvas.width - 112, canvas.height - 112);
-
-    // Source Kicker
-    ctx.fillStyle = palette.accent;
-    ctx.font = 'bold 28px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText(article.feedTitle.toUpperCase(), 110, 160);
-
-    // Wrap Quote Text
-    ctx.fillStyle = palette.text;
-    ctx.font = 'bold 46px "Lora", Georgia, serif';
-    const words = `“${activeQuote}”`.split(' ');
-    let line = '';
-    let y = 270;
-    const maxWidth = 860;
-    const lineHeight = 68;
-
-    for (let i = 0; i < words.length; i++) {
-      const testLine = line + words[i] + ' ';
-      const metrics = ctx.measureText(testLine);
-      if (metrics.width > maxWidth && i > 0) {
-        ctx.fillText(line.trim(), 110, y);
-        line = words[i] + ' ';
-        y += lineHeight;
-        if (y > 760) break;
-      } else {
-        line = testLine;
-      }
-    }
-    if (line.trim() && y <= 800) {
-      ctx.fillText(line.trim(), 110, y);
-    }
-
-    // Article Headline & Brand Signature at bottom
-    ctx.fillStyle = palette.muted;
-    ctx.font = '500 26px "Plus Jakarta Sans", -apple-system, sans-serif';
-    const clippedTitle =
-      article.title.length > 65 ? `${article.title.slice(0, 62)}…` : article.title;
-    ctx.fillText(clippedTitle, 110, 890);
-
-    ctx.fillStyle = palette.text;
-    ctx.font = 'bold 28px "Lora", Georgia, serif';
-    ctx.fillText('চিন্তা — Think · Distraction-Free Reader', 110, 955);
-
-    const dataUrl = canvas.toDataURL('image/png');
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = `chinta-quote-${article.id.slice(0, 8)}.png`;
-    a.click();
-    triggerHapticComplete();
+    const res = await shareSpotifyStyleStory(platform, payload);
+    if (res.ok) triggerHapticComplete();
+    setShareFeedback(res.message);
+    setTimeout(() => {
+      setShareFeedback((cur) => (cur === res.message ? null : cur));
+    }, 3000);
   };
-
-  const previewClasses =
-    cardStyle === 'ivory'
-      ? 'bg-[#F7F4EE] text-stone-900 border-stone-300'
-      : cardStyle === 'emerald'
-        ? 'bg-[#071F18] text-stone-100 border-emerald-500/25'
-        : 'bg-[#121316] text-stone-100 border-white/15';
 
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Share Editorial Quote Card"
+      aria-label="Share 9:16 Spotify-Style Story Card"
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 pb-8 bg-black/65 backdrop-blur-xs animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3 sm:p-4 pb-6 bg-black/65 backdrop-blur-xs animate-in fade-in duration-150"
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -216,47 +184,71 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
           transition:
             dragOffsetY !== 0 ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
         }}
-        className="w-full max-w-md rounded-3xl reader-liquid-card p-5 text-stone-100 shadow-2xl border border-white/20 animate-in zoom-in-95 duration-150 select-none"
+        className="w-full max-w-md max-h-[88vh] flex flex-col rounded-3xl reader-liquid-card p-5 text-stone-100 shadow-2xl border border-white/20 animate-in zoom-in-95 duration-150 select-none overflow-y-auto no-scrollbar"
       >
-        {/* Drag Handle (Swipe down to dismiss) */}
-        <div className="w-10 h-1 bg-white/25 rounded-full mx-auto mb-3 cursor-grab active:cursor-grabbing" />
+        <div className="w-10 h-1 bg-white/25 rounded-full mx-auto mb-3 cursor-grab active:cursor-grabbing shrink-0" />
 
-        <div className="flex items-center justify-between pb-3 mb-4 border-b border-white/10">
+        <div className="flex items-center justify-between pb-3 mb-3.5 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <Quote className="w-4 h-4 text-[#FF6719]" />
+            <Quote className="w-4 h-4 text-[#1DB954]" />
             <span className="text-xs font-semibold text-stone-200">
-              Editorial Quote Card
+              Spotify-Style Story Card (9:16)
             </span>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close quote card modal"
-            className="min-w-[36px] min-h-[36px] rounded-full flex items-center justify-center text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
+            className="min-w-[34px] min-h-[34px] rounded-full flex items-center justify-center text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Live Quote Card Preview (Swipe horizontally to cycle passages) */}
-        <div
-          className={`p-5 rounded-2xl border shadow-xl mb-4 transition-colors duration-200 ${previewClasses}`}
-        >
-          <div className="text-[11px] font-sans font-bold tracking-wider uppercase text-[#FF6719] mb-2">
-            {article.feedTitle}
-          </div>
-          <blockquote className="font-serif text-[17px] font-bold leading-relaxed mb-4">
-            “{activeQuote}”
-          </blockquote>
-          <div className="pt-3 border-t border-current/10 flex items-center justify-between text-[11px] opacity-75">
-            <span className="truncate max-w-[210px]">{article.title}</span>
-            <span className="font-serif font-semibold shrink-0">চিন্তা — Think</span>
+        {/* Mode Toggle: Lyrics Highlight vs Song Share */}
+        <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/40 border border-white/10 rounded-2xl mb-3">
+          {(
+            [
+              { id: 'lyrics', label: 'Lyrics Highlight' },
+              { id: 'song', label: 'Song Share' },
+            ] as const
+          ).map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => {
+                triggerHapticSelection();
+                setStoryMode(m.id);
+              }}
+              className={`py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                storyMode === m.id
+                  ? 'bg-[#1DB954] text-black'
+                  : 'text-stone-300 hover:text-white'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Live 9:16 Story Preview */}
+        <div className="flex justify-center mb-3.5">
+          <div className="w-44 aspect-[9/16] rounded-2xl overflow-hidden border border-white/20 bg-black/40 shadow-xl flex items-center justify-center">
+            {previewUrl ? (
+              <img
+                src={previewUrl}
+                alt="9:16 Story Card Preview"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-5 h-5 border-2 border-[#1DB954] border-t-transparent rounded-full animate-spin" />
+            )}
           </div>
         </div>
 
-        {/* Passage Selector */}
-        {candidateQuotes.length > 1 && (
-          <div className="mb-4">
+        {/* Passage Selector (for Lyrics mode) */}
+        {storyMode === 'lyrics' && candidateQuotes.length > 1 && (
+          <div className="mb-3">
             <span className="text-[11px] font-medium text-stone-400 block mb-1.5">
               Select Passage ({selectedIdx + 1} of {candidateQuotes.length})
             </span>
@@ -271,7 +263,7 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
                   }}
                   className={`flex-1 py-1.5 rounded-xl text-xs font-mono font-semibold transition-all ${
                     selectedIdx === idx
-                      ? 'bg-[#FF6719] text-white'
+                      ? 'bg-[#1DB954] text-black'
                       : 'bg-white/5 text-stone-400 hover:text-white'
                   }`}
                 >
@@ -282,54 +274,87 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
           </div>
         )}
 
-        {/* Style Selector */}
-        <div className="mb-5">
-          <span className="text-[11px] font-medium text-stone-400 block mb-1.5">Card Finish</span>
-          <div className="grid grid-cols-3 gap-2 p-1 bg-black/40 border border-white/10 rounded-2xl">
-            {(
-              [
-                { id: 'charcoal', label: 'Charcoal' },
-                { id: 'ivory', label: 'Warm Paper' },
-                { id: 'emerald', label: 'Emerald' },
-              ] as const
-            ).map((style) => (
+        {/* 5 Spotify Backdrop Themes */}
+        <div className="mb-4">
+          <span className="text-[11px] font-medium text-stone-400 block mb-1.5">
+            Spotify Backdrop Theme
+          </span>
+          <div className="grid grid-cols-5 gap-1.5">
+            {SPOTIFY_BACKDROP_THEMES.map((t) => (
               <button
-                key={style.id}
+                key={t.id}
                 type="button"
                 onClick={() => {
                   triggerHapticSelection();
-                  setCardStyle(style.id);
+                  setThemeId(t.id);
                 }}
-                className={`py-1.5 rounded-xl text-xs font-medium transition-all ${
-                  cardStyle === style.id
-                    ? 'liquid-glass-dock text-white ring-1 ring-white/25'
-                    : 'text-stone-400 hover:text-stone-200'
+                className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 transition-all ${
+                  themeId === t.id
+                    ? 'border-[#1DB954] bg-white/10'
+                    : 'border-white/10 bg-black/30 opacity-75 hover:opacity-100'
                 }`}
               >
-                {style.label}
+                <span
+                  className="w-5 h-5 rounded-full flex items-center justify-center"
+                  style={{
+                    background: `linear-gradient(135deg, ${t.topColor}, ${t.midColor})`,
+                  }}
+                >
+                  {themeId === t.id && <Check className="w-2.5 h-2.5 text-white" />}
+                </span>
+                <span className="text-[9px] text-stone-300 truncate w-full text-center">
+                  {t.name.split(' ')[1] || t.name}
+                </span>
               </button>
             ))}
           </div>
         </div>
 
-        {/* Export / Copy Buttons */}
-        <div className="flex items-center gap-2.5">
+        {shareFeedback && (
+          <div className="mb-3 px-3 py-2 rounded-xl bg-[#1DB954]/15 border border-[#1DB954]/40 text-[11px] text-emerald-300 text-center font-medium">
+            {shareFeedback}
+          </div>
+        )}
+
+        {/* Export / Share Buttons */}
+        <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
-            onClick={handleCopyText}
-            className="flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/15 text-white flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap"
+            onClick={() => handleStoryShare('instagram')}
+            className="py-2.5 px-3 rounded-xl text-xs font-bold text-white flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
+            style={{
+              background: 'linear-gradient(135deg, #F58529 0%, #DD2A7B 55%, #8134AF 100%)',
+            }}
           >
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copied ? 'Quote Copied' : 'Copy Quote'}</span>
+            <Instagram className="w-3.5 h-3.5" />
+            <span>Instagram Story</span>
           </button>
 
           <button
             type="button"
-            onClick={handleDownloadCardPng}
-            className="flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold bg-[#FF6719] hover:bg-[#e85a12] text-white flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap"
+            onClick={() => handleStoryShare('facebook')}
+            className="py-2.5 px-3 rounded-xl text-xs font-bold bg-[#1877F2] hover:bg-[#166FE5] text-white flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            <span>Facebook Story</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleCopyText}
+            className="py-2 px-3 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/15 text-white flex items-center justify-center gap-1.5 transition-colors"
+          >
+            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            <span>{copied ? 'Quote Copied' : 'Copy Text'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleStoryShare('download')}
+            className="py-2 px-3 rounded-xl text-xs font-semibold bg-[#1DB954] hover:bg-[#19a64c] text-black flex items-center justify-center gap-1.5 transition-colors"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Save Card Image</span>
+            <span>Save 9:16 PNG</span>
           </button>
         </div>
       </div>
