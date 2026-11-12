@@ -42,7 +42,7 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
 
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [storyMode, setStoryMode] = useState<StoryCardMode>('lyrics');
-  const [themeId, setThemeId] = useState<StoryBackdropThemeId>('emerald');
+  const [themeId, setThemeId] = useState<StoryBackdropThemeId>('sunset');
   const [copied, setCopied] = useState(false);
   const [shareFeedback, setShareFeedback] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -168,9 +168,9 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Share 9:16 Spotify-Style Story Card"
+      aria-label="Share Story Card"
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3 sm:p-4 pb-6 bg-black/65 backdrop-blur-xs animate-in fade-in duration-150"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3 sm:p-4 pb-6 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -184,33 +184,33 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
           transition:
             dragOffsetY !== 0 ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
         }}
-        className="w-full max-w-md max-h-[88vh] flex flex-col rounded-3xl reader-liquid-card p-5 text-stone-100 shadow-2xl border border-white/20 animate-in zoom-in-95 duration-150 select-none overflow-y-auto no-scrollbar"
+        className="w-full max-w-md max-h-[86vh] flex flex-col rounded-3xl reader-liquid-card p-5 text-stone-100 shadow-2xl border border-white/15 animate-in zoom-in-95 duration-150 select-none overflow-y-auto no-scrollbar"
       >
         <div className="w-10 h-1 bg-white/25 rounded-full mx-auto mb-3 cursor-grab active:cursor-grabbing shrink-0" />
 
         <div className="flex items-center justify-between pb-3 mb-3.5 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <Quote className="w-4 h-4 text-[#1DB954]" />
-            <span className="text-xs font-semibold text-stone-200">
-              Spotify-Style Story Card (9:16)
+            <Quote className="w-4 h-4 text-[#FF6719]" />
+            <span className="font-serif text-sm font-bold text-white">
+              Share to Story
             </span>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close quote card modal"
-            className="min-w-[34px] min-h-[34px] rounded-full flex items-center justify-center text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
+            aria-label="Close share card modal"
+            className="min-w-[32px] min-h-[32px] rounded-full flex items-center justify-center text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Mode Toggle: Lyrics Highlight vs Song Share */}
-        <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/40 border border-white/10 rounded-2xl mb-3">
+        {/* Mode Toggle: Quote vs Article */}
+        <div className="grid grid-cols-2 gap-1 p-1 bg-black/35 border border-white/10 rounded-full mb-3.5">
           {(
             [
-              { id: 'lyrics', label: 'Lyrics Highlight' },
-              { id: 'song', label: 'Song Share' },
+              { id: 'lyrics', label: 'Quote' },
+              { id: 'song', label: 'Article' },
             ] as const
           ).map((m) => (
             <button
@@ -220,9 +220,9 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
                 triggerHapticSelection();
                 setStoryMode(m.id);
               }}
-              className={`py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              className={`py-1.5 rounded-full text-xs font-semibold transition-all ${
                 storyMode === m.id
-                  ? 'bg-[#1DB954] text-black'
+                  ? 'bg-white text-stone-900'
                   : 'text-stone-300 hover:text-white'
               }`}
             >
@@ -233,54 +233,47 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
 
         {/* Live 9:16 Story Preview */}
         <div className="flex justify-center mb-3.5">
-          <div className="w-44 aspect-[9/16] rounded-2xl overflow-hidden border border-white/20 bg-black/40 shadow-xl flex items-center justify-center">
+          <div className="w-44 aspect-[9/16] rounded-2xl overflow-hidden border border-white/15 bg-black/40 shadow-xl flex items-center justify-center">
             {previewUrl ? (
               <img
                 src={previewUrl}
-                alt="9:16 Story Card Preview"
+                alt="Story Card Preview"
                 className="w-full h-full object-cover"
               />
             ) : (
-              <div className="w-5 h-5 border-2 border-[#1DB954] border-t-transparent rounded-full animate-spin" />
+              <div className="w-5 h-5 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin" />
             )}
           </div>
         </div>
 
-        {/* Passage Selector (for Lyrics mode) */}
+        {/* Passage Selector (for Quote mode) */}
         {storyMode === 'lyrics' && candidateQuotes.length > 1 && (
-          <div className="mb-3">
-            <span className="text-[11px] font-medium text-stone-400 block mb-1.5">
-              Select Passage ({selectedIdx + 1} of {candidateQuotes.length})
-            </span>
-            <div className="flex items-center gap-1.5">
-              {candidateQuotes.map((_, idx) => (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => {
-                    triggerHapticSelection();
-                    setSelectedIdx(idx);
-                  }}
-                  className={`flex-1 py-1.5 rounded-xl text-xs font-mono font-semibold transition-all ${
-                    selectedIdx === idx
-                      ? 'bg-[#1DB954] text-black'
-                      : 'bg-white/5 text-stone-400 hover:text-white'
-                  }`}
-                >
-                  #{idx + 1}
-                </button>
-              ))}
-            </div>
+          <div className="flex items-center justify-center gap-1.5 mb-3">
+            {candidateQuotes.map((_, idx) => (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => {
+                  triggerHapticSelection();
+                  setSelectedIdx(idx);
+                }}
+                className={`px-3 py-1 rounded-full text-[11px] font-mono font-semibold transition-all ${
+                  selectedIdx === idx
+                    ? 'bg-white text-stone-900'
+                    : 'bg-white/10 text-stone-400 hover:text-white'
+                }`}
+              >
+                #{idx + 1}
+              </button>
+            ))}
           </div>
         )}
 
-        {/* 5 Spotify Backdrop Themes */}
-        <div className="mb-4">
-          <span className="text-[11px] font-medium text-stone-400 block mb-1.5">
-            Spotify Backdrop Theme
-          </span>
-          <div className="grid grid-cols-5 gap-1.5">
-            {SPOTIFY_BACKDROP_THEMES.map((t) => (
+        {/* Minimal Backdrop Dots */}
+        <div className="flex items-center justify-center gap-3 mb-4">
+          {SPOTIFY_BACKDROP_THEMES.map((t) => {
+            const active = themeId === t.id;
+            return (
               <button
                 key={t.id}
                 type="button"
@@ -288,30 +281,23 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
                   triggerHapticSelection();
                   setThemeId(t.id);
                 }}
-                className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 transition-all ${
-                  themeId === t.id
-                    ? 'border-[#1DB954] bg-white/10'
-                    : 'border-white/10 bg-black/30 opacity-75 hover:opacity-100'
+                aria-label={t.name}
+                title={t.name}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform ${
+                  active ? 'scale-110 ring-2 ring-white ring-offset-2 ring-offset-stone-900' : 'opacity-75 hover:opacity-100'
                 }`}
+                style={{
+                  background: `linear-gradient(135deg, ${t.topColor}, ${t.midColor})`,
+                }}
               >
-                <span
-                  className="w-5 h-5 rounded-full flex items-center justify-center"
-                  style={{
-                    background: `linear-gradient(135deg, ${t.topColor}, ${t.midColor})`,
-                  }}
-                >
-                  {themeId === t.id && <Check className="w-2.5 h-2.5 text-white" />}
-                </span>
-                <span className="text-[9px] text-stone-300 truncate w-full text-center">
-                  {t.name.split(' ')[1] || t.name}
-                </span>
+                {active && <Check className="w-3.5 h-3.5 text-white" />}
               </button>
-            ))}
-          </div>
+            );
+          })}
         </div>
 
         {shareFeedback && (
-          <div className="mb-3 px-3 py-2 rounded-xl bg-[#1DB954]/15 border border-[#1DB954]/40 text-[11px] text-emerald-300 text-center font-medium">
+          <div className="mb-3 px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-[11px] text-stone-200 text-center">
             {shareFeedback}
           </div>
         )}
@@ -321,40 +307,40 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
           <button
             type="button"
             onClick={() => handleStoryShare('instagram')}
-            className="py-2.5 px-3 rounded-xl text-xs font-bold text-white flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
+            className="py-2.5 px-3 rounded-full text-xs font-semibold text-white flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
             style={{
               background: 'linear-gradient(135deg, #F58529 0%, #DD2A7B 55%, #8134AF 100%)',
             }}
           >
             <Instagram className="w-3.5 h-3.5" />
-            <span>Instagram Story</span>
+            <span>Instagram</span>
           </button>
 
           <button
             type="button"
             onClick={() => handleStoryShare('facebook')}
-            className="py-2.5 px-3 rounded-xl text-xs font-bold bg-[#1877F2] hover:bg-[#166FE5] text-white flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
+            className="py-2.5 px-3 rounded-full text-xs font-semibold bg-[#1877F2] hover:bg-[#166FE5] text-white flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
           >
             <Share2 className="w-3.5 h-3.5" />
-            <span>Facebook Story</span>
+            <span>Facebook</span>
           </button>
 
           <button
             type="button"
             onClick={handleCopyText}
-            className="py-2 px-3 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/15 text-white flex items-center justify-center gap-1.5 transition-colors"
+            className="py-2 px-3 rounded-full text-xs font-semibold bg-white/10 hover:bg-white/15 text-white flex items-center justify-center gap-1.5 transition-colors"
           >
             {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copied ? 'Quote Copied' : 'Copy Text'}</span>
+            <span>{copied ? 'Copied' : 'Copy Text'}</span>
           </button>
 
           <button
             type="button"
             onClick={() => handleStoryShare('download')}
-            className="py-2 px-3 rounded-xl text-xs font-semibold bg-[#1DB954] hover:bg-[#19a64c] text-black flex items-center justify-center gap-1.5 transition-colors"
+            className="py-2 px-3 rounded-full text-xs font-semibold bg-white/15 hover:bg-white/25 text-white flex items-center justify-center gap-1.5 transition-colors"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Save 9:16 PNG</span>
+            <span>Save Image</span>
           </button>
         </div>
       </div>

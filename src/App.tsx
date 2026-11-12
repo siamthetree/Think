@@ -1300,13 +1300,13 @@ export default function App() {
                         triggerHapticSelection();
                         setIsHabitSheetOpen(true);
                       }}
-                      aria-label="Open Chinta Wrapped Reading Stats"
-                      title="Chinta Wrapped · Reading Stats & Story Sharing"
+                      aria-label="Open Reading Stats and Story Share"
+                      title="Reading Stats & Story Share"
                       className="liquid-glass-pill h-10 px-3 rounded-full flex items-center gap-2 text-xs font-semibold text-stone-900 dark:text-white active:scale-95 transition-transform shrink-0"
                     >
-                      <BarChart3 className="w-3.5 h-3.5 text-[#1DB954]" />
+                      <BarChart3 className="w-3.5 h-3.5 text-[#FF6719]" />
                       <span className="font-mono tabular-nums">
-                        Stats · {spotifyStats.totalMinutesRead}m
+                        {spotifyStats.totalMinutesRead}m
                       </span>
                     </button>
 

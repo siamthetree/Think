@@ -16,53 +16,53 @@ export interface StoryBackdropTheme {
 
 export const SPOTIFY_BACKDROP_THEMES: StoryBackdropTheme[] = [
   {
-    id: 'emerald',
-    name: 'Spotify Emerald',
-    topColor: '#1DB954',
-    midColor: '#0E4E2B',
-    bottomColor: '#07140D',
-    accentColor: '#1DB954',
-    cardBg: '#121514',
-    pillText: '#052E16',
-  },
-  {
     id: 'sunset',
-    name: 'Editorial Sunset',
-    topColor: '#FF6719',
-    midColor: '#9D2235',
-    bottomColor: '#1A0A10',
+    name: 'Warm Ink',
+    topColor: '#EA580C',
+    midColor: '#7C2D12',
+    bottomColor: '#140C08',
     accentColor: '#FF7A2F',
-    cardBg: '#161214',
+    cardBg: '#171412',
     pillText: '#2A0E04',
   },
   {
+    id: 'emerald',
+    name: 'Sage',
+    topColor: '#0D9488',
+    midColor: '#115E59',
+    bottomColor: '#071413',
+    accentColor: '#2DD4BF',
+    cardBg: '#111615',
+    pillText: '#042F2E',
+  },
+  {
     id: 'midnight',
-    name: 'Midnight Aura',
-    topColor: '#6366F1',
-    midColor: '#2E1065',
-    bottomColor: '#09091A',
+    name: 'Slate',
+    topColor: '#4F46E5',
+    midColor: '#1E1B4B',
+    bottomColor: '#090914',
     accentColor: '#818CF8',
-    cardBg: '#11121B',
+    cardBg: '#11121A',
     pillText: '#1E1B4B',
   },
   {
     id: 'crimson',
-    name: 'Crimson Pulse',
-    topColor: '#F43F5E',
+    name: 'Garnet',
+    topColor: '#E11D48',
     midColor: '#881337',
-    bottomColor: '#16060C',
+    bottomColor: '#14070B',
     accentColor: '#FB7185',
-    cardBg: '#161013',
+    cardBg: '#171013',
     pillText: '#4C0519',
   },
   {
     id: 'gold',
-    name: 'Vinyl Gold',
-    topColor: '#F59E0B',
-    midColor: '#78350F',
-    bottomColor: '#160E05',
+    name: 'Paper Dark',
+    topColor: '#D97706',
+    midColor: '#573612',
+    bottomColor: '#120E09',
     accentColor: '#FBBF24',
-    cardBg: '#161410',
+    cardBg: '#161411',
     pillText: '#451A03',
   },
 ];
@@ -118,7 +118,6 @@ function wrapCanvasText(
       lines.push(current);
       current = words[i];
       if (lines.length >= maxLines - 1) {
-        // Put remaining words onto final line and truncate cleanly with ellipsis
         const rest = [current, ...words.slice(i + 1)].join(' ');
         let finalLine = rest;
         while (finalLine.length > 3 && ctx.measureText(`${finalLine}…`).width > maxWidth) {
@@ -155,41 +154,35 @@ function loadCorsSafeImage(url?: string): Promise<HTMLImageElement | null> {
 
 function drawFooterSignature(ctx: CanvasRenderingContext2D, accentColor: string, y: number) {
   ctx.save();
-  // Circle mark ◉
   ctx.fillStyle = accentColor;
   ctx.beginPath();
-  ctx.arc(386, y - 10, 14, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#0B0B0B';
-  ctx.beginPath();
-  ctx.arc(386, y - 10, 6, 0, Math.PI * 2);
+  ctx.arc(412, y - 10, 10, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.font = '700 32px "Plus Jakarta Sans", -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.88)';
+  ctx.font = '600 28px "Plus Jakarta Sans", -apple-system, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('চিন্তা · Think', 416, y);
+  ctx.fillText('চিন্তা · Think', 436, y);
   ctx.restore();
 }
 
 function drawBackdrop(ctx: CanvasRenderingContext2D, theme: StoryBackdropTheme) {
   const grad = ctx.createLinearGradient(0, 0, 1080, 1920);
   grad.addColorStop(0, theme.topColor);
-  grad.addColorStop(0.42, theme.midColor);
+  grad.addColorStop(0.38, theme.midColor);
   grad.addColorStop(1, theme.bottomColor);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 1080, 1920);
 
-  // Subtle ambient orbs
-  const radial = ctx.createRadialGradient(840, 320, 30, 840, 320, 580);
-  radial.addColorStop(0, 'rgba(255,255,255,0.16)');
+  const radial = ctx.createRadialGradient(840, 260, 20, 840, 260, 620);
+  radial.addColorStop(0, 'rgba(255,255,255,0.12)');
   radial.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = radial;
   ctx.fillRect(0, 0, 1080, 1920);
 }
 
 /**
- * Renders a crisp 1080×1920 (9:16 vertical Instagram / Facebook Story) Canvas card.
+ * Renders a minimal 1080×1920 (9:16 vertical Instagram / Facebook Story) newsreader card.
  */
 export async function renderStoryCardCanvas(
   payload: StoryCardPayload
@@ -203,388 +196,296 @@ export async function renderStoryCardCanvas(
   const theme = getTheme(payload.themeId);
   drawBackdrop(ctx, theme);
 
+  // Mode 1: Editorial Article Story Card ('song' ID retained for API compatibility)
   if (payload.mode === 'song') {
     const coverImg = await loadCorsSafeImage(payload.imageUrl);
 
-    // Top badge
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    roundRectPath(ctx, 360, 130, 360, 62, 31);
+    // Subtle Top Pill
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    roundRectPath(ctx, 390, 145, 300, 54, 27);
     ctx.fill();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = '700 24px "Plus Jakarta Sans", -apple-system, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = '700 21px "Plus Jakarta Sans", -apple-system, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('NOW READING ON CHINTA', 540, 170);
+    ctx.fillText('READING NOW', 540, 179);
 
-    // Floating Spotify Song Share Card
+    // Floating Minimal Editorial Card
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.48)';
+    ctx.shadowColor = 'rgba(0,0,0,0.42)';
     ctx.shadowBlur = 70;
-    ctx.shadowOffsetY = 30;
+    ctx.shadowOffsetY = 28;
     ctx.fillStyle = theme.cardBg;
-    roundRectPath(ctx, 90, 260, 900, 1340, 48);
+    roundRectPath(ctx, 90, 260, 900, 1310, 44);
     ctx.fill();
     ctx.restore();
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-    ctx.lineWidth = 3;
-    roundRectPath(ctx, 90, 260, 900, 1340, 48);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
+    roundRectPath(ctx, 90, 260, 900, 1310, 44);
     ctx.stroke();
 
-    // Square Album-Style Story Cover Art (740x740 centered)
-    const artX = 170;
-    const artY = 340;
-    const artSize = 740;
+    // Editorial Cover Image / Clean Monogram Poster
+    const artX = 160;
+    const artY = 335;
+    const artW = 760;
+    const artH = 680;
     ctx.save();
-    roundRectPath(ctx, artX, artY, artSize, artSize, 28);
+    roundRectPath(ctx, artX, artY, artW, artH, 28);
     ctx.clip();
 
     if (coverImg) {
-      const ratio = Math.max(artSize / coverImg.width, artSize / coverImg.height);
+      const ratio = Math.max(artW / coverImg.width, artH / coverImg.height);
       const dw = coverImg.width * ratio;
       const dh = coverImg.height * ratio;
-      ctx.drawImage(
-        coverImg,
-        artX + (artSize - dw) / 2,
-        artY + (artSize - dh) / 2,
-        dw,
-        dh
-      );
-      // Slight bottom vignette inside art
-      const artGrad = ctx.createLinearGradient(0, artY + artSize * 0.5, 0, artY + artSize);
+      ctx.drawImage(coverImg, artX + (artW - dw) / 2, artY + (artH - dh) / 2, dw, dh);
+      const artGrad = ctx.createLinearGradient(0, artY + artH * 0.55, 0, artY + artH);
       artGrad.addColorStop(0, 'rgba(0,0,0,0)');
-      artGrad.addColorStop(1, 'rgba(0,0,0,0.55)');
+      artGrad.addColorStop(1, 'rgba(0,0,0,0.52)');
       ctx.fillStyle = artGrad;
-      ctx.fillRect(artX, artY, artSize, artSize);
+      ctx.fillRect(artX, artY, artW, artH);
     } else {
-      const coverGrad = ctx.createLinearGradient(artX, artY, artX + artSize, artY + artSize);
+      const coverGrad = ctx.createLinearGradient(artX, artY, artX + artW, artY + artH);
       coverGrad.addColorStop(0, theme.topColor);
       coverGrad.addColorStop(1, theme.midColor);
       ctx.fillStyle = coverGrad;
-      ctx.fillRect(artX, artY, artSize, artSize);
-
-      ctx.fillStyle = 'rgba(255,255,255,0.14)';
-      ctx.beginPath();
-      ctx.arc(artX + artSize * 0.8, artY + artSize * 0.25, 190, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillRect(artX, artY, artW, artH);
 
       const initial = (payload.publisher || 'C').trim().charAt(0).toUpperCase();
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '700 280px "Lora", Georgia, serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.font = '700 240px "Lora", Georgia, serif';
       ctx.textAlign = 'center';
-      ctx.fillText(initial, artX + artSize / 2, artY + artSize / 2 + 95);
+      ctx.fillText(initial, artX + artW / 2, artY + artH / 2 + 80);
     }
     ctx.restore();
 
-    // Publisher badge over art bottom-left
-    ctx.fillStyle = 'rgba(0,0,0,0.68)';
-    roundRectPath(ctx, artX + 28, artY + artSize - 88, 360, 56, 28);
-    ctx.fill();
+    // Publisher Kicker
+    ctx.textAlign = 'left';
     ctx.fillStyle = theme.accentColor;
-    ctx.font = '700 22px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.textAlign = 'left';
-    const pubClipped =
-      payload.publisher.length > 22
-        ? `${payload.publisher.slice(0, 20)}…`
-        : payload.publisher.toUpperCase();
-    ctx.fillText(pubClipped, artX + 54, artY + artSize - 52);
+    ctx.font = '700 24px "Plus Jakarta Sans", -apple-system, sans-serif';
+    ctx.fillText((payload.publisher || 'News').toUpperCase(), 160, 1085);
 
-    // Track Headline
+    // Crisp Serif Headline
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = '700 48px "Lora", Georgia, serif';
-    ctx.textAlign = 'left';
-    const titleLines = wrapCanvasText(ctx, payload.headline, 740, 3);
-    let textY = 1165;
+    ctx.font = '700 50px "Lora", Georgia, serif';
+    const titleLines = wrapCanvasText(ctx, payload.headline, 760, 4);
+    let textY = 1160;
     for (const line of titleLines) {
-      ctx.fillText(line, 170, textY);
-      textY += 62;
+      ctx.fillText(line, 160, textY);
+      textY += 66;
     }
 
-    // Artist / Publisher + Author Line
-    const artistLine = payload.author
-      ? `${payload.publisher} · ${payload.author}`
-      : `${payload.publisher} · Distraction-Free Edition`;
-    ctx.fillStyle = 'rgba(255,255,255,0.68)';
-    ctx.font = '500 28px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText(
-      artistLine.length > 42 ? `${artistLine.slice(0, 40)}…` : artistLine,
-      170,
-      Math.max(1335, textY + 18)
-    );
+    // Minimal Hairline & Attribution + Read Time
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(160, 1445, 760, 2);
 
-    // Spotify Scrubber Bar
-    const barY = 1410;
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    roundRectPath(ctx, 170, barY, 740, 10, 5);
-    ctx.fill();
-
-    ctx.fillStyle = theme.accentColor;
-    roundRectPath(ctx, 170, barY, 530, 10, 5);
-    ctx.fill();
-
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.arc(700, barY + 5, 16, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Scrubber time labels
     const mins = Math.max(1, payload.readTimeMin || 3);
-    ctx.fillStyle = 'rgba(255,255,255,0.65)';
-    ctx.font = '600 22px "Plus Jakarta Sans", -apple-system, sans-serif';
+    const metaLine = payload.author ? `${payload.author}` : 'Distraction-Free Edition';
+    ctx.fillStyle = 'rgba(255,255,255,0.68)';
+    ctx.font = '500 25px "Plus Jakarta Sans", -apple-system, sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText('100% FOCUSED', 170, barY + 46);
+    ctx.fillText(
+      metaLine.length > 34 ? `${metaLine.slice(0, 32)}…` : metaLine,
+      160,
+      1505
+    );
     ctx.textAlign = 'right';
-    ctx.fillText(`${mins}:00 MIN READ`, 910, barY + 46);
-
-    // Mini Player Controls
-    const ctrlY = 1515;
-    // Play / Pause circle
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.arc(540, ctrlY, 44, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = theme.cardBg;
-    ctx.fillRect(526, ctrlY - 16, 10, 32);
-    ctx.fillRect(544, ctrlY - 16, 10, 32);
-
-    // Prev / Next triangles
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.beginPath();
-    ctx.moveTo(410, ctrlY);
-    ctx.lineTo(445, ctrlY - 20);
-    ctx.lineTo(445, ctrlY + 20);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillRect(402, ctrlY - 20, 6, 40);
+    ctx.font = '600 25px "Plus Jakarta Sans", -apple-system, sans-serif';
+    ctx.fillText(`${mins} min read`, 920, 1505);
 
-    ctx.beginPath();
-    ctx.moveTo(670, ctrlY);
-    ctx.lineTo(635, ctrlY - 20);
-    ctx.lineTo(635, ctrlY + 20);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillRect(672, ctrlY - 20, 6, 40);
-
-    drawFooterSignature(ctx, theme.accentColor, 1740);
+    drawFooterSignature(ctx, theme.accentColor, 1735);
     return canvas;
   }
 
+  // Mode 2: Editorial Pull-Quote Highlight Card ('lyrics' ID retained)
   if (payload.mode === 'lyrics') {
-    // Spotify Lyrics Share Style
-    ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    roundRectPath(ctx, 355, 130, 370, 62, 31);
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    roundRectPath(ctx, 400, 145, 280, 54, 27);
     ctx.fill();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = '700 24px "Plus Jakarta Sans", -apple-system, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = '700 21px "Plus Jakarta Sans", -apple-system, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('HIGHLIGHT · KEY LINE', 540, 170);
+    ctx.fillText('KEY PASSAGE', 540, 179);
 
-    // Main Spotify Lyrics Card
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.45)';
+    ctx.shadowColor = 'rgba(0,0,0,0.42)';
     ctx.shadowBlur = 70;
     ctx.shadowOffsetY = 26;
     ctx.fillStyle = theme.cardBg;
-    roundRectPath(ctx, 90, 265, 900, 1320, 48);
+    roundRectPath(ctx, 90, 260, 900, 1310, 44);
     ctx.fill();
     ctx.restore();
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-    ctx.lineWidth = 3;
-    roundRectPath(ctx, 90, 265, 900, 1320, 48);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
+    roundRectPath(ctx, 90, 260, 900, 1310, 44);
     ctx.stroke();
 
-    // Top Track Header inside Lyrics Card
-    ctx.fillStyle = theme.accentColor;
-    roundRectPath(ctx, 160, 345, 96, 96, 20);
-    ctx.fill();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = '700 48px "Lora", Georgia, serif';
-    ctx.textAlign = 'center';
-    ctx.fillText((payload.publisher || 'C').charAt(0).toUpperCase(), 208, 410);
-
+    // Publisher Header
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = '700 32px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText(
-      payload.publisher.length > 26 ? `${payload.publisher.slice(0, 24)}…` : payload.publisher,
-      284,
-      384
-    );
-    ctx.fillStyle = 'rgba(255,255,255,0.65)';
+    ctx.fillStyle = theme.accentColor;
+    ctx.font = '700 25px "Plus Jakarta Sans", -apple-system, sans-serif';
+    ctx.fillText((payload.publisher || 'News').toUpperCase(), 165, 365);
+
+    ctx.fillStyle = 'rgba(255,255,255,0.58)';
     ctx.font = '500 24px "Plus Jakarta Sans", -apple-system, sans-serif';
     const subTitle =
-      payload.headline.length > 38 ? `${payload.headline.slice(0, 36)}…` : payload.headline;
-    ctx.fillText(subTitle, 284, 424);
+      payload.headline.length > 46 ? `${payload.headline.slice(0, 44)}…` : payload.headline;
+    ctx.fillText(subTitle, 165, 412);
 
-    // Highlighted Quote Lines
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillRect(165, 458, 750, 2);
+
+    // Clean Editorial Pull-Quote with vertical accent bar
     const quote = payload.quoteText || payload.headline;
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = '700 56px "Lora", Georgia, serif';
-    const quoteLines = wrapCanvasText(ctx, `“${quote}”`, 750, 9);
+    ctx.font = '700 54px "Lora", Georgia, serif';
+    const quoteLines = wrapCanvasText(ctx, `“${quote}”`, 705, 9);
 
-    let qY = 580;
+    const startY = 580;
+    const lineHeight = 86;
+    const barHeight = Math.max(120, quoteLines.length * lineHeight - 16);
+
+    ctx.fillStyle = theme.accentColor;
+    roundRectPath(ctx, 165, startY - 50, 7, barHeight, 4);
+    ctx.fill();
+
+    let qY = startY;
+    ctx.fillStyle = '#FFFFFF';
     for (let i = 0; i < quoteLines.length; i++) {
-      // Subtle highlight block behind each line like Spotify Lyrics
-      const lineW = Math.min(760, ctx.measureText(quoteLines[i]).width + 32);
-      ctx.fillStyle = 'rgba(255,255,255,0.08)';
-      roundRectPath(ctx, 148, qY - 56, lineW, 74, 14);
-      ctx.fill();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillText(quoteLines[i], 164, qY);
-      qY += 96;
+      ctx.fillText(quoteLines[i], 202, qY);
+      qY += lineHeight;
     }
 
-    // Bottom Track Tag
-    ctx.fillStyle = theme.accentColor;
-    ctx.font = '700 26px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText('READ DISTRACTION-FREE', 164, 1500);
+    // Minimal Bottom Line
+    const mins = Math.max(1, payload.readTimeMin || 3);
+    ctx.fillStyle = 'rgba(255,255,255,0.58)';
+    ctx.font = '600 23px "Plus Jakarta Sans", -apple-system, sans-serif';
+    ctx.fillText(`${mins} min read · Saved on Chinta`, 165, 1490);
 
-    drawFooterSignature(ctx, theme.accentColor, 1740);
+    drawFooterSignature(ctx, theme.accentColor, 1735);
     return canvas;
   }
 
-  // Mode 3: 'wrapped' — Spotify Wrapped Stats Style
+  // Mode 3: Minimal Newsreader Reading Recap ('wrapped' ID retained)
   const stats = payload.stats;
-  const totalMin = stats?.totalMinutesRead ?? 42;
-  const totalStories = stats?.totalStoriesRead ?? 12;
-  const streak = stats?.streakDays ?? 1;
+  const totalMin = stats?.totalMinutesRead ?? 0;
+  const totalStories = stats?.totalStoriesRead ?? 0;
+  const streak = stats?.streakDays ?? 0;
   const topSources = stats?.topSources?.slice(0, 4) || [];
-  const topGenres = stats?.topGenres?.slice(0, 4) || [];
-  const auraTitle = stats?.readerAura?.title || 'Signal Seeker';
+  const topGenres = stats?.topGenres?.slice(0, 3) || [];
 
-  // Top WRAPPED Badge
-  ctx.fillStyle = 'rgba(255,255,255,0.18)';
-  roundRectPath(ctx, 345, 115, 390, 62, 31);
+  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  roundRectPath(ctx, 375, 145, 330, 54, 27);
   ctx.fill();
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = '800 24px "Plus Jakarta Sans", -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = '700 21px "Plus Jakarta Sans", -apple-system, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('CHINTA WRAPPED · 2026', 540, 155);
+  ctx.fillText('READING RECAP', 540, 179);
 
   // Main Card Container
   ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.45)';
+  ctx.shadowColor = 'rgba(0,0,0,0.42)';
   ctx.shadowBlur = 70;
   ctx.shadowOffsetY = 26;
   ctx.fillStyle = theme.cardBg;
-  roundRectPath(ctx, 80, 220, 920, 1400, 48);
+  roundRectPath(ctx, 90, 260, 900, 1310, 44);
   ctx.fill();
   ctx.restore();
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-  ctx.lineWidth = 3;
-  roundRectPath(ctx, 80, 220, 920, 1400, 48);
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 2;
+  roundRectPath(ctx, 90, 260, 900, 1310, 44);
   ctx.stroke();
 
-  // Hero Minutes Read
+  // Hero Reading Time
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.accentColor;
-  ctx.font = '700 26px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText('MINUTES OF DEEP READING', 150, 310);
+  ctx.font = '700 23px "Plus Jakarta Sans", -apple-system, sans-serif';
+  ctx.fillText('FOCUSED READING', 165, 355);
 
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '800 132px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText(`${totalMin}`, 150, 445);
+  ctx.font = '700 124px "Lora", Georgia, serif';
+  ctx.fillText(`${totalMin}m`, 165, 490);
 
   ctx.fillStyle = 'rgba(255,255,255,0.72)';
-  ctx.font = '600 32px "Plus Jakarta Sans", -apple-system, sans-serif';
+  ctx.font = '500 30px "Plus Jakarta Sans", -apple-system, sans-serif';
   ctx.fillText(
-    `${totalStories} stories finished · ${streak}d mindful streak`,
-    150,
-    505
+    `${totalStories} ${totalStories === 1 ? 'article' : 'articles'} · ${streak}d streak`,
+    165,
+    555
   );
 
-  // Divider
   ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  ctx.fillRect(150, 548, 780, 2);
+  ctx.fillRect(165, 610, 750, 2);
 
-  // Top Publishers (#1 - #4)
+  // Top Sources
   ctx.fillStyle = theme.accentColor;
-  ctx.font = '700 24px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText('TOP PUBLISHERS', 150, 610);
+  ctx.font = '700 22px "Plus Jakarta Sans", -apple-system, sans-serif';
+  ctx.fillText('MOST READ SOURCES', 165, 680);
 
   if (topSources.length > 0) {
-    let sy = 678;
+    let sy = 755;
     for (const src of topSources) {
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.font = '800 34px "Plus Jakarta Sans", -apple-system, sans-serif';
-      ctx.fillText(`#${src.rank}`, 150, sy);
+      ctx.fillStyle = 'rgba(255,255,255,0.42)';
+      ctx.font = '700 32px "Plus Jakarta Sans", -apple-system, sans-serif';
+      ctx.fillText(`${src.rank}.`, 165, sy);
 
       ctx.fillStyle = '#FFFFFF';
-      ctx.font = '700 34px "Lora", Georgia, serif';
-      const label = src.title.length > 26 ? `${src.title.slice(0, 24)}…` : src.title;
+      ctx.font = '700 36px "Lora", Georgia, serif';
+      const label = src.title.length > 24 ? `${src.title.slice(0, 22)}…` : src.title;
       ctx.fillText(label, 225, sy);
 
       ctx.textAlign = 'right';
-      ctx.fillStyle = 'rgba(255,255,255,0.65)';
-      ctx.font = '600 26px "Plus Jakarta Sans", -apple-system, sans-serif';
-      ctx.fillText(`${src.storyCount} reads`, 930, sy);
+      ctx.fillStyle = 'rgba(255,255,255,0.62)';
+      ctx.font = '500 26px "Plus Jakarta Sans", -apple-system, sans-serif';
+      ctx.fillText(`${src.storyCount}`, 915, sy);
       ctx.textAlign = 'left';
-      sy += 68;
+      sy += 78;
     }
   } else {
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.font = '500 30px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText('Read stories to rank your top newsrooms', 150, 680);
+    ctx.fillStyle = 'rgba(255,255,255,0.58)';
+    ctx.font = '500 28px "Plus Jakarta Sans", -apple-system, sans-serif';
+    ctx.fillText('Read articles to see your top sources here', 165, 760);
   }
 
-  // Divider
   ctx.fillStyle = 'rgba(255,255,255,0.10)';
-  ctx.fillRect(150, 960, 780, 2);
+  ctx.fillRect(165, 1105, 750, 2);
 
-  // Top Reading Beats (#1 - #4)
+  // Top Topics
   ctx.fillStyle = theme.accentColor;
-  ctx.font = '700 24px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText('TOP READING BEATS', 150, 1022);
+  ctx.font = '700 22px "Plus Jakarta Sans", -apple-system, sans-serif';
+  ctx.fillText('TOPICS', 165, 1175);
 
   if (topGenres.length > 0) {
-    let gy = 1090;
-    for (const g of topGenres) {
-      ctx.fillStyle = g.color || theme.accentColor;
-      ctx.beginPath();
-      ctx.arc(165, gy - 11, 10, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '700 32px "Plus Jakarta Sans", -apple-system, sans-serif';
-      ctx.fillText(`${g.rank}. ${g.name}`, 196, gy);
-
-      ctx.textAlign = 'right';
-      ctx.fillStyle = 'rgba(255,255,255,0.65)';
-      ctx.font = '600 26px "Plus Jakarta Sans", -apple-system, sans-serif';
-      ctx.fillText(`${g.sharePercent}%`, 930, gy);
-      ctx.textAlign = 'left';
-      gy += 62;
+    const topicLine = topGenres.map((g) => g.name).join(' · ');
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '700 38px "Lora", Georgia, serif';
+    const topicLines = wrapCanvasText(ctx, topicLine, 750, 2);
+    let ty = 1245;
+    for (const line of topicLines) {
+      ctx.fillText(line, 165, ty);
+      ty += 54;
     }
   } else {
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fillStyle = 'rgba(255,255,255,0.58)';
     ctx.font = '500 28px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText('Explore categories to reveal your top beats', 150, 1090);
+    ctx.fillText('Topics appear as you read across categories', 165, 1245);
   }
 
-  // Reader Aura Card at bottom of Wrapped panel
-  const auraGrad = ctx.createLinearGradient(140, 1345, 940, 1545);
-  auraGrad.addColorStop(0, theme.topColor);
-  auraGrad.addColorStop(1, theme.midColor);
-  ctx.fillStyle = auraGrad;
-  roundRectPath(ctx, 140, 1350, 800, 195, 32);
+  // Calm Reader Summary Line
+  const profileTitle = stats?.readerAura?.title || 'Mindful Reader';
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  roundRectPath(ctx, 165, 1390, 750, 115, 24);
   ctx.fill();
-
-  ctx.fillStyle = 'rgba(255,255,255,0.82)';
-  ctx.font = '700 22px "Plus Jakarta Sans", -apple-system, sans-serif';
-  ctx.fillText('YOUR READER AURA', 180, 1405);
-
+  ctx.fillStyle = 'rgba(255,255,255,0.62)';
+  ctx.font = '600 20px "Plus Jakarta Sans", -apple-system, sans-serif';
+  ctx.fillText('READING STYLE', 200, 1435);
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '800 46px "Lora", Georgia, serif';
-  ctx.fillText(auraTitle, 180, 1468);
+  ctx.font = '700 34px "Lora", Georgia, serif';
+  ctx.fillText(profileTitle, 200, 1480);
 
-  ctx.fillStyle = 'rgba(255,255,255,0.88)';
-  ctx.font = '500 24px "Plus Jakarta Sans", -apple-system, sans-serif';
-  const auraDesc = stats?.readerAura?.subtitle || 'Distraction-free clarity every day.';
-  ctx.fillText(auraDesc.length > 56 ? `${auraDesc.slice(0, 54)}…` : auraDesc, 180, 1515);
-
-  drawFooterSignature(ctx, theme.accentColor, 1750);
+  drawFooterSignature(ctx, theme.accentColor, 1735);
   return canvas;
 }
 
@@ -605,21 +506,21 @@ function triggerPngDownload(canvas: HTMLCanvasElement, filename: string) {
 }
 
 /**
- * Shares a 9:16 Spotify-style Story card to Instagram, Facebook, Native Share Sheet, or PNG Download.
+ * Shares a 9:16 Story card via iOS Share Sheet (Instagram, Facebook, etc.) or saves PNG.
  */
 export async function shareSpotifyStyleStory(
   platform: 'instagram' | 'facebook' | 'native' | 'download',
   payload: StoryCardPayload
 ): Promise<{ ok: boolean; method: string; message: string }> {
   const canvas = await renderStoryCardCanvas(payload);
-  const filename = `chinta-${payload.mode}-story-${Date.now().toString(36)}.png`;
+  const filename = `chinta-story-${Date.now().toString(36)}.png`;
 
   if (platform === 'download') {
     triggerPngDownload(canvas, filename);
     return {
       ok: true,
       method: 'download',
-      message: '9:16 Story PNG saved to device.',
+      message: 'Story image saved.',
     };
   }
 
@@ -629,7 +530,7 @@ export async function shareSpotifyStyleStory(
     const shareData: ShareData = {
       files: [file],
       title: `Chinta · ${payload.headline}`,
-      text: `${payload.headline} — Read distraction-free on চিন্তা (Think)`,
+      text: `${payload.headline} — Read on চিন্তা (Think)`,
     };
 
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -640,30 +541,28 @@ export async function shareSpotifyStyleStory(
           method: 'web-share-files',
           message:
             platform === 'instagram'
-              ? 'Select Instagram Story in your iOS Share Sheet.'
+              ? 'Select Instagram in the Share Sheet.'
               : platform === 'facebook'
-                ? 'Select Facebook Story in your iOS Share Sheet.'
-                : 'Story card shared!',
+                ? 'Select Facebook in the Share Sheet.'
+                : 'Story shared.',
         };
       } catch (err: unknown) {
         if (err instanceof Error && err.name === 'AbortError') {
           return { ok: false, method: 'cancelled', message: 'Share cancelled.' };
         }
-        // fall through to download fallback
       }
     }
   }
 
-  // Fallback for desktop browsers without Web Share Level 2 file sharing
   triggerPngDownload(canvas, filename);
   return {
     ok: true,
     method: 'download-fallback',
     message:
       platform === 'instagram'
-        ? '9:16 PNG saved! Open Instagram Stories and pick it from Photos.'
+        ? 'Image saved — pick it from Photos in Instagram Stories.'
         : platform === 'facebook'
-          ? '9:16 PNG saved! Open Facebook Stories and pick it from Photos.'
-          : '9:16 PNG saved to your device.',
+          ? 'Image saved — pick it from Photos in Facebook Stories.'
+          : 'Story image saved.',
   };
 }
