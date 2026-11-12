@@ -5,10 +5,14 @@ import {
   RefreshCw,
   CheckCheck,
   ArrowDownCircle,
+  ArrowUp,
   LayoutList,
   Rows3,
   Folder,
   X,
+  Flame,
+  BookOpen,
+  CheckCircle2,
 } from 'lucide-react';
 import { IPhoneFrame } from './components/IPhoneFrame';
 import { ArticleCard } from './components/ArticleCard';
@@ -19,7 +23,10 @@ import { TagManagerModal } from './components/TagManagerModal';
 import { FeedManagerModal } from './components/FeedManagerModal';
 import { IosBuildModal } from './components/IosBuildModal';
 import { PullToRefresh } from './components/PullToRefresh';
-import { triggerHapticSelection } from './utils/haptics';
+import { DailyBriefingCard } from './components/DailyBriefingCard';
+import { QuickPeekModal } from './components/QuickPeekModal';
+import { ReadingHabitSheet } from './components/ReadingHabitSheet';
+import { triggerHapticSelection, triggerHapticComplete } from './utils/haptics';
 import type { Feed, FeedItem, Tag, ReaderPreferences } from './types';
 import {
   loadFeedsFromStorage,
@@ -32,10 +39,24 @@ import {
   saveFoldersToStorage,
   loadPreferencesFromStorage,
   savePreferencesToStorage,
+  loadReadingHabitFromStorage,
+  saveReadingHabitToStorage,
+  loadReadingProgressFromStorage,
+  saveReadingProgressToStorage,
   hasFullBody,
   hydrateArticlesFromIndexedDb,
 } from './utils/storage';
 import { filterArticles, UNDATED_FALLBACK_EPOCH } from './utils/feedParser';
+import {
+  clusterStoriesByTopic,
+  buildDailyBriefing,
+  normalizeReadingHabitState,
+  recordArticleReadInHabit,
+  findNewIncomingArticles,
+  toDateKey,
+  type ReadingHabitState,
+  type ReadingProgressItem,
+} from './utils/feedIntelligence';
 import {
   fetchFeedWithFallback,
   extractArticleWithFallback,
@@ -137,11 +158,32 @@ export default function App() {
   const [directUrlInput, setDirectUrlInput] = useState('');
   const [isLoadingDirectUrl, setIsLoadingDirectUrl] = useState(false);
 
-  // Modals & Offline State
+  // Modals, Habit, Quick Peek & Offline State
   const [isTagModalOpen, setIsTagModalOpen] = useState(false);
   const [tagModalArticle, setTagModalArticle] = useState<FeedItem | null>(null);
   const [isFeedModalOpen, setIsFeedModalOpen] = useState(false);
   const [isIosModalOpen, setIsIosModalOpen] = useState(false);
+  const [isHabitSheetOpen, setIsHabitSheetOpen] = useState(false);
+  const [quickPeekArticle, setQuickPeekArticle] = useState<FeedItem | null>(null);
+  const [pendingNewArticles, setPendingNewArticles] = useState<FeedItem[]>([]);
+  const [readerInitialScrollTop, setReaderInitialScrollTop] = useState(0);
+
+  const [readingHabit, setReadingHabit] = useState<ReadingHabitState>(() => {
+    const initial: ReadingHabitState = {
+      dailyGoal: 3,
+      todayDate: toDateKey(),
+      todayReadIds: [],
+      todayMinutes: 0,
+      streakDays: 1,
+      lastCompletedDate: null,
+    };
+    return normalizeReadingHabitState(loadReadingHabitFromStorage(initial));
+  });
+
+  const [readingProgress, setReadingProgress] = useState<ReadingProgressItem | null>(() =>
+    loadReadingProgressFromStorage<ReadingProgressItem>()
+  );
+
   const [isOffline, setIsOffline] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
@@ -173,6 +215,14 @@ export default function App() {
   useEffect(() => {
     savePreferencesToStorage(preferences);
   }, [preferences]);
+
+  useEffect(() => {
+    saveReadingHabitToStorage(readingHabit);
+  }, [readingHabit]);
+
+  useEffect(() => {
+    saveReadingProgressToStorage(readingProgress);
+  }, [readingProgress]);
 
   // Temporary status notification
   const notifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -286,7 +336,21 @@ export default function App() {
       const resolvedFeeds = custom.detail?.resolvedFeeds;
 
       if (incomingItems && incomingItems.length > 0) {
-        setArticles((prev) => mergeFeedItems(prev, incomingItems));
+        setArticles((prev) => {
+          // If the user is actively scrolled down in the feed, buffer brand-new stories for the "New Stories Available" pill
+          if (lastScrollYRef.current > 180 && prev.length > 0) {
+            const brandNew = findNewIncomingArticles(prev, incomingItems);
+            if (brandNew.length > 0) {
+              setPendingNewArticles((curr) => {
+                const existingIds = new Set(curr.map((c) => c.id));
+                const additions = brandNew.filter((b) => !existingIds.has(b.id));
+                return [...additions, ...curr];
+              });
+              return prev;
+            }
+          }
+          return mergeFeedItems(prev, incomingItems);
+        });
       }
       if (resolvedFeeds && resolvedFeeds.length > 0) {
         const urlById = new Map(resolvedFeeds.map((r) => [r.id, r.url]));
@@ -304,6 +368,58 @@ export default function App() {
       window.removeEventListener('chinta:incoming-articles', handleIncomingArticles);
     };
   }, []);
+
+  // Smart Background Pre-Extraction for Top 3 Unread Stories (0ms instant Reader open)
+  const preExtractedIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (isOffline || articles.length === 0) return;
+    const candidates = articles
+      .filter(
+        (a) =>
+          !a.isRead &&
+          !hasFullBody(a) &&
+          a.link &&
+          a.link.startsWith('http') &&
+          !/\/video\//i.test(a.link) &&
+          !preExtractedIdsRef.current.has(a.id)
+      )
+      .slice(0, 2);
+
+    if (candidates.length === 0) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      for (const candidate of candidates) {
+        if (cancelled) break;
+        preExtractedIdsRef.current.add(candidate.id);
+        try {
+          const data = await extractArticleWithFallback(candidate.link);
+          if (!cancelled && data.success && data.blocks && data.blocks.length > 0) {
+            const contentClean = data.blocks
+              .map((b) => b.text || '')
+              .filter(Boolean)
+              .join('\n\n');
+            if (contentClean.length >= 200) {
+              handleCacheExtractedArticle(candidate.id, {
+                title: data.title,
+                author: data.author,
+                leadImage: data.leadImage,
+                readTimeMin: data.readTimeMin,
+                contentClean,
+                contentHtml: blocksToHtml(data.blocks),
+              });
+            }
+          }
+        } catch {
+          // silent background pre-fetch
+        }
+      }
+    }, 3200);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [articles.length, isOffline]);
 
   // Click handler for a specific source: selects only that source and loads its feed
   const handleSelectSource = async (feed: Feed) => {
@@ -622,6 +738,47 @@ export default function App() {
     );
   };
 
+  // Open article in ReaderView and record mindful reading habit progress
+  const handleOpenArticle = (article: FeedItem, resumeScrollTop = 0) => {
+    setReaderInitialScrollTop(resumeScrollTop);
+    setActiveArticle(article);
+    setReadingHabit((prev) => {
+      const { nextState, justHitDailyGoal } = recordArticleReadInHabit(
+        prev,
+        article.id,
+        article.readTimeMin || 3
+      );
+      if (justHitDailyGoal) {
+        setTimeout(() => {
+          triggerHapticComplete();
+          notify(`Daily reading goal complete! ${nextState.streakDays}-day streak`);
+        }, 400);
+      }
+      return nextState;
+    });
+  };
+
+  // Track reading progress for the Floating "Continue Reading" Resume Bar
+  const handleReadingProgressChange = (
+    article: FeedItem,
+    progressPercent: number,
+    scrollTop: number
+  ) => {
+    if (progressPercent >= 92) {
+      // Completed reading the article -> clear from resume bar if it was this article
+      setReadingProgress((curr) => (curr?.articleId === article.id ? null : curr));
+    } else if (progressPercent >= 5) {
+      setReadingProgress({
+        articleId: article.id,
+        title: article.title,
+        feedTitle: article.feedTitle,
+        progressPercent,
+        scrollTop,
+        updatedAt: Date.now(),
+      });
+    }
+  };
+
   // Article Actions
   const handleToggleBookmark = (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -631,15 +788,36 @@ export default function App() {
     if (activeArticle && activeArticle.id === id) {
       setActiveArticle((curr) => (curr ? { ...curr, isBookmarked: !curr.isBookmarked } : null));
     }
+    if (quickPeekArticle && quickPeekArticle.id === id) {
+      setQuickPeekArticle((curr) => (curr ? { ...curr, isBookmarked: !curr.isBookmarked } : null));
+    }
   };
 
   const handleToggleRead = (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
+    const target = articles.find((a) => a.id === id);
+    const markingAsRead = target ? !target.isRead : true;
+
     setArticles((prev) =>
       prev.map((a) => (a.id === id ? { ...a, isRead: !a.isRead } : a))
     );
     if (activeArticle && activeArticle.id === id) {
       setActiveArticle((curr) => (curr ? { ...curr, isRead: !curr.isRead } : null));
+    }
+
+    if (markingAsRead && target) {
+      setReadingHabit((prev) => {
+        const { nextState, justHitDailyGoal } = recordArticleReadInHabit(
+          prev,
+          target.id,
+          target.readTimeMin || 3
+        );
+        if (justHitDailyGoal) {
+          triggerHapticComplete();
+          notify(`Daily reading goal complete! ${nextState.streakDays}-day streak`);
+        }
+        return nextState;
+      });
     }
   };
 
@@ -864,19 +1042,71 @@ export default function App() {
     filterMode: currentTab === 'saved' ? 'bookmarked' : filterMode,
   });
 
+  // Group related coverage into Developing Story Clusters
+  const storyClusters = useMemo(() => {
+    return clusterStoriesByTopic(displayedArticles.slice(0, visibleCount));
+  }, [displayedArticles, visibleCount]);
+
+  // Build Daily 5-Story Smart Edition Briefing
+  const dailyBriefing = useMemo(() => {
+    return buildDailyBriefing(articles);
+  }, [articles]);
+
   const activeSourceUnreadCount = displayedArticles.filter((a) => !a.isRead).length;
   const totalUnreadCount = articles.filter((a) => !a.isRead).length;
 
-  // Next article in reader view
-  const handleNextArticle = () => {
-    if (!activeArticle) return;
+  // Previous / Next article navigation in ReaderView
+  const handlePrevArticle = () => {
+    if (!activeArticle || displayedArticles.length === 0) return;
     const currentIndex = displayedArticles.findIndex((a) => a.id === activeArticle.id);
-    if (currentIndex >= 0 && currentIndex < displayedArticles.length - 1) {
-      setActiveArticle(displayedArticles[currentIndex + 1]);
-    } else if (displayedArticles.length > 0) {
-      setActiveArticle(displayedArticles[0]);
+    if (currentIndex > 0) {
+      handleOpenArticle(displayedArticles[currentIndex - 1], 0);
+    } else {
+      handleOpenArticle(displayedArticles[displayedArticles.length - 1], 0);
     }
   };
+
+  const handleNextArticle = () => {
+    if (!activeArticle || displayedArticles.length === 0) return;
+    const currentIndex = displayedArticles.findIndex((a) => a.id === activeArticle.id);
+    if (currentIndex >= 0 && currentIndex < displayedArticles.length - 1) {
+      handleOpenArticle(displayedArticles[currentIndex + 1], 0);
+    } else {
+      handleOpenArticle(displayedArticles[0], 0);
+    }
+  };
+
+  // Apply buffered new stories when user taps the "↑ X New Stories Available" pill
+  const handleApplyPendingNewStories = () => {
+    triggerHapticSelection();
+    if (pendingNewArticles.length > 0) {
+      setArticles((prev) => mergeFeedItems(prev, pendingNewArticles));
+      setPendingNewArticles([]);
+    }
+    const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
+    scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
+    setIsHeaderVisible(true);
+  };
+
+  // Scroll the active feed or list smoothly back to top (iOS status-bar / active-tab tap convention)
+  const scrollActiveFeedToTop = () => {
+    const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
+    scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
+    setIsHeaderVisible(true);
+  };
+
+  const showDailyBriefing =
+    currentTab === 'stories' &&
+    !selectedFeedId &&
+    !selectedFolder &&
+    !selectedTagId &&
+    filterMode === 'all' &&
+    !searchQuery &&
+    dailyBriefing.stories.length >= 3;
+
+  const habitReadToday = readingHabit.todayReadIds.length;
+  const habitGoal = Math.max(1, readingHabit.dailyGoal || 3);
+  const habitGoalDone = habitReadToday >= habitGoal;
 
   return (
     <IPhoneFrame
@@ -909,8 +1139,12 @@ export default function App() {
                 className="top-progressive-blur absolute top-0 left-0 right-0 h-28 z-20 pointer-events-none"
               />
 
-              {/* Floating Top 3D Liquid Glass Orbs & Capsule (matches reference photo) */}
+              {/* Floating Top 3D Liquid Glass Orbs & Capsule (Double-tap header area to scroll to top) */}
               <header
+                onDoubleClick={() => {
+                  triggerHapticSelection();
+                  scrollActiveFeedToTop();
+                }}
                 className={`absolute top-0 left-0 right-0 z-30 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-2 pointer-events-none transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
                   isHeaderVisible
                     ? 'translate-y-0 opacity-100'
@@ -918,8 +1152,33 @@ export default function App() {
                 }`}
               >
                 <div className="flex items-center justify-between gap-2 pt-1">
-                  {/* Top-Left: Active Folder/Source Filter Pill (if any filter is active) */}
+                  {/* Top-Left: Daily Reading Habit Ring & Active Filter Pill */}
                   <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
+                    {/* Mindful Reading Goal Ring & Streak Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHapticSelection();
+                        setIsHabitSheetOpen(true);
+                      }}
+                      aria-label="Open Daily Reading Habit and Streak"
+                      title="Daily Mindful Reading Goal & Streak"
+                      className="liquid-glass-pill h-10 px-3 rounded-full flex items-center gap-2 text-xs font-semibold text-stone-900 dark:text-white active:scale-95 transition-transform shrink-0"
+                    >
+                      <Flame
+                        className={`w-3.5 h-3.5 ${
+                          habitGoalDone ? 'text-emerald-400' : 'text-[#FF6719]'
+                        }`}
+                      />
+                      <span className="font-mono tabular-nums">
+                        {habitReadToday}/{habitGoal}
+                      </span>
+                      <span aria-hidden="true" className="opacity-40">·</span>
+                      <span className="font-mono tabular-nums text-[11px] opacity-85">
+                        {readingHabit.streakDays}d
+                      </span>
+                    </button>
+
                     {(selectedFeed || selectedFolder || filterMode !== 'all') && (
                       <button
                         type="button"
@@ -931,7 +1190,7 @@ export default function App() {
                           setFilterMode('all');
                         }}
                         title="Clear filter and show all stories"
-                        className="liquid-glass-pill h-10 px-3.5 rounded-full flex items-center gap-1.5 text-xs font-semibold text-stone-900 dark:text-white truncate max-w-[180px] active:scale-95 transition-transform"
+                        className="liquid-glass-pill h-10 px-3.5 rounded-full flex items-center gap-1.5 text-xs font-semibold text-stone-900 dark:text-white truncate max-w-[160px] active:scale-95 transition-transform"
                       >
                         {selectedFolder && <Folder className="w-3.5 h-3.5 text-[#FF6719] shrink-0" />}
                         <span className="truncate">
@@ -999,7 +1258,7 @@ export default function App() {
                       />
                     </button>
 
-                    {/* Layered Circular Filter Orb (matches the orange/teal layered circle inside the top-right pill in the reference photo) */}
+                    {/* Layered Circular Filter Orb */}
                     <button
                       type="button"
                       onClick={() => {
@@ -1046,7 +1305,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Floating Liquid Glass Search Bar & Quick Filter Pills */}
+                {/* Floating Liquid Glass Search Bar */}
                 {isSearchOpen && (
                   <div className="mt-2.5 pointer-events-auto animate-in fade-in duration-150 space-y-2">
                     <div className="liquid-glass-pill rounded-full px-3.5 py-2 flex items-center gap-2">
@@ -1081,24 +1340,51 @@ export default function App() {
                 )}
               </header>
 
+              {/* Floating "↑ New Stories Available" Liquid Glass Pill (when new stories arrive while scrolled down) */}
+              {pendingNewArticles.length > 0 && (
+                <div className="absolute top-[calc(max(env(safe-area-inset-top,0px),0.75rem)+3.75rem)] left-1/2 -translate-x-1/2 z-30 pointer-events-auto animate-in fade-in slide-in-from-top-2 duration-200">
+                  <button
+                    type="button"
+                    onClick={handleApplyPendingNewStories}
+                    className="liquid-glass-pill px-4 py-2 rounded-full flex items-center gap-2 text-xs font-semibold text-white bg-[#FF6719]/90 shadow-xl active:scale-95 transition-transform"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5" />
+                    <span className="tabular-nums">
+                      {pendingNewArticles.length} New {pendingNewArticles.length === 1 ? 'Story' : 'Stories'} Available
+                    </span>
+                  </button>
+                </div>
+              )}
+
               {/* Articles Feed with Pull to Refresh — scrolls directly under top & bottom Liquid Glass */}
               <PullToRefresh
-                className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+3.75rem)] pb-28"
+                className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+3.75rem)] pb-32"
                 onScroll={handleFeedScroll}
                 onRefresh={handleRefreshActive}
                 isRefreshing={isRefreshing}
                 refreshFailed={refreshFailed}
                 disabled={isOffline}
               >
+                {/* Collapsible 5-Story Daily Smart Edition Briefing */}
+                {showDailyBriefing && (
+                  <DailyBriefingCard
+                    briefing={dailyBriefing}
+                    onSelectStory={(art) => handleOpenArticle(art, 0)}
+                    onQuickPeek={(art) => setQuickPeekArticle(art)}
+                  />
+                )}
+
                 <div className="divide-y divide-stone-200/50 dark:divide-white/[0.08]">
-                  {displayedArticles.slice(0, visibleCount).map((article) => (
+                  {storyClusters.map((cluster) => (
                     <ArticleCard
-                      key={article.id}
-                      article={article}
+                      key={cluster.id}
+                      article={cluster.primary}
+                      perspectives={cluster.perspectives}
                       viewMode={feedViewMode}
-                      onSelect={(art) => setActiveArticle(art)}
+                      onSelect={(art) => handleOpenArticle(art, 0)}
                       onToggleBookmark={handleToggleBookmark}
                       onToggleRead={handleToggleRead}
+                      onQuickPeek={(art) => setQuickPeekArticle(art)}
                       onOpenTagManager={(art, e) => {
                         e.stopPropagation();
                         setTagModalArticle(art);
@@ -1107,6 +1393,33 @@ export default function App() {
                     />
                   ))}
                 </div>
+
+                {/* "You're All Caught Up" Dopamine Milestone Footer */}
+                {displayedArticles.length > 0 && (
+                  <div className="mx-4 my-6 p-5 rounded-3xl liquid-glass border border-stone-200/70 dark:border-white/[0.08] text-center">
+                    <div className="w-9 h-9 rounded-full bg-emerald-500/15 text-emerald-500 flex items-center justify-center mx-auto mb-2.5">
+                      <CheckCircle2 className="w-5 h-5" />
+                    </div>
+                    <h3 className="font-serif text-base font-bold text-stone-900 dark:text-stone-100 mb-1">
+                      You’re All Caught Up
+                    </h3>
+                    <p className="text-xs text-stone-500 dark:text-stone-400 mb-3 tabular-nums">
+                      {habitReadToday} {habitReadToday === 1 ? 'story' : 'stories'} read today ·{' '}
+                      {readingHabit.todayMinutes}m mindful reading · {readingHabit.streakDays}d streak
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHapticSelection();
+                        handleRefreshActive();
+                      }}
+                      disabled={isRefreshing || isOffline}
+                      className="px-4 py-2 rounded-xl text-xs font-semibold liquid-glass-pill text-stone-800 dark:text-stone-100 hover:opacity-90 disabled:opacity-40 transition-opacity"
+                    >
+                      {isRefreshing ? 'Checking Sources…' : 'Check for Fresh Updates'}
+                    </button>
+                  </div>
+                )}
 
                 {displayedArticles.length === 0 && (
                   <div className="py-16 px-6 text-center text-stone-500">
@@ -1117,6 +1430,7 @@ export default function App() {
                       Try switching filters or pull down to check for new articles.
                     </p>
                     <button
+                      type="button"
                       onClick={() => {
                         setFilterMode('all');
                         setSearchQuery('');
@@ -1131,6 +1445,51 @@ export default function App() {
                   </div>
                 )}
               </PullToRefresh>
+
+              {/* Floating "Continue Reading" Resume Mini-Bar (above TabBar when an article was left mid-read) */}
+              {readingProgress && !activeArticle && (
+                <div className="absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),0.5rem)+4.25rem)] left-4 right-4 z-30 pointer-events-auto animate-in fade-in duration-200">
+                  <div className="liquid-glass-pill px-3.5 py-2.5 rounded-2xl flex items-center justify-between gap-3 shadow-xl border border-stone-200/80 dark:border-white/15">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHapticSelection();
+                        const target = articles.find((a) => a.id === readingProgress.articleId);
+                        if (target) {
+                          handleOpenArticle(target, readingProgress.scrollTop);
+                        } else {
+                          setReadingProgress(null);
+                        }
+                      }}
+                      className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
+                    >
+                      <BookOpen className="w-4 h-4 text-[#FF6719] shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 text-[11px] text-stone-500 dark:text-stone-400">
+                          <span className="font-semibold text-[#FF6719]">Continue Reading</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono tabular-nums">{readingProgress.progressPercent}% read</span>
+                        </div>
+                        <div className="font-serif text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
+                          {readingProgress.title}
+                        </div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerHapticSelection();
+                        setReadingProgress(null);
+                      }}
+                      aria-label="Dismiss continue reading bar"
+                      className="p-1.5 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-white transition-colors shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1251,9 +1610,10 @@ export default function App() {
                     key={article.id}
                     article={article}
                     viewMode={feedViewMode}
-                    onSelect={(art) => setActiveArticle(art)}
+                    onSelect={(art) => handleOpenArticle(art, 0)}
                     onToggleBookmark={handleToggleBookmark}
                     onToggleRead={handleToggleRead}
+                    onQuickPeek={(art) => setQuickPeekArticle(art)}
                     onOpenTagManager={(art, e) => {
                       e.stopPropagation();
                       setTagModalArticle(art);
@@ -1307,6 +1667,11 @@ export default function App() {
           <TabBar
             currentTab={currentTab}
             isVisible={isHeaderVisible || currentTab !== 'stories'}
+            onReselectActiveTab={(tab) => {
+              if (tab === 'stories') {
+                scrollActiveFeedToTop();
+              }
+            }}
             onSelectTab={(tab) => {
               setCurrentTab(tab);
               setIsHeaderVisible(true);
@@ -1340,7 +1705,10 @@ export default function App() {
                   setIsTagModalOpen(true);
                 }}
                 onToggleOfflineCache={handleToggleOfflineCache}
+                onPrevArticle={handlePrevArticle}
                 onNextArticle={handleNextArticle}
+                initialScrollTop={readerInitialScrollTop}
+                onReadingProgressChange={handleReadingProgressChange}
                 onCacheExtractedArticle={handleCacheExtractedArticle}
               />
             </div>
@@ -1348,6 +1716,23 @@ export default function App() {
         </div>
 
       {/* Modals */}
+      <QuickPeekModal
+        article={quickPeekArticle}
+        onClose={() => setQuickPeekArticle(null)}
+        onReadFull={(art) => handleOpenArticle(art, 0)}
+        onToggleBookmark={(id) => handleToggleBookmark(id)}
+      />
+
+      <ReadingHabitSheet
+        isOpen={isHabitSheetOpen}
+        onClose={() => setIsHabitSheetOpen(false)}
+        habit={readingHabit}
+        onChangeDailyGoal={(goal) => {
+          setReadingHabit((prev) => ({ ...prev, dailyGoal: goal }));
+          notify(`Daily reading goal set to ${goal} stories`);
+        }}
+      />
+
       <TagManagerModal
         isOpen={isTagModalOpen}
         onClose={() => {

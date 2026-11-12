@@ -56,8 +56,8 @@ function getApiEndpoints(pathAndQuery: string): string[] {
     // Native iOS app: use configured/cloud backends
     return cloud;
   }
-  // Web: local Express proxy first, then cloud backends
-  return [pathAndQuery, ...cloud];
+  // Web: use same-origin Express backend (avoids cross-origin preflight failures)
+  return ENV_BACKEND ? [pathAndQuery, `${ENV_BACKEND.replace(/\/+$/, '')}${pathAndQuery}`] : [pathAndQuery];
 }
 
 function isValidFetchedDocument(text: string): boolean {
@@ -320,11 +320,14 @@ export async function extractArticleWithFallback(url: string): Promise<Extracted
     return null;
   };
 
-  // Try backend first, then on-device extraction
+  // Try backend first, then on-device extraction on native iOS Capacitor
   const remote = await viaBackend();
   if (remote) return remote;
 
-  return extractArticleOnDevice(cleanUrl);
+  if (isNativeCapacitor()) {
+    return extractArticleOnDevice(cleanUrl);
+  }
+  return { success: false, blocks: [] };
 }
 
 async function extractArticleOnDevice(url: string): Promise<ExtractedArticleData> {

@@ -46,7 +46,10 @@ export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, url, iconUrl, 
   let faviconUrl = iconUrl;
   if (!faviconUrl && url) {
     try {
-      const hostname = new URL(url.startsWith('http') ? url : `https://${url}`).hostname;
+      const rawHost = new URL(url.startsWith('http') ? url : `https://${url}`).hostname;
+      const hostname = rawHost
+        .replace(/^(www|feeds|rss|feed|xml)\./i, '')
+        .replace(/^bbci\.co\.uk$/i, 'bbc.co.uk');
       if (hostname && !hostname.includes('localhost') && !hostname.startsWith('api')) {
         faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`;
       }

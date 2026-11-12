@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   Search,
   Plus,
@@ -14,7 +14,13 @@ import {
 } from 'lucide-react';
 import type { Feed, FeedItem } from '../types';
 import { SourceAvatar } from './SourceAvatar';
-import { triggerHapticSelection, triggerHapticComplete, triggerHapticError } from '../utils/haptics';
+import {
+  triggerHapticSelection,
+  triggerHapticPull,
+  triggerHapticComplete,
+  triggerHapticError,
+} from '../utils/haptics';
+import { computeSwipeActionState, type SwipeActionState } from '../utils/touchGestures';
 
 interface SourcesSectionProps {
   feeds: Feed[];
@@ -69,6 +75,22 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   const [movingFeed, setMovingFeed] = useState<Feed | null>(null);
   const [moveNewFolderName, setMoveNewFolderName] = useState('');
   const [isCreatingFolderInMove, setIsCreatingFolderInMove] = useState(false);
+
+  // Swipe action state for individual source rows
+  const [swipingFeedId, setSwipingFeedId] = useState<string | null>(null);
+  const [rowSwipeState, setRowSwipeState] = useState<SwipeActionState>({
+    offsetX: 0,
+    direction: 'none',
+    progress: 0,
+    armed: false,
+  });
+  const rowTouchStartRef = useRef<{
+    feedId: string;
+    x: number;
+    y: number;
+    armedFired: boolean;
+  } | null>(null);
+  const didRowSwipeRef = useRef(false);
 
   // All named folders (persisted folders + any non-empty categories on feeds)
   const allFolders = useMemo(() => {
@@ -150,8 +172,8 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     onSelectSource(feed);
   };
 
-  const handleSingleRefresh = async (e: React.MouseEvent, feed: Feed) => {
-    e.stopPropagation();
+  const handleSingleRefresh = async (e: React.MouseEvent | null, feed: Feed) => {
+    e?.stopPropagation();
     triggerHapticSelection();
     setRefreshingFeedId(feed.id);
     try {
@@ -170,8 +192,8 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     onDeleteFeed(feed.id);
   };
 
-  const handleOpenMoveMenu = (e: React.MouseEvent, feed: Feed) => {
-    e.stopPropagation();
+  const handleOpenMoveMenu = (e: React.MouseEvent | null, feed: Feed) => {
+    e?.stopPropagation();
     triggerHapticSelection();
     setMovingFeed(feed);
     setIsCreatingFolderInMove(false);
@@ -226,78 +248,182 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
     const isSelected = selectedFeedId === feed.id;
     const unread = unreadCountByFeed[feed.id] || 0;
     const isThisRefreshing = refreshingFeedId === feed.id;
+    const activeSwipe = swipingFeedId === feed.id ? rowSwipeState : null;
 
     return (
-      <div
-        key={feed.id}
-        onClick={() => handleSelectFeed(feed)}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleSelectFeed(feed);
-          }
-        }}
-        className={`px-3.5 py-2.5 flex items-center justify-between gap-2 cursor-pointer select-none transition-colors ${
-          isSelected
-            ? 'bg-[#FF6719]/8 dark:bg-[#FF6719]/12'
-            : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
-        }`}
-      >
-        <div className={`flex items-center gap-3 min-w-0 flex-1 ${indented ? 'pl-2' : ''}`}>
-          <SourceAvatar name={feed.title} url={feed.url} size="sm" />
-          <div className="min-w-0 flex-1">
-            <span className="font-serif font-medium text-sm text-stone-900 dark:text-stone-100 truncate block">
-              {feed.title}
-            </span>
+      <div key={feed.id} className="relative overflow-hidden">
+        {activeSwipe && activeSwipe.offsetX !== 0 && (
+          <div
+            aria-hidden="true"
+            className={`absolute inset-0 flex items-center justify-between px-4 pointer-events-none select-none ${
+              activeSwipe.direction === 'right'
+                ? activeSwipe.armed
+                  ? 'bg-emerald-500/25'
+                  : 'bg-stone-200/60 dark:bg-white/[0.06]'
+                : activeSwipe.armed
+                  ? 'bg-[#FF6719]/25'
+                  : 'bg-stone-200/60 dark:bg-white/[0.06]'
+            }`}
+          >
+            <div
+              className={`flex items-center gap-1.5 text-xs font-semibold ${
+                activeSwipe.direction === 'right' ? 'opacity-100' : 'opacity-0'
+              } ${activeSwipe.armed ? 'text-emerald-500' : 'text-stone-500'}`}
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Sync Source</span>
+            </div>
+            <div
+              className={`flex items-center gap-1.5 text-xs font-semibold ml-auto ${
+                activeSwipe.direction === 'left' ? 'opacity-100' : 'opacity-0'
+              } ${activeSwipe.armed ? 'text-[#FF6719]' : 'text-stone-500'}`}
+            >
+              <span>Move Folder</span>
+              <FolderInput className="w-3.5 h-3.5" />
+            </div>
           </div>
-        </div>
+        )}
 
-        <div className="flex items-center gap-1 shrink-0">
-          {unread > 0 && (
-            <span className="text-[11px] font-mono tabular-nums text-stone-400 dark:text-stone-500 mr-1">
-              {unread}
-            </span>
-          )}
+        <div
+          onClick={() => {
+            if (didRowSwipeRef.current) {
+              didRowSwipeRef.current = false;
+              return;
+            }
+            handleSelectFeed(feed);
+          }}
+          onPointerDown={(e) => {
+            if (e.button !== 0 && e.pointerType === 'mouse') return;
+            didRowSwipeRef.current = false;
+            rowTouchStartRef.current = {
+              feedId: feed.id,
+              x: e.clientX,
+              y: e.clientY,
+              armedFired: false,
+            };
+          }}
+          onPointerMove={(e) => {
+            if (!rowTouchStartRef.current || rowTouchStartRef.current.feedId !== feed.id) return;
+            if (e.pointerType !== 'touch' && e.buttons !== 1) return;
+            const dx = e.clientX - rowTouchStartRef.current.x;
+            const dy = e.clientY - rowTouchStartRef.current.y;
+            const next = computeSwipeActionState(dx, dy, 64, 110);
+            if (next.offsetX !== 0) {
+              didRowSwipeRef.current = true;
+              setSwipingFeedId(feed.id);
+              setRowSwipeState(next);
+            }
+            if (next.armed && !rowTouchStartRef.current.armedFired) {
+              rowTouchStartRef.current.armedFired = true;
+              triggerHapticPull();
+            } else if (!next.armed && rowTouchStartRef.current.armedFired) {
+              rowTouchStartRef.current.armedFired = false;
+            }
+          }}
+          onPointerUp={() => {
+            if (swipingFeedId === feed.id && rowSwipeState.armed) {
+              triggerHapticComplete();
+              if (rowSwipeState.direction === 'right') {
+                handleSingleRefresh(null, feed);
+              } else if (rowSwipeState.direction === 'left') {
+                handleOpenMoveMenu(null, feed);
+              }
+            }
+            rowTouchStartRef.current = null;
+            setSwipingFeedId(null);
+            setRowSwipeState({ offsetX: 0, direction: 'none', progress: 0, armed: false });
+          }}
+          onPointerCancel={() => {
+            rowTouchStartRef.current = null;
+            setSwipingFeedId(null);
+            setRowSwipeState({ offsetX: 0, direction: 'none', progress: 0, armed: false });
+          }}
+          onPointerLeave={() => {
+            if (rowTouchStartRef.current?.feedId === feed.id) {
+              rowTouchStartRef.current = null;
+              setSwipingFeedId(null);
+              setRowSwipeState({ offsetX: 0, direction: 'none', progress: 0, armed: false });
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              handleSelectFeed(feed);
+            }
+          }}
+          style={{
+            touchAction: 'pan-y',
+            transform:
+              activeSwipe && activeSwipe.offsetX !== 0
+                ? `translate3d(${activeSwipe.offsetX}px, 0, 0)`
+                : undefined,
+            transition:
+              activeSwipe && activeSwipe.offsetX !== 0
+                ? 'none'
+                : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+          }}
+          className={`relative px-3.5 py-2.5 flex items-center justify-between gap-2 cursor-pointer select-none transition-colors ${
+            isSelected
+              ? 'bg-[#FF6719]/8 dark:bg-[#FF6719]/12'
+              : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
+          }`}
+        >
+          <div className={`flex items-center gap-3 min-w-0 flex-1 ${indented ? 'pl-2' : ''}`}>
+            <SourceAvatar name={feed.title} url={feed.url} size="sm" />
+            <div className="min-w-0 flex-1">
+              <span className="font-serif font-medium text-sm text-stone-900 dark:text-stone-100 truncate block">
+                {feed.title}
+              </span>
+            </div>
+          </div>
 
-          {/* Move to Folder button */}
-          <button
-            type="button"
-            onClick={(e) => handleOpenMoveMenu(e, feed)}
-            title="Move source to another folder"
-            aria-label={`Move ${feed.title} to folder`}
-            className="p-1.5 rounded-lg text-stone-400 hover:text-[#FF6719] dark:hover:text-[#FF6719] transition-colors"
-          >
-            <FolderInput className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            {unread > 0 && (
+              <span className="text-[11px] font-mono tabular-nums text-stone-400 dark:text-stone-500 mr-1">
+                {unread}
+              </span>
+            )}
 
-          {/* Refresh single source */}
-          <button
-            type="button"
-            onClick={(e) => handleSingleRefresh(e, feed)}
-            disabled={isThisRefreshing || isOffline}
-            title="Refresh source"
-            aria-label={`Refresh ${feed.title}`}
-            className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-          >
-            <RefreshCw
-              className={`w-3.5 h-3.5 ${isThisRefreshing ? 'animate-spin text-[#FF6719]' : ''}`}
-            />
-          </button>
+            {/* Move to Folder button */}
+            <button
+              type="button"
+              onClick={(e) => handleOpenMoveMenu(e, feed)}
+              title="Move source to another folder"
+              aria-label={`Move ${feed.title} to folder`}
+              className="p-1.5 rounded-lg text-stone-400 hover:text-[#FF6719] dark:hover:text-[#FF6719] transition-colors"
+            >
+              <FolderInput className="w-3.5 h-3.5" />
+            </button>
 
-          {/* Remove source */}
-          <button
-            type="button"
-            onClick={(e) => handleDelete(e, feed)}
-            title="Remove source"
-            aria-label={`Remove ${feed.title}`}
-            className="p-1.5 rounded-lg text-stone-300 hover:text-red-500 dark:text-stone-600 dark:hover:text-red-400 transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+            {/* Refresh single source */}
+            <button
+              type="button"
+              onClick={(e) => handleSingleRefresh(e, feed)}
+              disabled={isThisRefreshing || isOffline}
+              title="Refresh source"
+              aria-label={`Refresh ${feed.title}`}
+              className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${isThisRefreshing ? 'animate-spin text-[#FF6719]' : ''}`}
+              />
+            </button>
 
-          {isSelected && <Check className="w-4 h-4 text-[#FF6719] shrink-0" />}
+            {/* Remove source */}
+            <button
+              type="button"
+              onClick={(e) => handleDelete(e, feed)}
+              title="Remove source"
+              aria-label={`Remove ${feed.title}`}
+              className="p-1.5 rounded-lg text-stone-300 hover:text-red-500 dark:text-stone-600 dark:hover:text-red-400 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+
+            {isSelected && <Check className="w-4 h-4 text-[#FF6719] shrink-0" />}
+          </div>
         </div>
       </div>
     );

@@ -8,13 +8,26 @@ import {
   X,
   Sparkles,
   ExternalLink,
+  ChevronLeft,
   ChevronRight,
   Check,
+  Quote,
 } from 'lucide-react';
 import type { FeedItem, Tag, ReaderPreferences, ReaderTheme, ReaderFont, ReaderLineHeight } from '../types';
 import { sanitizeArticleHtml, blocksToHtml, isJavaScriptWarningText } from '../utils/sanitize';
 import { extractArticleWithFallback, summarizeArticleWithFallback, type ArticleSummaryResult } from '../utils/apiClient';
-import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
+import {
+  triggerHapticSelection,
+  triggerHapticPull,
+  triggerHapticComplete,
+} from '../utils/haptics';
+import {
+  getTouchDistance,
+  computePinchFontSize,
+  classifyHorizontalSwipe,
+  isDoubleTapGesture,
+} from '../utils/touchGestures';
+import { QuoteShareModal } from './QuoteShareModal';
 
 interface ReaderViewProps {
   article: FeedItem;
@@ -26,7 +39,10 @@ interface ReaderViewProps {
   onToggleRead: (id: string) => void;
   onOpenTagManager: (article: FeedItem) => void;
   onToggleOfflineCache: (article: FeedItem) => void;
+  onPrevArticle?: () => void;
   onNextArticle?: () => void;
+  initialScrollTop?: number;
+  onReadingProgressChange?: (article: FeedItem, progressPercent: number, scrollTop: number) => void;
   onCacheExtractedArticle?: (
     articleId: string,
     extracted: {
@@ -82,14 +98,20 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   onToggleBookmark,
   onToggleRead,
   onOpenTagManager,
+  onPrevArticle,
   onNextArticle,
+  initialScrollTop = 0,
+  onReadingProgressChange,
   onCacheExtractedArticle,
 }) => {
   const [showTypographyMenu, setShowTypographyMenu] = useState(false);
+  const [showQuoteModal, setShowQuoteModal] = useState(false);
+  const [selectedQuoteText, setSelectedQuoteText] = useState('');
   const [scrollProgress, setScrollProgress] = useState(0);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [faviconError, setFaviconError] = useState(false);
+  const [edgeBackOffset, setEdgeBackOffset] = useState(0);
   const [extractedBlocks, setExtractedBlocks] = useState<
     { type: string; text?: string; src?: string; caption?: string }[] | null
   >(null);
@@ -106,12 +128,152 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef(0);
+  const swipeStartRef = useRef<{ x: number; y: number; time: number; armedFired: boolean } | null>(
+    null
+  );
+  const pinchStartRef = useRef<{ distance: number; baseFontSize: number } | null>(null);
+  const lastParagraphTapRef = useRef<{ time: number; x: number; y: number; text: string }>({
+    time: 0,
+    x: 0,
+    y: 0,
+    text: '',
+  });
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage((cur) => (cur === msg ? null : cur));
     }, 2200);
+  };
+
+  const handleTouchStartSwipe = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      // Two-finger pinch-to-zoom typography scale
+      swipeStartRef.current = null;
+      setEdgeBackOffset(0);
+      const dist = getTouchDistance(e.touches[0], e.touches[1]);
+      pinchStartRef.current = {
+        distance: dist,
+        baseFontSize: preferences.fontSize,
+      };
+      return;
+    }
+
+    if (e.touches.length !== 1) return;
+    pinchStartRef.current = null;
+    swipeStartRef.current = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+      time: Date.now(),
+      armedFired: false,
+    };
+  };
+
+  const handleTouchMoveSwipe = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchStartRef.current) {
+      const currentDist = getTouchDistance(e.touches[0], e.touches[1]);
+      const nextFontSize = computePinchFontSize(
+        pinchStartRef.current.distance,
+        currentDist,
+        pinchStartRef.current.baseFontSize,
+        14,
+        26
+      );
+      if (nextFontSize !== preferences.fontSize) {
+        triggerHapticSelection();
+        onUpdatePreferences({ ...preferences, fontSize: nextFontSize });
+        showToast(`Text Size: ${nextFontSize + 1}px`);
+      }
+      return;
+    }
+
+    if (!swipeStartRef.current || e.touches.length !== 1) return;
+    const start = swipeStartRef.current;
+    const dx = e.touches[0].clientX - start.x;
+    const dy = e.touches[0].clientY - start.y;
+
+    // Interactive iOS left-edge swipe-back gesture
+    if (start.x <= 36 && dx > 10 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+      const clamped = Math.min(180, Math.round(dx * 0.85));
+      setEdgeBackOffset(clamped);
+      if (clamped >= 76 && !start.armedFired) {
+        start.armedFired = true;
+        triggerHapticPull();
+      } else if (clamped < 76 && start.armedFired) {
+        start.armedFired = false;
+      }
+    }
+  };
+
+  const handleTouchEndSwipe = (e: React.TouchEvent) => {
+    if (pinchStartRef.current) {
+      pinchStartRef.current = null;
+      return;
+    }
+
+    if (!swipeStartRef.current || e.changedTouches.length !== 1) {
+      setEdgeBackOffset(0);
+      return;
+    }
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    setEdgeBackOffset(0);
+
+    const endTouch = e.changedTouches[0];
+    const intent = classifyHorizontalSwipe({
+      startX: start.x,
+      startY: start.y,
+      endX: endTouch.clientX,
+      endY: endTouch.clientY,
+      durationMs: Date.now() - start.time,
+      edgeThreshold: 36,
+      minSwipeDistance: 76,
+    });
+
+    if (intent === 'edge-back') {
+      triggerHapticComplete();
+      onBack();
+      return;
+    }
+
+    if (intent === 'next-item' && onNextArticle) {
+      triggerHapticSelection();
+      onNextArticle();
+      showToast('Next story');
+    } else if (intent === 'prev-item' && onPrevArticle) {
+      triggerHapticSelection();
+      onPrevArticle();
+      showToast('Previous story');
+    }
+  };
+
+  // Double-tap any paragraph in ReaderView to open Editorial Quote Card with that passage
+  const handleBodyParagraphClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    const paragraphEl = target.closest('p, blockquote');
+    const text = paragraphEl?.textContent?.trim() || '';
+    if (!text || text.length < 24) return;
+
+    const now = Date.now();
+    const isDouble = isDoubleTapGesture({
+      lastTapTime: lastParagraphTapRef.current.time,
+      currentTime: now,
+      lastX: lastParagraphTapRef.current.x,
+      lastY: lastParagraphTapRef.current.y,
+      currentX: e.clientX,
+      currentY: e.clientY,
+    });
+
+    if (isDouble) {
+      e.stopPropagation();
+      lastParagraphTapRef.current = { time: 0, x: 0, y: 0, text: '' };
+      triggerHapticComplete();
+      setSelectedQuoteText(text);
+      setShowQuoteModal(true);
+      return;
+    }
+
+    lastParagraphTapRef.current = { time: now, x: e.clientX, y: e.clientY, text };
   };
 
   const handleGenerateSummary = async () => {
@@ -162,8 +324,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       setScrollProgress(0);
       return;
     }
-    const progress = Math.min(100, Math.max(0, (scrollTop / scrollable) * 100));
+    const progress = Math.min(100, Math.max(0, Math.round((scrollTop / scrollable) * 100)));
     setScrollProgress(progress);
+    if (onReadingProgressChange) {
+      onReadingProgressChange(article, progress, scrollTop);
+    }
   };
 
   const handleShare = async () => {
@@ -204,8 +369,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setScrollProgress(0);
     setControlsVisible(true);
     setFaviconError(false);
-    lastScrollTopRef.current = 0;
-    containerRef.current?.scrollTo({ top: 0 });
+    lastScrollTopRef.current = initialScrollTop || 0;
+    requestAnimationFrame(() => {
+      containerRef.current?.scrollTo({ top: initialScrollTop || 0 });
+    });
   }, [article.id]);
 
   // Automatically mark article as read upon viewing
@@ -325,7 +492,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   let faviconUrl: string | undefined;
   if (article.link && article.link.startsWith('http')) {
     try {
-      const hostname = new URL(article.link).hostname;
+      const rawHost = new URL(article.link).hostname;
+      const hostname = rawHost
+        .replace(/^(www|feeds|rss|feed|xml)\./i, '')
+        .replace(/^bbci\.co\.uk$/i, 'bbc.co.uk');
       if (hostname && !hostname.includes('localhost')) {
         faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`;
       }
@@ -344,6 +514,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       )}`}
       style={{ transition: 'background-color 200ms ease, color 200ms ease' }}
     >
+      {/* Top 2px Reading Momentum Bar */}
+      <div className="absolute top-0 left-0 right-0 h-[2px] bg-white/5 z-40 pointer-events-none">
+        <div
+          className="h-full bg-[#FF6719] transition-all duration-150"
+          style={{ width: `${scrollProgress}%` }}
+        />
+      </div>
+
       {/* Toast Notification */}
       {toastMessage && (
         <div className="absolute top-12 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in fade-in slide-in-from-top-3 duration-200">
@@ -535,15 +713,43 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       )}
 
+      {/* Interactive iOS Left-Edge Swipe-Back Indicator Pill */}
+      {edgeBackOffset > 12 && (
+        <div
+          aria-hidden="true"
+          style={{
+            transform: `translate3d(${Math.min(28, edgeBackOffset * 0.25)}px, -50%, 0)`,
+            opacity: Math.min(1, edgeBackOffset / 64),
+          }}
+          className="fixed left-2 top-1/2 z-50 pointer-events-none"
+        >
+          <div
+            className={`w-10 h-10 rounded-full liquid-glass-dock flex items-center justify-center border border-white/25 shadow-2xl transition-transform ${
+              edgeBackOffset >= 76 ? 'scale-110 text-[#FF6719]' : 'text-white'
+            }`}
+          >
+            <ChevronLeft className="w-5 h-5" />
+          </div>
+        </div>
+      )}
+
       {/* Main Scrollable Article Reading Canvas — Clean Top like Reference Screenshot */}
       <main
         ref={containerRef}
         onScroll={handleScroll}
+        onTouchStart={handleTouchStartSwipe}
+        onTouchMove={handleTouchMoveSwipe}
+        onTouchEnd={handleTouchEndSwipe}
         onClick={() => {
           // Tapping the reading canvas toggles the floating bottom liquid glass controls
-          if (!showTypographyMenu) {
+          if (!showTypographyMenu && !showQuoteModal) {
             setControlsVisible((v) => !v);
           }
+        }}
+        style={{
+          transform: edgeBackOffset > 0 ? `translate3d(${edgeBackOffset}px, 0, 0)` : undefined,
+          transition:
+            edgeBackOffset > 0 ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
         }}
         className="flex-1 overflow-y-auto px-[20px] pt-[max(env(safe-area-inset-top,0px),1.5rem)] pb-32 md:px-8 relative no-scrollbar"
       >
@@ -710,8 +916,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </div>
           )}
 
-          {/* 8. Article Body Copy — Clean Editorial Serif, Underlined Links, No Drop Cap */}
+          {/* 8. Article Body Copy — Clean Editorial Serif (Double-tap any paragraph to Quote, Pinch 2 fingers to resize) */}
           <div
+            onClick={handleBodyParagraphClick}
             style={{
               ...getBodyFontFamilyStyle(preferences.font),
               fontSize: `${effectiveBodySize}px`,
@@ -913,8 +1120,25 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             />
           </button>
 
+          {/* Editorial Quote Card */}
+          <button
+            type="button"
+            onClick={() => {
+              triggerHapticSelection();
+              const sel = window.getSelection()?.toString().trim() || '';
+              setSelectedQuoteText(sel);
+              setShowQuoteModal(true);
+            }}
+            aria-label="Create Quote Card"
+            title="Create Shareable Quote Card"
+            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+          >
+            <Quote className="w-4 h-4" />
+          </button>
+
           {/* Share */}
           <button
+            type="button"
             onClick={handleShare}
             aria-label="Share"
             className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
@@ -922,25 +1146,50 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             <Share2 className="w-4 h-4" />
           </button>
 
-          {/* Next Story */}
-          {onNextArticle && (
+          {/* Previous / Next Story Navigation */}
+          {(onPrevArticle || onNextArticle) && (
             <>
               <div className="w-px h-4 bg-white/15 mx-0.5" />
-              <button
-                onClick={() => {
-                  triggerHapticSelection();
-                  onNextArticle();
-                }}
-                aria-label="Next Story"
-                className="flex items-center gap-0.5 px-2.5 py-1.5 rounded-full text-xs font-medium text-stone-200 hover:text-white hover:bg-white/10 transition-all active:scale-95"
-              >
-                <span>Next</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
+              {onPrevArticle && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHapticSelection();
+                    onPrevArticle();
+                  }}
+                  aria-label="Previous Story"
+                  title="Previous Story"
+                  className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              )}
+              {onNextArticle && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHapticSelection();
+                    onNextArticle();
+                  }}
+                  aria-label="Next Story"
+                  className="flex items-center gap-0.5 px-2.5 py-1.5 rounded-full text-xs font-medium text-stone-200 hover:text-white hover:bg-white/10 transition-all active:scale-95"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              )}
             </>
           )}
         </div>
       </footer>
+
+      {/* Editorial Quote Card Share Modal */}
+      <QuoteShareModal
+        isOpen={showQuoteModal}
+        onClose={() => setShowQuoteModal(false)}
+        article={article}
+        initialQuoteText={selectedQuoteText}
+      />
     </div>
   );
 };

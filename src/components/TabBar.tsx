@@ -1,12 +1,14 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Home, BookOpen, Rss, Tag as TagIcon } from 'lucide-react';
 import { triggerHapticSelection } from '../utils/haptics';
+import { resolveScrubbedTabIndex } from '../utils/touchGestures';
 
 export type TabType = 'stories' | 'saved' | 'feeds' | 'tags';
 
 interface TabBarProps {
   currentTab: TabType;
   onSelectTab: (tab: TabType) => void;
+  onReselectActiveTab?: (tab: TabType) => void;
   unreadCount?: number;
   isVisible?: boolean;
   isDark?: boolean;
@@ -22,12 +24,15 @@ const TABS = [
 export const TabBar: React.FC<TabBarProps> = ({
   currentTab,
   onSelectTab,
+  onReselectActiveTab,
   unreadCount = 0,
   isVisible = true,
   isDark = true,
 }) => {
   const [pressedTab, setPressedTab] = useState<TabType | null>(null);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const navRef = useRef<HTMLElement | null>(null);
+  const isScrubbingRef = useRef(false);
 
   const handleTabPress = (tabId: TabType) => {
     triggerHapticSelection();
@@ -36,7 +41,27 @@ export const TabBar: React.FC<TabBarProps> = ({
     if (pressTimer.current) clearTimeout(pressTimer.current);
     pressTimer.current = setTimeout(() => setPressedTab(null), 160);
 
+    if (tabId === currentTab && onReselectActiveTab) {
+      onReselectActiveTab(tabId);
+    }
     onSelectTab(tabId);
+  };
+
+  // Interactive horizontal finger-scrubbing across the iOS 26 Liquid Glass TabBar
+  const handleTouchMoveScrub = (e: React.TouchEvent) => {
+    if (!navRef.current || e.touches.length !== 1) return;
+    const rect = navRef.current.getBoundingClientRect();
+    const touch = e.touches[0];
+    const index = resolveScrubbedTabIndex(touch.clientX, rect.left, rect.width, TABS.length);
+    const targetTab = TABS[index]?.id;
+    if (targetTab && targetTab !== currentTab) {
+      isScrubbingRef.current = true;
+      triggerHapticSelection();
+      setPressedTab(targetTab);
+      if (pressTimer.current) clearTimeout(pressTimer.current);
+      pressTimer.current = setTimeout(() => setPressedTab(null), 160);
+      onSelectTab(targetTab);
+    }
   };
 
   useEffect(() => () => { if (pressTimer.current) clearTimeout(pressTimer.current); }, []);
@@ -50,9 +75,15 @@ export const TabBar: React.FC<TabBarProps> = ({
       }`}
     >
       <div className="relative mx-auto max-w-[310px]">
-        {/* Compact Translucent Refractive 3D Liquid Glass Capsule Dock */}
+        {/* Compact Translucent Refractive 3D Liquid Glass Capsule Dock (Supports Horizontal Touch Scrubbing) */}
         <nav
+          ref={navRef}
           aria-label="Main Navigation"
+          onTouchMove={handleTouchMoveScrub}
+          onTouchEnd={() => {
+            isScrubbingRef.current = false;
+          }}
+          style={{ touchAction: 'none' }}
           className="pointer-events-auto liquid-glass-dock rounded-full p-1 px-1.5 flex items-center justify-between gap-0.5"
         >
           {TABS.map((tab) => {

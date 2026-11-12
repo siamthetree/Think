@@ -63,6 +63,9 @@ function wait(ms: number): Promise<void> {
 
 function shouldSkipSplashFromReloadLoop(): boolean {
   try {
+    if (typeof window !== 'undefined' && window.location.search.includes('autostart=1')) {
+      return true;
+    }
     const raw = localStorage.getItem(SPLASH_GUARD_STORAGE_KEY);
     if (!raw) return false;
     const lastTs = Number(raw);
@@ -182,7 +185,7 @@ function startPhasedStartupSync(waitForBannerOpenPromise?: Promise<void>): {
 
   let bufferedItems: FeedItem[] = [];
   let bufferedResolved: Array<{ id: string; url: string }> = [];
-  let priorityFlushed = false;
+  let priorityFlushed = !waitForBannerOpenPromise;
 
   const flushPriorityBatch = () => {
     priorityFlushed = true;

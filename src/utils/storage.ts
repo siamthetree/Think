@@ -357,3 +357,71 @@ export function saveFoldersToStorage(folders: string[]): void {
   }
 }
 
+const HABIT_STORAGE_KEY = 'chinta_reading_habit_v1';
+const PROGRESS_STORAGE_KEY = 'chinta_reading_progress_v1';
+const LAST_SEEN_TS_KEY = 'chinta_last_seen_feed_ts_v1';
+
+export function loadReadingHabitFromStorage<T>(fallback: T): T {
+  try {
+    const raw = localStorage.getItem(HABIT_STORAGE_KEY);
+    if (raw) {
+      return { ...fallback, ...JSON.parse(raw) };
+    }
+  } catch (e) {
+    console.error('Failed to load reading habit from localStorage', e);
+  }
+  return fallback;
+}
+
+export function saveReadingHabitToStorage<T>(state: T): void {
+  try {
+    localStorage.setItem(HABIT_STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.error('Failed to save reading habit to localStorage', e);
+  }
+}
+
+export function loadReadingProgressFromStorage<T>(): T | null {
+  try {
+    const raw = localStorage.getItem(PROGRESS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as T;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function saveReadingProgressToStorage<T>(progress: T | null): void {
+  try {
+    if (!progress) {
+      localStorage.removeItem(PROGRESS_STORAGE_KEY);
+    } else {
+      localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function loadLastSeenFeedTimestamp(): number {
+  try {
+    const raw = localStorage.getItem(LAST_SEEN_TS_KEY);
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  } catch {
+    // ignore
+  }
+  return 0;
+}
+
+export function saveLastSeenFeedTimestamp(ts: number): void {
+  try {
+    localStorage.setItem(LAST_SEEN_TS_KEY, String(ts));
+  } catch {
+    // ignore
+  }
+}
+
+
