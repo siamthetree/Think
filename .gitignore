@@ -1,5 +1,6 @@
-# Dependencies
+# Dependencies (package-lock.json omitted to avoid cross-OS npm optional native binding bug #4828 between Linux and macOS)
 node_modules/
+package-lock.json
 .pnp
 .pnp.js
 

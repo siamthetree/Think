@@ -54,7 +54,9 @@ jobs:
           node-version: 22
 
       - name: Install Node Dependencies
-        run: npm install --legacy-peer-deps
+        run: |
+          rm -f package-lock.json
+          npm install --legacy-peer-deps --include=optional
 
       - name: Build Web Application
         env:
