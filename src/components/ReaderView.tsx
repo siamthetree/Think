@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   ArrowLeft,
   Type,
@@ -40,6 +40,7 @@ import { QuoteShareModal } from './QuoteShareModal';
 import { PerspectiveLogo } from './PerspectiveLogo';
 import { generateQuickTldrBullets } from '../utils/feedIntelligence';
 import { savePhotoToGallery } from '../utils/storyCardRenderer';
+import { sanitizeTextSelection } from '../utils/articleLines';
 
 interface ReaderViewProps {
   article: FeedItem;
@@ -217,6 +218,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [showTypographyMenu, setShowTypographyMenu] = useState(false);
   const [showQuoteModal, setShowQuoteModal] = useState(false);
   const [selectedQuoteText, setSelectedQuoteText] = useState('');
+  const [activeSelectionText, setActiveSelectionText] = useState('');
   const [scrollProgress, setScrollProgress] = useState(0);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -238,6 +240,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [showSummary, setShowSummary] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const articleBodyRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef(0);
   const swipeStartRef = useRef<{
     x: number;
@@ -254,6 +257,36 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     y: 0,
     text: '',
   });
+
+  const syncArticleSelection = useCallback(() => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) {
+      setActiveSelectionText('');
+      return;
+    }
+    const bodyEl = articleBodyRef.current;
+    if (!bodyEl) {
+      setActiveSelectionText('');
+      return;
+    }
+    const anchorInside = sel.anchorNode ? bodyEl.contains(sel.anchorNode) : false;
+    const focusInside = sel.focusNode ? bodyEl.contains(sel.focusNode) : false;
+    if (!anchorInside && !focusInside) {
+      setActiveSelectionText('');
+      return;
+    }
+    setActiveSelectionText(sanitizeTextSelection(sel.toString()));
+  }, []);
+
+  const fullReadableText = useMemo(() => {
+    if (extractedBlocks && extractedBlocks.length > 0) {
+      return extractedBlocks
+        .filter((b) => b.type !== 'img' && b.text)
+        .map((b) => b.text as string)
+        .join('\n\n');
+    }
+    return article.contentClean || article.summary || '';
+  }, [extractedBlocks, article.contentClean, article.summary]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -522,6 +555,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setShowSummary(false);
     setIsLoadingSummary(false);
     setExtractedBlocks(null);
+    setActiveSelectionText('');
     setScrollProgress(0);
     setControlsVisible(true);
     setFaviconError(false);
@@ -530,6 +564,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       containerRef.current?.scrollTo({ top: initialScrollTop || 0 });
     });
   }, [article.id]);
+
+  // Listen for native iOS/Web text highlight changes inside the article body
+  useEffect(() => {
+    document.addEventListener('selectionchange', syncArticleSelection);
+    return () => {
+      document.removeEventListener('selectionchange', syncArticleSelection);
+    };
+  }, [syncArticleSelection]);
 
   // Automatically mark article as read upon viewing
   useEffect(() => {
@@ -969,7 +1011,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         onTouchEnd={handleTouchEndSwipe}
         onClick={() => {
           // Tapping the reading canvas toggles the floating bottom liquid glass controls
+          // (skip toggling if user just finished selecting/highlighting text)
           if (!showTypographyMenu && !showQuoteModal) {
+            const sel = window.getSelection();
+            if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
             setControlsVisible((v) => !v);
           }
         }}
@@ -987,7 +1032,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         }}
         className="flex-1 overflow-y-auto px-[20px] pt-[max(env(safe-area-inset-top,0px),1.5rem)] pb-32 md:px-8 relative no-scrollbar"
       >
-        <article className="max-w-[640px] mx-auto">
+        <article className="max-w-[640px] mx-auto select-text">
           {/* 1. Uppercase Kicker (Publication Name) */}
           <div
             className="text-[12px] font-sans font-semibold uppercase tracking-[0.06em] mb-2.5"
@@ -1251,14 +1296,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
           {/* 8. Article Body Copy */}
           <div
+            ref={articleBodyRef}
             onClick={handleBodyParagraphClick}
+            onMouseUp={syncArticleSelection}
+            onTouchEnd={syncArticleSelection}
             style={{
               ...getBodyFontFamilyStyle(preferences.font),
               fontSize: `${effectiveBodySize}px`,
               lineHeight: getLineHeightStyle(preferences.lineHeight),
               color: 'var(--reader-text)',
+              WebkitUserSelect: 'text',
+              userSelect: 'text',
             }}
-            className="space-y-5 tracking-[-0.003em]"
+            className="space-y-5 tracking-[-0.003em] select-text"
           >
             {extractedBlocks && extractedBlocks.length > 0 ? (
               extractedBlocks.map((block, idx) => {
@@ -1451,6 +1501,33 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </article>
       </main>
 
+      {/* Floating Apple Liquid Glass Share Selected Line Pill */}
+      {activeSelectionText && !showQuoteModal && !showTypographyMenu && (
+        <div className="fixed bottom-[calc(max(env(safe-area-inset-bottom,0px),1rem)+3.75rem)] left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <button
+            type="button"
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.stopPropagation();
+              triggerHapticComplete();
+              setSelectedQuoteText(activeSelectionText);
+              setShowQuoteModal(true);
+              setActiveSelectionText('');
+              window.getSelection()?.removeAllRanges();
+            }}
+            aria-label="Share selected line to story"
+            className="liquid-glass-dock px-3.5 py-2 rounded-full flex items-center gap-2 text-xs font-semibold text-white border border-white/25 shadow-2xl active:scale-95 transition-transform max-w-[85vw]"
+          >
+            <Quote className="w-3.5 h-3.5 text-[#FF6719] shrink-0" />
+            <span className="shrink-0">Share Line</span>
+            <span className="text-[11px] font-normal text-stone-300 truncate max-w-[140px]">
+              “{activeSelectionText}”
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* Compact Apple Liquid Glass Floating Bottom Pill (Auto-hides on scroll down, tap screen to toggle) */}
       <footer
         className={`fixed bottom-[max(env(safe-area-inset-bottom,0px),1rem)] left-1/2 -translate-x-1/2 z-30 transition-all duration-300 ${
@@ -1527,14 +1604,22 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           {/* Editorial Quote Card */}
           <button
             type="button"
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               triggerHapticSelection();
-              const sel = window.getSelection()?.toString().trim() || '';
+              const sel =
+                activeSelectionText ||
+                sanitizeTextSelection(window.getSelection()?.toString() || '');
               setSelectedQuoteText(sel);
               setShowQuoteModal(true);
+              if (sel) {
+                setActiveSelectionText('');
+                window.getSelection()?.removeAllRanges();
+              }
             }}
             aria-label="Create Quote Card"
-            title="Create Shareable Quote Card"
+            title="Pick or highlight any line to share"
             className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
           >
             <Quote className="w-4 h-4" />
@@ -1593,6 +1678,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         onClose={() => setShowQuoteModal(false)}
         article={article}
         initialQuoteText={selectedQuoteText}
+        articleText={fullReadableText}
       />
     </div>
   );

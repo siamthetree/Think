@@ -20,12 +20,14 @@ interface InteractiveStoryPreviewProps {
   payload: StoryCardPayload;
   transform: StoryCardTransform;
   onChangeTransform: (next: StoryCardTransform) => void;
+  compact?: boolean;
 }
 
 export const InteractiveStoryPreview: React.FC<InteractiveStoryPreviewProps> = ({
   payload,
   transform,
   onChangeTransform,
+  compact = false,
 }) => {
   const [stickerUrl, setStickerUrl] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -297,7 +299,9 @@ export const InteractiveStoryPreview: React.FC<InteractiveStoryPreviewProps> = (
           touchAction: 'none',
           background: `linear-gradient(150deg, ${theme.topColor} 0%, ${theme.midColor} 40%, ${theme.bottomColor} 100%)`,
         }}
-        className="relative w-44 aspect-[9/16] rounded-2xl overflow-hidden border border-white/15 shadow-2xl select-none cursor-grab active:cursor-grabbing"
+        className={`relative ${
+          compact ? 'w-36' : 'w-44'
+        } aspect-[9/16] rounded-2xl overflow-hidden border border-white/15 shadow-2xl select-none cursor-grab active:cursor-grabbing transition-[width] duration-200`}
       >
         {/* Fixed Static Radial Highlight + Top Pill (never moves when adjusting the card) */}
         <div
@@ -345,7 +349,7 @@ export const InteractiveStoryPreview: React.FC<InteractiveStoryPreviewProps> = (
       </div>
 
       <div className="flex items-center justify-center gap-2 min-h-[20px]">
-        <span className="text-[10px] text-stone-400">
+        <span className="text-[10px] text-stone-400 whitespace-nowrap">
           Pinch or drag card · Background stays fixed
         </span>
         {modified && (
