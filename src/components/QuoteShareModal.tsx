@@ -38,6 +38,7 @@ interface QuoteShareModalProps {
   article: FeedItem;
   initialQuoteText?: string;
   articleText?: string;
+  estimatedReadTimeMin?: number;
 }
 
 export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
@@ -46,6 +47,7 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
   article,
   initialQuoteText,
   articleText,
+  estimatedReadTimeMin,
 }) => {
   const articleLines = useMemo(() => {
     const extracted = extractSelectableArticleLines({
@@ -120,13 +122,13 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
       headline: article.title,
       publisher: article.feedTitle,
       author: article.author,
-      readTimeMin: article.readTimeMin || 3,
+      readTimeMin: estimatedReadTimeMin ?? (article.readTimeMin || 3),
       imageUrl: article.imageUrl,
       quoteText: activeQuote,
       attributionUrl: article.link,
       transform: cardTransform,
     }),
-    [storyMode, themeId, article, activeQuote, cardTransform]
+    [storyMode, themeId, article, activeQuote, cardTransform, estimatedReadTimeMin]
   );
 
   if (!isOpen) return null;

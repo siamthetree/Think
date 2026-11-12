@@ -6,9 +6,14 @@ import { formatRelativeTime } from '../utils/feedParser';
 import { SourceAvatar } from './SourceAvatar';
 import { triggerHapticSelection } from '../utils/haptics';
 import { computeSheetDragState } from '../utils/touchGestures';
+import {
+  estimateArticleReadTime,
+  type ReadingSpeedProfile,
+} from '../utils/readingSpeed';
 
 interface QuickPeekModalProps {
   article: FeedItem | null;
+  readingSpeedProfile?: ReadingSpeedProfile;
   onClose: () => void;
   onReadFull: (article: FeedItem) => void;
   onToggleBookmark: (id: string) => void;
@@ -16,6 +21,7 @@ interface QuickPeekModalProps {
 
 export const QuickPeekModal: React.FC<QuickPeekModalProps> = ({
   article,
+  readingSpeedProfile,
   onClose,
   onReadFull,
   onToggleBookmark,
@@ -93,7 +99,10 @@ export const QuickPeekModal: React.FC<QuickPeekModalProps> = ({
             <span aria-hidden="true" className="text-stone-500">·</span>
             <span className="text-xs text-stone-400 flex items-center gap-1 whitespace-nowrap tabular-nums">
               <Clock className="w-3 h-3" />
-              {article.readTimeMin || 3}m read
+              {readingSpeedProfile
+                ? estimateArticleReadTime(article, readingSpeedProfile).minutes
+                : article.readTimeMin || 3}
+              m read
             </span>
           </div>
 

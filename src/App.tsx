@@ -47,6 +47,8 @@ import {
   saveReadingProgressToStorage,
   loadReadArticleKeysFromStorage,
   saveReadArticleKeysToStorage,
+  loadReadingSpeedProfileFromStorage,
+  saveReadingSpeedProfileToStorage,
   hasFullBody,
   hydrateArticlesFromIndexedDb,
 } from './utils/storage';
@@ -65,6 +67,13 @@ import {
   type ReadingHabitState,
   type ReadingProgressItem,
 } from './utils/feedIntelligence';
+import {
+  createDefaultReadingSpeedProfile,
+  normalizeReadingSpeedProfile,
+  recordCompletedReadingSession,
+  estimateArticleReadTime,
+  type ReadingSpeedProfile,
+} from './utils/readingSpeed';
 import {
   fetchFeedWithFallback,
   extractArticleWithFallback,
@@ -200,6 +209,12 @@ export default function App() {
     return normalizeReadingHabitState(loadReadingHabitFromStorage(initial));
   });
 
+  const [readingSpeedProfile, setReadingSpeedProfile] = useState<ReadingSpeedProfile>(() =>
+    normalizeReadingSpeedProfile(
+      loadReadingSpeedProfileFromStorage(createDefaultReadingSpeedProfile())
+    )
+  );
+
   // Persistent set of article IDs & canonical links the user has already read
   const readKeysRef = useRef<Set<string> | null>(null);
   if (readKeysRef.current === null) {
@@ -281,6 +296,8 @@ export default function App() {
   isOfflineRef.current = isOffline;
   const pendingNewArticlesRef = useRef(pendingNewArticles);
   pendingNewArticlesRef.current = pendingNewArticles;
+  const readingSpeedProfileRef = useRef(readingSpeedProfile);
+  readingSpeedProfileRef.current = readingSpeedProfile;
   const newStoriesBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showAndAutoDismissNewStoriesPill = () => {
@@ -331,6 +348,10 @@ export default function App() {
   useEffect(() => {
     saveReadingProgressToStorage(readingProgress);
   }, [readingProgress]);
+
+  useEffect(() => {
+    saveReadingSpeedProfileToStorage(readingSpeedProfile);
+  }, [readingSpeedProfile]);
 
   // Temporary status notification
   const notifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -998,38 +1019,69 @@ export default function App() {
       contentHtml?: string;
     }
   ) => {
+    const speedProfile = readingSpeedProfileRef.current;
     setArticles((prev) =>
-      prev.map((a) =>
-        a.id === articleId
-          ? {
-              ...a,
-              title: extracted.title || a.title,
-              author: extracted.author || a.author,
-              imageUrl: extracted.leadImage || a.imageUrl,
-              readTimeMin: extracted.readTimeMin || a.readTimeMin,
-              contentClean: extracted.contentClean || a.contentClean,
-              contentHtml: extracted.contentHtml || a.contentHtml,
-              isOfflineCached: true,
-              cachedAt: Date.now(),
-            }
-          : a
-      )
+      prev.map((a) => {
+        if (a.id !== articleId) return a;
+        const merged = {
+          ...a,
+          title: extracted.title || a.title,
+          author: extracted.author || a.author,
+          imageUrl: extracted.leadImage || a.imageUrl,
+          readTimeMin: extracted.readTimeMin || a.readTimeMin,
+          contentClean: extracted.contentClean || a.contentClean,
+          contentHtml: extracted.contentHtml || a.contentHtml,
+          isOfflineCached: true,
+          cachedAt: Date.now(),
+        };
+        return {
+          ...merged,
+          readTimeMin: estimateArticleReadTime(merged, speedProfile).minutes,
+        };
+      })
     );
-    setActiveArticle((curr) =>
-      curr && curr.id === articleId
-        ? {
-            ...curr,
-            title: extracted.title || curr.title,
-            author: extracted.author || curr.author,
-            imageUrl: extracted.leadImage || curr.imageUrl,
-            readTimeMin: extracted.readTimeMin || curr.readTimeMin,
-            contentClean: extracted.contentClean || curr.contentClean,
-            contentHtml: extracted.contentHtml || curr.contentHtml,
-            isOfflineCached: true,
-            cachedAt: Date.now(),
-          }
-        : curr
-    );
+    setActiveArticle((curr) => {
+      if (!curr || curr.id !== articleId) return curr;
+      const merged = {
+        ...curr,
+        title: extracted.title || curr.title,
+        author: extracted.author || curr.author,
+        imageUrl: extracted.leadImage || curr.imageUrl,
+        readTimeMin: extracted.readTimeMin || curr.readTimeMin,
+        contentClean: extracted.contentClean || curr.contentClean,
+        contentHtml: extracted.contentHtml || curr.contentHtml,
+        isOfflineCached: true,
+        cachedAt: Date.now(),
+      };
+      return {
+        ...merged,
+        readTimeMin: estimateArticleReadTime(merged, speedProfile).minutes,
+      };
+    });
+  };
+
+  // Learn the reader's personal Bangla & English reading speed over 15 completed articles per language
+  const handleCompleteReadingSession = (session: {
+    article: FeedItem;
+    text: string;
+    activeMs: number;
+  }) => {
+    const res = recordCompletedReadingSession(readingSpeedProfileRef.current, {
+      articleId: session.article.id,
+      text: session.text,
+      title: session.article.title,
+      activeMs: session.activeMs,
+    });
+    if (!res.recorded) return;
+
+    readingSpeedProfileRef.current = res.nextProfile;
+    setReadingSpeedProfile(res.nextProfile);
+
+    if (res.justCalibrated && res.learnedWpm) {
+      const langLabel = res.language === 'bn' ? 'Bangla' : 'English';
+      triggerHapticComplete();
+      notify(`Calibrated ${langLabel} pace (${res.learnedWpm.toLocaleString()} wpm)`);
+    }
   };
 
   // Open article fully loaded in ReaderView, mark as read, and record stats
@@ -1044,11 +1096,13 @@ export default function App() {
       prev.map((a) => (a.id === latest.id ? { ...a, isRead: true } : a))
     );
 
+    const estimatedMin = estimateArticleReadTime(latest, readingSpeedProfileRef.current).minutes;
+
     setReadingHabit((prev) => {
       const { nextState, justHitDailyGoal } = recordArticleReadInHabit(
         prev,
         latest.id,
-        latest.readTimeMin || 3,
+        estimatedMin,
         toDateKey(),
         {
           title: latest.title,
@@ -1095,7 +1149,7 @@ export default function App() {
             .join('\n\n');
           if (validBlocks.length > 0 && contentClean.length >= 80) {
             const contentHtml = blocksToHtml(validBlocks);
-            const fullyLoadedArticle: FeedItem = {
+            const preEstimateArticle: FeedItem = {
               ...latest,
               isRead: true,
               title: data.title || latest.title,
@@ -1106,6 +1160,13 @@ export default function App() {
               contentHtml,
               isOfflineCached: true,
               cachedAt: Date.now(),
+            };
+            const fullyLoadedArticle: FeedItem = {
+              ...preEstimateArticle,
+              readTimeMin: estimateArticleReadTime(
+                preEstimateArticle,
+                readingSpeedProfileRef.current
+              ).minutes,
             };
             handleCacheExtractedArticle(latest.id, {
               title: fullyLoadedArticle.title,
@@ -1811,6 +1872,7 @@ export default function App() {
                       article={cluster.primary}
                       perspectives={cluster.perspectives}
                       viewMode={feedViewMode}
+                      readingSpeedProfile={readingSpeedProfile}
                       isLoadingArticleId={loadingArticleId}
                       onSelect={(art) => handleOpenArticle(art, 0)}
                       onToggleBookmark={handleToggleBookmark}
@@ -2066,6 +2128,7 @@ export default function App() {
                     key={article.id}
                     article={article}
                     viewMode={feedViewMode}
+                    readingSpeedProfile={readingSpeedProfile}
                     isLoadingArticleId={loadingArticleId}
                     onSelect={(art) => handleOpenArticle(art, 0)}
                     onToggleBookmark={handleToggleBookmark}
@@ -2177,6 +2240,8 @@ export default function App() {
                 onNextArticle={handleNextArticle}
                 initialScrollTop={readerInitialScrollTop}
                 onReadingProgressChange={handleReadingProgressChange}
+                readingSpeedProfile={readingSpeedProfile}
+                onCompleteReadingSession={handleCompleteReadingSession}
                 onCacheExtractedArticle={handleCacheExtractedArticle}
                 onOpenPerspective={(art) => handleOpenPerspective(art)}
               />
@@ -2189,6 +2254,7 @@ export default function App() {
         targetArticle={perspectiveArticle}
         allArticles={articles}
         feeds={feeds}
+        readingSpeedProfile={readingSpeedProfile}
         isScanningSources={isScanningPerspectiveSources}
         onScanAllSources={handleScanAllSourcesForPerspective}
         onClose={() => setPerspectiveArticle(null)}
@@ -2198,6 +2264,7 @@ export default function App() {
 
       <QuickPeekModal
         article={quickPeekArticle}
+        readingSpeedProfile={readingSpeedProfile}
         onClose={() => setQuickPeekArticle(null)}
         onReadFull={(art) => handleOpenArticle(art, 0)}
         onToggleBookmark={(id) => handleToggleBookmark(id)}
@@ -2208,6 +2275,7 @@ export default function App() {
         onClose={() => setIsHabitSheetOpen(false)}
         habit={readingHabit}
         stats={spotifyStats}
+        readingSpeedProfile={readingSpeedProfile}
         onChangeDailyGoal={(goal) => {
           setReadingHabit((prev) => ({ ...prev, dailyGoal: goal }));
           notify(`Daily reading goal set to ${goal} stories`);

@@ -27,12 +27,17 @@ import {
 import { InteractiveStoryPreview } from './InteractiveStoryPreview';
 import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
 import { computeSheetDragState } from '../utils/touchGestures';
+import {
+  CALIBRATION_ARTICLE_THRESHOLD,
+  type ReadingSpeedProfile,
+} from '../utils/readingSpeed';
 
 interface ReadingHabitSheetProps {
   isOpen: boolean;
   onClose: () => void;
   habit: ReadingHabitState;
   stats: SpotifyReadingStats;
+  readingSpeedProfile?: ReadingSpeedProfile;
   onChangeDailyGoal: (goal: number) => void;
 }
 
@@ -41,6 +46,7 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
   onClose,
   habit,
   stats,
+  readingSpeedProfile,
   onChangeDailyGoal,
 }) => {
   const [activeTab, setActiveTab] = useState<'stats' | 'studio'>('stats');
@@ -256,6 +262,66 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Adaptive English & Bangla Reading Pace */}
+              {readingSpeedProfile && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-stone-400">
+                    <span>Reading Pace</span>
+                    <span className="normal-case font-normal text-stone-400">
+                      Calibrates after {CALIBRATION_ARTICLE_THRESHOLD} reads
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        { key: 'en', label: 'English', data: readingSpeedProfile.en },
+                        { key: 'bn', label: 'Bangla', data: readingSpeedProfile.bn },
+                      ] as const
+                    ).map((item) => {
+                      const calibrated =
+                        item.data.observedCount >= CALIBRATION_ARTICLE_THRESHOLD &&
+                        item.data.learnedWpm !== null;
+                      const progress = Math.min(
+                        100,
+                        Math.round(
+                          (item.data.observedCount / CALIBRATION_ARTICLE_THRESHOLD) * 100
+                        )
+                      );
+                      return (
+                        <div
+                          key={item.key}
+                          className="p-3 rounded-2xl bg-white/[0.03] border border-white/10 space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-medium text-stone-200">{item.label}</span>
+                            <span
+                              className={`text-[10px] font-mono tabular-nums ${
+                                calibrated ? 'text-emerald-400' : 'text-stone-400'
+                              }`}
+                            >
+                              {calibrated
+                                ? `${item.data.learnedWpm?.toLocaleString()} wpm`
+                                : `${Math.min(
+                                    item.data.observedCount,
+                                    CALIBRATION_ARTICLE_THRESHOLD
+                                  )}/${CALIBRATION_ARTICLE_THRESHOLD}`}
+                            </span>
+                          </div>
+                          <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ${
+                                calibrated ? 'bg-emerald-400' : 'bg-[#FF6719]'
+                              }`}
+                              style={{ width: `${calibrated ? 100 : progress}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Top Sources (Minimal List) */}
               <div className="space-y-2">

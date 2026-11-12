@@ -361,4 +361,25 @@ export function saveLastSeenFeedTimestamp(ts: number): void {
   }
 }
 
+const READING_SPEED_KEY = 'chinta_reading_speed_v1';
+
+export function loadReadingSpeedProfileFromStorage<T>(fallback: T): T {
+  try {
+    const raw = localStorage.getItem(READING_SPEED_KEY);
+    if (raw) {
+      return JSON.parse(raw) as T;
+    }
+  } catch (e) {
+    console.error('Failed to load reading speed profile from localStorage', e);
+  }
+  return fallback;
+}
+
+export function saveReadingSpeedProfileToStorage<T>(profile: T): void {
+  try {
+    localStorage.setItem(READING_SPEED_KEY, JSON.stringify(profile));
+  } catch (e) {
+    console.error('Failed to save reading speed profile to localStorage', e);
+  }
+}
 

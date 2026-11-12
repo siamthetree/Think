@@ -26,11 +26,16 @@ import {
   computeReleaseVelocity,
   type VelocitySample,
 } from '../utils/touchGestures';
+import {
+  estimateArticleReadTime,
+  type ReadingSpeedProfile,
+} from '../utils/readingSpeed';
 
 interface PerspectiveModalProps {
   targetArticle: FeedItem | null;
   allArticles: FeedItem[];
   feeds: Feed[];
+  readingSpeedProfile?: ReadingSpeedProfile;
   isScanningSources?: boolean;
   onScanAllSources?: (article: FeedItem) => void;
   onClose: () => void;
@@ -52,6 +57,7 @@ export const PerspectiveModal: React.FC<PerspectiveModalProps> = ({
   targetArticle,
   allArticles,
   feeds,
+  readingSpeedProfile,
   isScanningSources = false,
   onScanAllSources,
   onClose,
@@ -432,7 +438,10 @@ export const PerspectiveModal: React.FC<PerspectiveModalProps> = ({
               <div className="flex items-center gap-2">
                 <span className="flex items-center gap-1 tabular-nums">
                   <Clock className="w-3 h-3" />
-                  {targetArticle.readTimeMin || 3}m read
+                  {readingSpeedProfile
+                    ? estimateArticleReadTime(targetArticle, readingSpeedProfile).minutes
+                    : targetArticle.readTimeMin || 3}
+                  m read
                 </span>
                 {hasFullBody(allArticles.find((a) => a.id === targetArticle.id) || targetArticle) ? (
                   <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
@@ -514,7 +523,10 @@ export const PerspectiveModal: React.FC<PerspectiveModalProps> = ({
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="flex items-center gap-1 tabular-nums shrink-0">
                           <Clock className="w-3 h-3" />
-                          {item.readTimeMin || 3}m
+                          {readingSpeedProfile
+                            ? estimateArticleReadTime(item, readingSpeedProfile).minutes
+                            : item.readTimeMin || 3}
+                          m
                         </span>
                         {isReady ? (
                           <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium truncate">

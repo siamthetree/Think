@@ -41,6 +41,11 @@ import { PerspectiveLogo } from './PerspectiveLogo';
 import { generateQuickTldrBullets } from '../utils/feedIntelligence';
 import { savePhotoToGallery } from '../utils/storyCardRenderer';
 import { sanitizeTextSelection } from '../utils/articleLines';
+import {
+  createDefaultReadingSpeedProfile,
+  estimateArticleReadTime,
+  type ReadingSpeedProfile,
+} from '../utils/readingSpeed';
 
 interface ReaderViewProps {
   article: FeedItem;
@@ -56,6 +61,12 @@ interface ReaderViewProps {
   onNextArticle?: () => void;
   initialScrollTop?: number;
   onReadingProgressChange?: (article: FeedItem, progressPercent: number, scrollTop: number) => void;
+  readingSpeedProfile?: ReadingSpeedProfile;
+  onCompleteReadingSession?: (session: {
+    article: FeedItem;
+    text: string;
+    activeMs: number;
+  }) => void;
   onCacheExtractedArticle?: (
     articleId: string,
     extracted: {
@@ -212,6 +223,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   onNextArticle,
   initialScrollTop = 0,
   onReadingProgressChange,
+  readingSpeedProfile,
+  onCompleteReadingSession,
   onCacheExtractedArticle,
   onOpenPerspective,
 }) => {
@@ -287,6 +300,59 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
     return article.contentClean || article.summary || '';
   }, [extractedBlocks, article.contentClean, article.summary]);
+
+  const adaptiveEstimate = useMemo(() => {
+    return estimateArticleReadTime(
+      {
+        ...article,
+        contentClean: fullReadableText || article.contentClean,
+      },
+      readingSpeedProfile || createDefaultReadingSpeedProfile()
+    );
+  }, [article, fullReadableText, readingSpeedProfile]);
+
+  // Active reading time & completion refs for adaptive Bangla/English pace learning
+  const activeReadingMsRef = useRef(0);
+  const lastUserActivityRef = useRef(Date.now());
+  const maxScrollProgressRef = useRef(0);
+  const lastReportedActiveMsRef = useRef(0);
+  const latestTextRef = useRef(fullReadableText);
+  latestTextRef.current = fullReadableText;
+  const latestArticleRef = useRef(article);
+  latestArticleRef.current = article;
+  const onCompleteReadingSessionRef = useRef(onCompleteReadingSession);
+  onCompleteReadingSessionRef.current = onCompleteReadingSession;
+
+  const markUserActive = useCallback(() => {
+    lastUserActivityRef.current = Date.now();
+  }, []);
+
+  const flushReadingSession = useCallback((forceCompleted = false) => {
+    const cb = onCompleteReadingSessionRef.current;
+    if (!cb) return;
+    const activeMs = activeReadingMsRef.current;
+    if (activeMs < 5000) return;
+
+    const scrollable = containerRef.current
+      ? containerRef.current.scrollHeight - containerRef.current.clientHeight
+      : 0;
+    const isShortNonScrollable = scrollable <= 60 && activeMs >= 8000;
+    const hasFinished = forceCompleted || maxScrollProgressRef.current >= 65 || isShortNonScrollable;
+    if (!hasFinished) return;
+
+    // Avoid redundant re-submits unless user stayed noticeably longer finishing the tail
+    if (lastReportedActiveMsRef.current > 0 && activeMs - lastReportedActiveMsRef.current < 2000) {
+      return;
+    }
+
+    lastReportedActiveMsRef.current = activeMs;
+    const art = latestArticleRef.current;
+    cb({
+      article: art,
+      text: latestTextRef.current || art.contentClean || art.summary || art.title,
+      activeMs,
+    });
+  }, []);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -494,6 +560,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   // Handle scroll progress & auto-hide floating dock on downward scroll
   const handleScroll = () => {
+    markUserActive();
     if (!containerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
     const scrollable = scrollHeight - clientHeight;
@@ -514,7 +581,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       return;
     }
     const progress = Math.min(100, Math.max(0, Math.round((scrollTop / scrollable) * 100)));
+    if (progress > maxScrollProgressRef.current) {
+      maxScrollProgressRef.current = progress;
+    }
     setScrollProgress(progress);
+    if (progress >= 92) {
+      flushReadingSession(true);
+    }
     if (onReadingProgressChange) {
       onReadingProgressChange(article, progress, scrollTop);
     }
@@ -549,8 +622,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     showToast('Story link ready');
   };
 
-  // Reset per-article state when the story changes
+  // Reset per-article state & flush any completed reading session when story changes or Reader unmounts
   useEffect(() => {
+    activeReadingMsRef.current = 0;
+    lastUserActivityRef.current = Date.now();
+    maxScrollProgressRef.current = 0;
+    lastReportedActiveMsRef.current = 0;
+
     setSummaryData(null);
     setShowSummary(false);
     setIsLoadingSummary(false);
@@ -563,7 +641,32 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     requestAnimationFrame(() => {
       containerRef.current?.scrollTo({ top: initialScrollTop || 0 });
     });
-  }, [article.id]);
+
+    return () => {
+      flushReadingSession(false);
+    };
+  }, [article.id, flushReadingSession]);
+
+  // Foreground active-reading timer (pauses automatically when app backgrounded or idle >45s)
+  useEffect(() => {
+    const onInteract = () => markUserActive();
+    window.addEventListener('touchstart', onInteract, { passive: true });
+    window.addEventListener('pointerdown', onInteract, { passive: true });
+    window.addEventListener('keydown', onInteract, { passive: true });
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastUserActivityRef.current > 45000) return;
+      activeReadingMsRef.current += 1000;
+    }, 1000);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('touchstart', onInteract);
+      window.removeEventListener('pointerdown', onInteract);
+      window.removeEventListener('keydown', onInteract);
+    };
+  }, [markUserActive]);
 
   // Listen for native iOS/Web text highlight changes inside the article body
   useEffect(() => {
@@ -1158,10 +1261,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               {bylineText}
             </div>
             <div
-              className="text-[11.5px] font-sans font-medium uppercase tracking-[0.04em] mt-1"
+              className="text-[11.5px] font-sans font-medium uppercase tracking-[0.04em] mt-1 flex items-center gap-1.5 flex-wrap"
               style={{ color: 'var(--reader-muted)' }}
             >
-              {formatEditorialTimestamp(article.pubDate, article.timestamp)}
+              <span>{formatEditorialTimestamp(article.pubDate, article.timestamp)}</span>
+              <span aria-hidden="true">·</span>
+              <span className="tabular-nums">
+                {adaptiveEstimate.minutes}m read
+              </span>
+              {adaptiveEstimate.isPersonalized && (
+                <span className="text-[10px] font-semibold text-[#FF6719] tracking-normal normal-case">
+                  · Your {adaptiveEstimate.language === 'bn' ? 'Bangla' : 'English'} pace
+                </span>
+              )}
             </div>
           </div>
 
@@ -1679,6 +1791,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         article={article}
         initialQuoteText={selectedQuoteText}
         articleText={fullReadableText}
+        estimatedReadTimeMin={adaptiveEstimate.minutes}
       />
     </div>
   );

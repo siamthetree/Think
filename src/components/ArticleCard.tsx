@@ -30,12 +30,17 @@ import {
   type GestureAxisLock,
   type VelocitySample,
 } from '../utils/touchGestures';
+import {
+  estimateArticleReadTime,
+  type ReadingSpeedProfile,
+} from '../utils/readingSpeed';
 
 interface ArticleCardProps {
   article: FeedItem;
   perspectives?: FeedItem[];
   viewMode?: 'magazine' | 'compact';
   isLoadingArticleId?: string | null;
+  readingSpeedProfile?: ReadingSpeedProfile;
   onSelect: (article: FeedItem) => void;
   onToggleBookmark: (id: string, e?: React.MouseEvent) => void;
   onToggleRead: (id: string, e?: React.MouseEvent) => void;
@@ -57,13 +62,16 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   perspectives = [],
   viewMode = 'magazine',
   isLoadingArticleId = null,
+  readingSpeedProfile,
   onSelect,
   onToggleBookmark,
   onToggleRead,
   onQuickPeek,
   onOpenPerspective,
 }) => {
-  const readTime = article.readTimeMin || 3;
+  const readTime = readingSpeedProfile
+    ? estimateArticleReadTime(article, readingSpeedProfile).minutes
+    : article.readTimeMin || 3;
   const isLoadingThis = isLoadingArticleId === article.id;
 
   const pseudoCount = (seed: string, min: number, max: number) => {
