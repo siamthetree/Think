@@ -1,4 +1,5 @@
 import type { Tag, Feed, FeedItem, ReaderPreferences } from '../types';
+import { truncateHtmlSafely } from './urlSecurity';
 
 export const DEFAULT_TAGS: Tag[] = [
   { id: 'tag_bd', name: 'Bangladesh', color: '#059669' },
@@ -109,9 +110,10 @@ export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   distractionFree: false,
 };
 
-// Storage limits (keep payload compact so iOS WebView never hits QuotaExceededError or JSON freeze)
+// Storage limits (keep payload compact while preserving full offline bodies without mid-tag truncation)
 const MAX_UNSAVED_ARTICLES = 120;
-const MAX_HTML_CHARS = 10000;
+const MAX_SAVED_HTML_CHARS = 50000;
+const MAX_HTML_CHARS = 20000;
 const FULL_BODY_MIN_CHARS = 800;
 
 // Demo stories shipped by older versions. They were invented, so they are removed on load.
@@ -120,6 +122,17 @@ const LEGACY_DEMO_ID = /^art_(ds|pa_en|pa_bn|bdnews|fe|tbs|dt|bbc)_\d+$/;
 /** True when the article carries a full body that can be read without network access. */
 export function hasFullBody(item: Pick<FeedItem, 'contentClean'>): boolean {
   return (item.contentClean || '').trim().length >= FULL_BODY_MIN_CHARS;
+}
+
+function truncateTextAtWordBoundary(text: string, maxChars: number): string {
+  if (!text || text.length <= maxChars) return text;
+  const slice = text.slice(0, maxChars);
+  const lastParagraphBreak = slice.lastIndexOf('\n\n');
+  if (lastParagraphBreak >= Math.floor(maxChars * 0.6)) {
+    return slice.slice(0, lastParagraphBreak);
+  }
+  const lastSpace = slice.lastIndexOf(' ');
+  return lastSpace > 0 ? slice.slice(0, lastSpace) : slice;
 }
 
 function readArray<T>(key: string): T[] | null {
@@ -135,7 +148,8 @@ function readArray<T>(key: string): T[] | null {
 }
 
 /**
- * Keep every bookmarked story plus the newest unsaved ones, and cap the size of each body.
+ * Keep every bookmarked story plus the newest unsaved ones, and cap the size of each body
+ * strictly at closing HTML block/tag boundaries (never mid-tag).
  * Bookmarked stories are never dropped.
  */
 export function pruneArticles(articles: FeedItem[], maxUnsaved = MAX_UNSAVED_ARTICLES): FeedItem[] {
@@ -146,20 +160,16 @@ export function pruneArticles(articles: FeedItem[], maxUnsaved = MAX_UNSAVED_ART
     .slice(0, maxUnsaved);
   return [...saved, ...others]
     .map((a) => {
-      if (a.isBookmarked) {
-        return a.contentHtml && a.contentHtml.length > 40000
-          ? { ...a, contentHtml: a.contentHtml.slice(0, 40000) }
-          : a;
-      }
+      const charBudget = a.isBookmarked || a.isOfflineCached ? MAX_SAVED_HTML_CHARS : MAX_HTML_CHARS;
       return {
         ...a,
         contentHtml:
-          a.contentHtml && a.contentHtml.length > MAX_HTML_CHARS
-            ? a.contentHtml.slice(0, MAX_HTML_CHARS)
+          a.contentHtml && a.contentHtml.length > charBudget
+            ? truncateHtmlSafely(a.contentHtml, charBudget)
             : a.contentHtml,
         contentClean:
-          a.contentClean && a.contentClean.length > MAX_HTML_CHARS
-            ? a.contentClean.slice(0, MAX_HTML_CHARS)
+          a.contentClean && a.contentClean.length > charBudget
+            ? truncateTextAtWordBoundary(a.contentClean, charBudget)
             : a.contentClean,
       };
     })
@@ -219,12 +229,76 @@ export function loadArticlesFromStorage(): FeedItem[] {
     });
 }
 
-export function saveArticlesToStorage(articles: FeedItem[]): void {
+// IndexedDB durable backup so iOS WKWebView does not lose offline articles if localStorage is evicted
+const IDB_NAME = 'chinta_offline_db';
+const IDB_STORE = 'kv_store';
+
+function openOfflineIdb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+let storagePersistRequested = false;
+function requestDurableStorage(): void {
+  if (storagePersistRequested || typeof navigator === 'undefined') return;
+  storagePersistRequested = true;
   try {
-    localStorage.setItem(STORAGE_KEYS.ARTICLES, JSON.stringify(pruneArticles(articles, MAX_UNSAVED_ARTICLES)));
+    navigator.storage?.persist?.().catch(() => {});
+  } catch {
+    // ignore
+  }
+}
+
+export async function hydrateArticlesFromIndexedDb(): Promise<FeedItem[] | null> {
+  const db = await openOfflineIdb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get(STORAGE_KEYS.ARTICLES);
+      req.onsuccess = () => {
+        resolve(Array.isArray(req.result) ? (req.result as FeedItem[]) : null);
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function mirrorArticlesToIndexedDb(pruned: FeedItem[]): void {
+  requestDurableStorage();
+  openOfflineIdb()
+    .then((db) => {
+      if (!db) return;
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(pruned, STORAGE_KEYS.ARTICLES);
+    })
+    .catch(() => {});
+}
+
+export function saveArticlesToStorage(articles: FeedItem[]): void {
+  const pruned = pruneArticles(articles, MAX_UNSAVED_ARTICLES);
+  mirrorArticlesToIndexedDb(pruned);
+  try {
+    localStorage.setItem(STORAGE_KEYS.ARTICLES, JSON.stringify(pruned));
     return;
   } catch {
-    // Fallback if storage is near quota
+    // Fallback if localStorage is near its 5MB quota (full bodies remain safe in IndexedDB)
   }
   try {
     const slim = pruneArticles(articles, 50).map((a) =>

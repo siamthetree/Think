@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Home, BookOpen, Rss, Tag as TagIcon, Plus } from 'lucide-react';
+import { Home, BookOpen, Rss, Tag as TagIcon } from 'lucide-react';
 import { triggerHapticSelection } from '../utils/haptics';
 
 export type TabType = 'stories' | 'saved' | 'feeds' | 'tags';
@@ -7,7 +7,6 @@ export type TabType = 'stories' | 'saved' | 'feeds' | 'tags';
 interface TabBarProps {
   currentTab: TabType;
   onSelectTab: (tab: TabType) => void;
-  onQuickAction?: () => void;
   unreadCount?: number;
   isVisible?: boolean;
   isDark?: boolean;
@@ -23,7 +22,6 @@ const TABS = [
 export const TabBar: React.FC<TabBarProps> = ({
   currentTab,
   onSelectTab,
-  onQuickAction,
   unreadCount = 0,
   isVisible = true,
   isDark = true,
@@ -52,22 +50,6 @@ export const TabBar: React.FC<TabBarProps> = ({
       }`}
     >
       <div className="relative mx-auto max-w-[310px]">
-        {/* Floating Compact Orange '+' Action Button */}
-        {onQuickAction && (
-          <button
-            type="button"
-            onClick={() => {
-              triggerHapticSelection();
-              onQuickAction();
-            }}
-            aria-label="Add news source"
-            title="Add news source"
-            className="pointer-events-auto absolute -top-12 right-0.5 w-10 h-10 rounded-full bg-[#FF6719] hover:bg-[#ff5700] active:scale-90 text-white flex items-center justify-center transition-transform duration-200 shadow-[0_6px_18px_rgba(255,103,25,0.45),inset_0_1px_1px_rgba(255,255,255,0.4)]"
-          >
-            <Plus className="w-5 h-5 stroke-[2.4]" />
-          </button>
-        )}
-
         {/* Compact Translucent Refractive 3D Liquid Glass Capsule Dock */}
         <nav
           aria-label="Main Navigation"

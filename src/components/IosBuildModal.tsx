@@ -6,7 +6,7 @@ interface IosBuildModalProps {
   onClose: () => void;
 }
 
-const WORKFLOW_SNIPPET = `name: Build iOS IPA (Chinta / PaperPress)
+const WORKFLOW_SNIPPET = `name: Build iOS IPA (Chinta)
 
 on:
   push:
@@ -19,6 +19,10 @@ on:
         description: 'Output IPA file name'
         required: false
         default: 'Chinta-iOS'
+      apiBaseUrl:
+        description: 'Backend API Base URL for iOS app'
+        required: false
+        default: 'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app'
       createRelease:
         description: 'Create a GitHub Release with this IPA'
         required: false
@@ -55,6 +59,7 @@ jobs:
       - name: Build Web Application
         env:
           NODE_ENV: production
+          VITE_API_BASE_URL: \${{ inputs.apiBaseUrl || vars.VITE_API_BASE_URL || 'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app' }}
         run: npm run build
 
       - name: Setup Capacitor iOS Project
@@ -98,6 +103,7 @@ jobs:
         run: |
           IPA_NAME="\${{ inputs.appName || 'Chinta-iOS' }}"
           APP_DIR=$(find ios/App/build -name "App.app" -type d | head -n 1)
+          rm -rf build_ipa
           mkdir -p build_ipa/Payload
           cp -R "$APP_DIR" build_ipa/Payload/
           cd build_ipa
@@ -105,9 +111,6 @@ jobs:
           cd ..
           if [ "\${IPA_NAME}.ipa" != "Chinta-iOS.ipa" ]; then
             cp "\${IPA_NAME}.ipa" "Chinta-iOS.ipa"
-          fi
-          if [ "\${IPA_NAME}.ipa" != "PaperPress-iOS.ipa" ]; then
-            cp "\${IPA_NAME}.ipa" "PaperPress-iOS.ipa"
           fi
 
       - name: Upload IPA Artifact to GitHub Actions

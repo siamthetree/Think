@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-public struct ParsedFeedItem {
+public struct ParsedFeedItem: Sendable {
     public let deduplicationKey: String
     public let guid: String?
     public let title: String
@@ -13,7 +13,7 @@ public struct ParsedFeedItem {
     public let imageURL: URL?
 }
 
-public struct ParsedFeedPayload {
+public struct ParsedFeedPayload: Sendable {
     public let title: String?
     public let siteURL: URL?
     public let feedDescription: String?
@@ -21,7 +21,10 @@ public struct ParsedFeedPayload {
     public let items: [ParsedFeedItem]
 }
 
-public final class FeedParserService {
+public final class FeedParserService: Sendable {
+    /// Deterministic fallback base epoch (2000-01-01T00:00:00Z) so undated items never appear as brand-new breaking news
+    public static let undatedFallbackEpoch: TimeInterval = 946684800
+    
     public init() {}
     
     public func parse(data: Data, originalURL: URL) throws -> ParsedFeedPayload {
@@ -54,7 +57,7 @@ public final class FeedParserService {
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let fallbackISO = ISO8601DateFormatter()
         
-        for itemDict in rawItems {
+        for (index, itemDict) in rawItems.enumerated() {
             let id = itemDict["id"] as? String
             let itemTitle = (itemDict["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Untitled"
             let urlStr = itemDict["url"] as? String
@@ -64,9 +67,10 @@ public final class FeedParserService {
             let authorName = (itemDict["author"] as? [String: Any])?["name"] as? String
             let imageStr = itemDict["image"] as? String ?? itemDict["banner_image"] as? String
             
-            var pubDate = Date.now
+            let fallbackDate = Date(timeIntervalSince1970: Self.undatedFallbackEpoch - Double(index * 60))
+            var pubDate = fallbackDate
             if let dateStr = itemDict["date_published"] as? String {
-                pubDate = isoFormatter.date(from: dateStr) ?? fallbackISO.date(from: dateStr) ?? Date.now
+                pubDate = isoFormatter.date(from: dateStr) ?? fallbackISO.date(from: dateStr) ?? fallbackDate
             }
             
             let dedupKey = makeDeduplicationKey(guid: id, link: link?.absoluteString, title: itemTitle, date: pubDate)
@@ -79,7 +83,7 @@ public final class FeedParserService {
                 summary: summary,
                 contentHTML: contentHTML,
                 author: authorName,
-                publishedDate: pubDate,
+                publishedDate: min(pubDate, Date.now),
                 imageURL: imageStr != nil ? URL(string: imageStr!) : nil
             ))
         }
@@ -190,7 +194,6 @@ private final class XMLFeedDelegate: NSObject, XMLParserDelegate {
             itemImageURLStr = nil
         }
         
-        // Atom <link href="..." rel="alternate"/>
         if inItemOrEntry && currentElement == "link" {
             if let href = attributeDict["href"] {
                 let rel = attributeDict["rel"] ?? "alternate"
@@ -200,7 +203,6 @@ private final class XMLFeedDelegate: NSObject, XMLParserDelegate {
             }
         }
         
-        // Media enclosures or <media:content url="...">
         if inItemOrEntry && (currentElement == "enclosure" || currentElement == "media:content") {
             if let url = attributeDict["url"], (attributeDict["type"]?.contains("image") == true || url.hasSuffix(".jpg") || url.hasSuffix(".png")) {
                 itemImageURLStr = url
@@ -261,7 +263,8 @@ private final class XMLFeedDelegate: NSObject, XMLParserDelegate {
     private func finalizeCurrentItem() {
         let resolvedTitle = itemTitle.isEmpty ? "Untitled Story" : itemTitle
         let resolvedLink = itemLink != nil ? URL(string: itemLink!, relativeTo: originalURL)?.absoluteURL : nil
-        let resolvedDate = parseDate(itemDateStr) ?? Date.now
+        let fallbackDate = Date(timeIntervalSince1970: FeedParserService.undatedFallbackEpoch - Double(parsedItems.count * 60))
+        let resolvedDate = parseDate(itemDateStr) ?? fallbackDate
         
         let dedupKey = FeedParserService.generateDeduplicationKey(
             guid: itemGuid,

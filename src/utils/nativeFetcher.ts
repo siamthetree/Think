@@ -1,3 +1,4 @@
+import { CapacitorHttp } from '@capacitor/core';
 import { FeedItem } from '../types';
 import {
   calculateReadTime,
@@ -5,6 +6,7 @@ import {
   parseXmlFeed,
   stripHtml,
 } from './feedParser';
+import { validateSafeExternalUrl } from './urlSecurity';
 
 export interface ExtractedArticleResult {
   title?: string;
@@ -34,35 +36,43 @@ export function isRunningInNativeIos(): boolean {
 }
 
 /**
- * Fetches raw text/HTML from a target URL on native iOS (via CapacitorHttp)
- * or via a fallback CORS proxy if running as a static web app without a backend.
+ * Fetches raw text/HTML from a validated target URL directly via native CapacitorHttp
+ * or standard browser fetch without routing user URLs to untrusted third-party CORS proxies.
  */
 async function fetchRawUrlText(targetUrl: string): Promise<{ text: string; finalUrl: string }> {
-  // 1. Try direct fetch first (works natively on iOS when CapacitorHttp is enabled)
-  try {
-    const res = await fetch(targetUrl, {
-      headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-    });
-    if (res.ok) {
-      const text = await res.text();
-      if (text && text.trim().length > 40) {
-        return { text, finalUrl: res.url || targetUrl };
+  const safeUrl = validateSafeExternalUrl(targetUrl).href;
+
+  if (isRunningInNativeIos()) {
+    try {
+      const res = await CapacitorHttp.get({
+        url: safeUrl,
+        responseType: 'text',
+        connectTimeout: 8000,
+        readTimeout: 8000,
+        headers: {
+          'User-Agent': 'ChintaReader/2.0 (iOS; +https://chinta.app)',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
+      const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
+      if (res.status >= 200 && res.status < 300 && text.trim().length > 40) {
+        return { text, finalUrl: res.url || safeUrl };
       }
+    } catch {
+      // Fall through to standard fetch
     }
-  } catch {
-    // Direct fetch blocked by CORS in standard browser or 403; fall through
   }
 
-  // 2. Fallback to AllOrigins raw proxy for static web environments
-  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
-  const proxyRes = await fetch(proxyUrl);
-  if (!proxyRes.ok) {
-    throw new Error(`Unable to fetch ${targetUrl} (HTTP ${proxyRes.status})`);
+  const res = await fetch(safeUrl, {
+    headers: {
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`Unable to fetch ${safeUrl} (HTTP ${res.status})`);
   }
-  const text = await proxyRes.text();
-  return { text, finalUrl: targetUrl };
+  const text = await res.text();
+  return { text, finalUrl: res.url || safeUrl };
 }
 
 /**

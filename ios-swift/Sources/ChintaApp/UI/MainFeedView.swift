@@ -76,7 +76,7 @@ public struct MainFeedView: View {
                 // Native Apple Haptic on pull trigger
                 AppleHapticEngine.shared.pullThresholdDetent()
                 
-                await FeedRefreshEngine.shared.pullToRefreshAll(modelContext: modelContext)
+                await FeedRefreshEngine.shared.pullToRefreshAll(container: modelContext.container)
                 
                 // Gentle Native Apple Haptic on refresh completion
                 AppleHapticEngine.shared.refreshCompleted()
@@ -97,6 +97,9 @@ public struct MainFeedView: View {
                 .offset(y: isBarsVisible ? 0 : 120)
                 .opacity(isBarsVisible ? 1.0 : 0.0)
                 .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isBarsVisible)
+        }
+        .task {
+            await FeedRefreshEngine.shared.onAppLaunch(container: modelContext.container)
         }
         .fullScreenCover(item: $selectedArticleForReader) { article in
             ReaderDetailView(article: article)
@@ -237,8 +240,9 @@ public struct MainFeedView: View {
                 
                 Button(action: {
                     AppleHapticEngine.shared.pullThresholdDetent()
+                    let container = modelContext.container
                     Task {
-                        await FeedRefreshEngine.shared.pullToRefreshAll(modelContext: modelContext)
+                        await FeedRefreshEngine.shared.pullToRefreshAll(container: container)
                         AppleHapticEngine.shared.refreshCompleted()
                     }
                 }) {

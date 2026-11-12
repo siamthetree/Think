@@ -39,8 +39,10 @@ public struct SourcesManagerView: View {
                                         }
                                         Spacer()
                                         Button("Retry") {
+                                            let feedID = feed.id
+                                            let container = modelContext.container
                                             Task {
-                                                await FeedRefreshEngine.shared.pullToRefresh(feed: feed, modelContext: modelContext)
+                                                await FeedRefreshEngine.shared.pullToRefresh(feedID: feedID, container: container)
                                             }
                                         }
                                         .font(.system(size: metrics.fontSize(base: 12), weight: .semibold))
@@ -124,8 +126,10 @@ public struct SourcesManagerView: View {
                         let newFeed = Feed(title: url.host ?? "Newspaper Feed", url: url)
                         modelContext.insert(newFeed)
                         try? modelContext.save()
+                        let feedID = newFeed.id
+                        let container = modelContext.container
                         Task {
-                            await FeedRefreshEngine.shared.pullToRefresh(feed: newFeed, modelContext: modelContext)
+                            await FeedRefreshEngine.shared.pullToRefresh(feedID: feedID, container: container)
                         }
                     }
                     newFeedURLString = ""

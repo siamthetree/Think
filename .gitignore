@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+dist-ssr/
+dist-server/
+server.js
+*.local
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# iOS / Capacitor / Xcode build artifacts
+ios/App/Pods/
+ios/App/build/
+ios/build/
+build_ipa/
+Payload/
+*.ipa
+*.xcarchive
+DerivedData/
+.swiftpm/
+ios-swift/.build/
+
+# Playwright & test artifacts
+.playwright-cli/
+coverage/
+
+# OS & Editor files
+.DS_Store
+*.swp
+Thumbs.db

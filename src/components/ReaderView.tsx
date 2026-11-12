@@ -12,7 +12,7 @@ import {
   Check,
 } from 'lucide-react';
 import type { FeedItem, Tag, ReaderPreferences, ReaderTheme, ReaderFont, ReaderLineHeight } from '../types';
-import { sanitizeArticleHtml, blocksToHtml } from '../utils/sanitize';
+import { sanitizeArticleHtml, blocksToHtml, isJavaScriptWarningText } from '../utils/sanitize';
 import { extractArticleWithFallback, summarizeArticleWithFallback, type ArticleSummaryResult } from '../utils/apiClient';
 import { triggerHapticSelection, triggerHapticComplete } from '../utils/haptics';
 
@@ -232,27 +232,32 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         .then((data) => {
           if (cancelled) return;
           if (data.success && data.blocks && data.blocks.length > 0) {
-            setExtractedBlocks(data.blocks);
-            setExtractedMeta({
-              title: data.title,
-              author: data.author,
-              leadImage: data.leadImage,
-              readTimeMin: data.readTimeMin,
-            });
-            if (onCacheExtractedArticle) {
-              const htmlFromBlocks = blocksToHtml(data.blocks);
-              const cleanFromBlocks = data.blocks
-                .map((b: any) => b.text || '')
-                .filter(Boolean)
-                .join('\n\n');
-              onCacheExtractedArticle(article.id, {
+            const validBlocks = data.blocks.filter(
+              (b: any) => !b.text || !isJavaScriptWarningText(b.text)
+            );
+            const cleanFromBlocks = validBlocks
+              .map((b: any) => b.text || '')
+              .filter(Boolean)
+              .join('\n\n');
+            if (validBlocks.length > 0 && cleanFromBlocks.length >= Math.min(120, contentText.length || 80)) {
+              setExtractedBlocks(validBlocks);
+              setExtractedMeta({
                 title: data.title,
                 author: data.author,
                 leadImage: data.leadImage,
                 readTimeMin: data.readTimeMin,
-                contentHtml: htmlFromBlocks,
-                contentClean: cleanFromBlocks,
               });
+              if (onCacheExtractedArticle) {
+                const htmlFromBlocks = blocksToHtml(validBlocks);
+                onCacheExtractedArticle(article.id, {
+                  title: data.title,
+                  author: data.author,
+                  leadImage: data.leadImage,
+                  readTimeMin: data.readTimeMin,
+                  contentHtml: htmlFromBlocks,
+                  contentClean: cleanFromBlocks,
+                });
+              }
             }
           }
         })
@@ -769,7 +774,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 {article.contentClean
                   .split(/\n+/)
                   .map((p) => p.trim())
-                  .filter(Boolean)
+                  .filter((p) => Boolean(p) && !isJavaScriptWarningText(p))
                   .map((p, idx) => (
                     <p key={idx} className="text-[#E6E6E6]">
                       {p}
@@ -777,7 +782,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   ))}
               </div>
             ) : (
-              <p className="text-[#E6E6E6]">{article.summary}</p>
+              <p className="text-[#E6E6E6]">
+                {isJavaScriptWarningText(article.summary || '') ? '' : article.summary}
+              </p>
             )}
 
             {isLoadingExtraction && (

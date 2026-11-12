@@ -1,4 +1,4 @@
-name: Build iOS IPA (Chinta / PaperPress)
+name: Build iOS IPA (Chinta)
 
 on:
   push:
@@ -11,6 +11,10 @@ on:
         description: 'Output IPA file name'
         required: false
         default: 'Chinta-iOS'
+      apiBaseUrl:
+        description: 'Backend API Base URL for iOS app'
+        required: false
+        default: 'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app'
       createRelease:
         description: 'Create a GitHub Release with this IPA'
         required: false
@@ -48,6 +52,7 @@ jobs:
       - name: Build Web Application
         env:
           NODE_ENV: production
+          VITE_API_BASE_URL: ${{ inputs.apiBaseUrl || vars.VITE_API_BASE_URL || 'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app' }}
         run: |
           npm run build
 
@@ -120,6 +125,7 @@ jobs:
           echo "Found compiled app at: $APP_DIR"
 
           # Create Payload directory structure for IPA
+          rm -rf build_ipa
           mkdir -p build_ipa/Payload
           cp -R "$APP_DIR" build_ipa/Payload/
 
@@ -128,12 +134,9 @@ jobs:
           zip -r -q "../${IPA_NAME}.ipa" Payload/
           cd ..
 
-          # Also create a secondary copy with standard name for compatibility if IPA_NAME differs
+          # Also create a copy with Chinta-iOS.ipa if a custom appName was provided
           if [ "${IPA_NAME}.ipa" != "Chinta-iOS.ipa" ]; then
             cp "${IPA_NAME}.ipa" "Chinta-iOS.ipa"
-          fi
-          if [ "${IPA_NAME}.ipa" != "PaperPress-iOS.ipa" ]; then
-            cp "${IPA_NAME}.ipa" "PaperPress-iOS.ipa"
           fi
 
           ls -lh *.ipa

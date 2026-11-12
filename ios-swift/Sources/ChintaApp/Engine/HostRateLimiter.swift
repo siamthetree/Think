@@ -9,8 +9,9 @@ public actor HostRateLimiter {
     private var waitQueue: [WaitingTask] = []
     
     private struct WaitingTask {
+        let id: UUID
         let host: String
-        let continuation: CheckedContinuation<Void, Never>
+        let continuation: CheckedContinuation<Void, Error>
     }
     
     public init(maxConcurrent: Int = 4, maxPerHost: Int = 1) {
@@ -18,7 +19,8 @@ public actor HostRateLimiter {
         self.maxConcurrentPerHost = maxPerHost
     }
     
-    public func acquire(for url: URL) async {
+    public func acquire(for url: URL) async throws {
+        try Task.checkCancellation()
         let host = url.host?.lowercased() ?? "unknown"
         
         if canExecute(host: host) {
@@ -27,8 +29,26 @@ public actor HostRateLimiter {
             return
         }
         
-        await withCheckedContinuation { continuation in
-            waitQueue.append(WaitingTask(host: host, continuation: continuation))
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                waitQueue.append(WaitingTask(id: waiterID, host: host, continuation: continuation))
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(id: waiterID)
+            }
+        }
+    }
+    
+    private func cancelWaiter(id: UUID) {
+        if let index = waitQueue.firstIndex(where: { $0.id == id }) {
+            let waiter = waitQueue.remove(at: index)
+            waiter.continuation.resume(throwing: CancellationError())
         }
     }
     
@@ -52,19 +72,17 @@ public actor HostRateLimiter {
     }
     
     private func pumpQueue() {
-        guard activeTotalCount < maxConcurrentRequests else { return }
-        
-        for index in waitQueue.indices {
-            let task = waitQueue[index]
-            let hostCurrent = activePerHostCount[task.host, default: 0]
-            
-            if hostCurrent < maxConcurrentPerHost {
-                waitQueue.remove(at: index)
-                activeTotalCount += 1
-                activePerHostCount[task.host, default: 0] += 1
-                task.continuation.resume()
+        while activeTotalCount < maxConcurrentRequests {
+            guard let index = waitQueue.firstIndex(where: {
+                activePerHostCount[$0.host, default: 0] < maxConcurrentPerHost
+            }) else {
                 return
             }
+            
+            let task = waitQueue.remove(at: index)
+            activeTotalCount += 1
+            activePerHostCount[task.host, default: 0] += 1
+            task.continuation.resume(returning: ())
         }
     }
 }

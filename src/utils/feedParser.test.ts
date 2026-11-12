@@ -7,6 +7,8 @@ import {
   parseXmlFeed,
   parseHtmlPortalToFeed,
   filterArticles,
+  buildRssDiscoveryCandidates,
+  extractReadableArticleFromHtml,
 } from './feedParser';
 import type { FeedItem } from '../types';
 
@@ -258,5 +260,112 @@ test('extractReadableArticleFromHtml extracts clean reader content on standalone
   assert.equal(extracted.contentClean.includes('agricultural producers'), true);
 });
 
+test('buildRssDiscoveryCandidates discovers <link rel="alternate" type="application/rss+xml"> and standard RSS paths', () => {
+  const html = `<!DOCTYPE html>
+  <html>
+    <head>
+      <link rel="alternate" type="application/rss+xml" title="Prothom Alo RSS" href="/feed/latest-rss.xml" />
+    </head>
+    <body></body>
+  </html>`;
 
+  const candidates = buildRssDiscoveryCandidates('https://www.prothomalo.com', html);
+  assert.equal(candidates[0], 'https://www.prothomalo.com/feed/latest-rss.xml');
+  assert.equal(candidates.includes('https://www.prothomalo.com/feed'), true);
+  assert.equal(candidates.includes('https://www.prothomalo.com/rss.xml'), true);
+});
+
+test('extractReadableArticleFromHtml strips "turn on JavaScript" warnings and extracts Quintype/br-separated content', () => {
+  const htmlWithJsWarning = `<!DOCTYPE html>
+  <html>
+    <head>
+      <title> Central Bank Announces New Monetary Policy Framework </title>
+    </head>
+    <body>
+      <noscript><p>Please turn on JavaScript to read the full content of this newspaper.</p></noscript>
+      <p>You need to enable JavaScript to run this app.</p>
+      <div class="news-details">
+        The central bank unveiled its semi-annual monetary policy today aiming to curb inflation and stabilize foreign exchange reserves across commercial banks.<br><br>
+        Senior economists noted that tighter credit growth ceilings and market-based interest rates are expected to ease pressure on import payments over the coming quarter.
+      </div>
+    </body>
+  </html>`;
+
+  const res = extractReadableArticleFromHtml(htmlWithJsWarning, 'https://www.jugantor.com/economics/101');
+  assert.equal(res.success, true);
+  assert.equal(/turn on javascript|enable javascript/i.test(res.contentClean), false);
+  assert.equal(res.blocks.some((b) => b.text?.includes('central bank unveiled')), true);
+  assert.equal(res.blocks.some((b) => b.text?.includes('Senior economists noted')), true);
+});
+
+test('parseXmlFeed unwraps Bing News apiclick redirect URLs to direct newspaper links', () => {
+  const bingRss = `<?xml version="1.0" encoding="utf-8" ?>
+  <rss version="2.0" xmlns:News="https://www.bing.com:443/news/search?q=site:jugantor.com&amp;format=rss">
+    <channel>
+      <title>site:jugantor.com - Bing News</title>
+      <item>
+        <title>জাতীয় অর্থনীতিতে প্রবাসী আয়ের নতুন রেকর্ড</title>
+        <link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;aid=&amp;tid=123&amp;url=https%3a%2f%2fwww.jugantor.com%2fnational%2f998877&amp;c=456&amp;mkt=en-us</link>
+        <description>চলতি মাসে প্রবাসী আয়ে নতুন গতি এসেছে বলে জানিয়েছে বাংলাদেশ ব্যাংক।</description>
+        <pubDate>Mon, 10 Nov 2026 10:00:00 GMT</pubDate>
+        <News:Image>https://www.bing.com/th?id=OVFT.testimg</News:Image>
+      </item>
+    </channel>
+  </rss>`;
+
+  const parsed = parseXmlFeed(bingRss, {
+    id: 'jugantor',
+    title: 'Daily Jugantor',
+    url: 'https://www.jugantor.com',
+  });
+  assert.equal(parsed.items.length, 1);
+  assert.equal(parsed.items[0].link, 'https://www.jugantor.com/national/998877');
+  assert.equal(parsed.items[0].imageUrl, 'https://www.bing.com/th?id=OVFT.testimg');
+});
+
+test('validateSafeExternalUrl and isPrivateOrReservedIp block SSRF private, loopback, link-local, and metadata addresses', async () => {
+  const { isPrivateOrReservedIp, checkSafeExternalUrl } = await import('./urlSecurity');
+
+  assert.equal(isPrivateOrReservedIp('127.0.0.1'), true);
+  assert.equal(isPrivateOrReservedIp('10.0.0.42'), true);
+  assert.equal(isPrivateOrReservedIp('172.16.5.1'), true);
+  assert.equal(isPrivateOrReservedIp('192.168.1.100'), true);
+  assert.equal(isPrivateOrReservedIp('169.254.169.254'), true);
+  assert.equal(isPrivateOrReservedIp('::1'), true);
+  assert.equal(isPrivateOrReservedIp('::ffff:127.0.0.1'), true);
+  assert.equal(isPrivateOrReservedIp('::ffff:169.254.169.254'), true);
+  assert.equal(isPrivateOrReservedIp('8.8.8.8'), false);
+  assert.equal(isPrivateOrReservedIp('1.1.1.1'), false);
+
+  assert.equal(checkSafeExternalUrl('http://127.0.0.1:8080/admin').ok, false);
+  assert.equal(checkSafeExternalUrl('http://169.254.169.254/latest/meta-data/').ok, false);
+  assert.equal(checkSafeExternalUrl('http://localhost:3000/api/rss').ok, false);
+  assert.equal(checkSafeExternalUrl('file:///etc/passwd').ok, false);
+  assert.equal(checkSafeExternalUrl('https://www.thedailystar.net/rss.xml').ok, true);
+});
+
+test('truncateHtmlSafely truncates at block boundaries without cutting mid-tag', async () => {
+  const { truncateHtmlSafely } = await import('./urlSecurity');
+  const html =
+    '<article><p>First complete paragraph with important context.</p><p>Second paragraph with <a href="https://example.com/very/long/path">a link inside</a> and more text that exceeds the budget.</p></article>';
+  const truncated = truncateHtmlSafely(html, 75);
+  assert.equal(truncated.includes('<a href="https://example.com'), false);
+  assert.equal(truncated.endsWith('</article>'), true);
+  assert.equal((truncated.match(/</g) || []).length, (truncated.match(/>/g) || []).length);
+});
+
+test('parseFeedDate does not fall back to Date.now() for unparseable dates and blogs.json timestamps match publishedAt', async () => {
+  const { parseFeedDate, UNDATED_FALLBACK_EPOCH } = await import('./feedParser');
+  const fs = await import('node:fs');
+
+  const invalid = parseFeedDate('not-a-valid-date', 2);
+  assert.equal(invalid.hasValidDate, false);
+  assert.equal(invalid.timestamp <= UNDATED_FALLBACK_EPOCH, true);
+  assert.equal(formatRelativeTime(invalid.timestamp), '');
+
+  const blogsRaw = JSON.parse(fs.readFileSync('data/blogs.json', 'utf-8'));
+  for (const blog of blogsRaw) {
+    assert.equal(blog.timestamp, Date.parse(blog.publishedAt));
+  }
+});
 

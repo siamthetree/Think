@@ -1,26 +1,26 @@
 import Foundation
 
-public struct FeedAdaptiveScheduler {
+public struct FeedAdaptiveScheduler: Sendable {
     public static let minimumInterval: TimeInterval = 900    // 15 minutes
     public static let maximumInterval: TimeInterval = 21600  // 6 hours
     
     public static func computeNextInterval(
-        feed: Feed,
+        currentInterval: TimeInterval,
+        consecutiveNewItemsCount: Int,
+        consecutiveEmptyCount: Int,
         newItemsCount: Int,
         feedHintTTLMinutes: Int?,
         cacheControlTTL: TimeInterval?
     ) -> (newInterval: TimeInterval, nextDate: Date) {
-        var interval = feed.currentInterval
+        var interval = currentInterval
         
-        // 1. Adaptive Cadence Streaks
+        // 1. Adaptive Cadence Streaks (caller has already updated consecutiveNewItemsCount / consecutiveEmptyCount for this fetch)
         if newItemsCount > 0 {
-            let successStreak = feed.consecutiveNewItemsCount + 1
-            if successStreak >= 3 {
+            if consecutiveNewItemsCount >= 3 {
                 interval = max(Self.minimumInterval, interval * 0.75)
             }
         } else {
-            let emptyStreak = feed.consecutiveEmptyCount + 1
-            if emptyStreak >= 3 {
+            if consecutiveEmptyCount >= 3 {
                 interval = min(Self.maximumInterval, interval * 1.5)
             }
         }
@@ -38,7 +38,7 @@ public struct FeedAdaptiveScheduler {
             }
         }
         
-        // "Use the larger of the hint and my minimum interval."
+        // Use the larger of the hint and minimum interval
         if let hint = candidateHintSeconds {
             let respectedHint = max(hint, Self.minimumInterval)
             interval = min(Self.maximumInterval, max(interval, respectedHint))

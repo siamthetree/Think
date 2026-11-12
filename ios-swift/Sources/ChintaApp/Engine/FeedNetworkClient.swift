@@ -1,22 +1,51 @@
 import Foundation
 
-public enum FeedNetworkResult {
+public enum FeedNetworkResult: Sendable {
     case notModified(etag: String?, lastModified: String?, cacheControlTTL: TimeInterval?)
-    case success(data: Data, etag: String?, lastModified: String?, redirectedURL: URL?, cacheControlTTL: TimeInterval?)
+    case success(data: Data, etag: String?, lastModified: String?, permanentRedirectURL: URL?, cacheControlTTL: TimeInterval?)
     case rateLimited(retryAfter: TimeInterval)
     case serverError(statusCode: Int, retryAfter: TimeInterval?)
+    case permanentError(statusCode: Int)
     case clientError(statusCode: Int)
 }
 
+private final class RedirectTrackingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var sawRedirect = false
+    private var allRedirectsPermanent = true
+    
+    var shouldPersistRedirectURL: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return sawRedirect && allRedirectsPermanent
+    }
+    
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        lock.lock()
+        sawRedirect = true
+        if response.statusCode != 301 && response.statusCode != 308 {
+            allRedirectsPermanent = false
+        }
+        lock.unlock()
+        completionHandler(request)
+    }
+}
+
 public actor FeedNetworkClient {
-    private let session: URLSession
+    private let sessionConfig: URLSessionConfiguration
     private let rateLimiter: HostRateLimiter
     private let userAgent: String
     private let defaultTimeout: TimeInterval
     
     public init(
         rateLimiter: HostRateLimiter,
-        userAgent: String = "ChintaPaperPress/2.0 (iOS; RSS Refresh Engine; +https://chinta.app)",
+        userAgent: String = "ChintaReader/2.0 (iOS; +https://chinta.app)",
         timeout: TimeInterval = 15.0
     ) {
         self.rateLimiter = rateLimiter
@@ -27,7 +56,7 @@ public actor FeedNetworkClient {
         config.timeoutIntervalForRequest = timeout
         config.timeoutIntervalForResource = timeout * 2
         config.httpShouldSetCookies = false
-        self.session = URLSession(configuration: config)
+        self.sessionConfig = config
     }
     
     public func fetchFeed(
@@ -35,7 +64,7 @@ public actor FeedNetworkClient {
         etag: String?,
         lastModified: String?
     ) async throws -> FeedNetworkResult {
-        await rateLimiter.acquire(for: url)
+        try await rateLimiter.acquire(for: url)
         defer {
             Task { [rateLimiter] in
                 await rateLimiter.release(for: url)
@@ -54,6 +83,10 @@ public actor FeedNetworkClient {
             request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since")
         }
         
+        let redirectDelegate = RedirectTrackingDelegate()
+        let session = URLSession(configuration: sessionConfig, delegate: redirectDelegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
@@ -66,10 +99,12 @@ public actor FeedNetworkClient {
         let newLastModified = headers["Last-Modified"] as? String ?? headers["last-modified"] as? String
         let cacheTTL = parseCacheControlMaxAge(headers["Cache-Control"] as? String)
         
-        // Check for 301 Permanent Redirect
-        var redirectedURL: URL? = nil
-        if let finalURL = httpResponse.url, finalURL != url {
-            redirectedURL = finalURL
+        // Only persist feed.url when every redirect hop was a permanent 301 or 308 redirect (never on temporary 302/303/307)
+        var permanentRedirectURL: URL? = nil
+        if redirectDelegate.shouldPersistRedirectURL,
+           let finalURL = httpResponse.url,
+           finalURL != url {
+            permanentRedirectURL = finalURL
         }
         
         switch statusCode {
@@ -85,9 +120,12 @@ public actor FeedNetworkClient {
                 data: data,
                 etag: newEtag,
                 lastModified: newLastModified,
-                redirectedURL: redirectedURL,
+                permanentRedirectURL: permanentRedirectURL,
                 cacheControlTTL: cacheTTL
             )
+            
+        case 404, 410:
+            return .permanentError(statusCode: statusCode)
             
         case 429:
             let retrySeconds = parseRetryAfter(headers["Retry-After"] as? String) ?? 300
@@ -122,12 +160,10 @@ public actor FeedNetworkClient {
             return nil
         }
         
-        // 1. Numeric seconds
         if let seconds = Double(header) {
             return max(seconds, 30)
         }
         
-        // 2. HTTP Date format (RFC 2822 / 1123)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"

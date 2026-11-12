@@ -1,5 +1,5 @@
 {
-  "appId": "com.paperpress.reader",
+  "appId": "app.chinta.reader",
   "appName": "Chinta",
   "webDir": "dist",
   "server": {
@@ -14,7 +14,7 @@
   },
   "plugins": {
     "CapacitorHttp": {
-      "enabled": false
+      "enabled": true
     }
   }
 }

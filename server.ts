@@ -1,13 +1,25 @@
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
+import dns from 'node:dns/promises';
 import * as cheerio from 'cheerio';
 import type { Element } from 'domhandler';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { XMLParser } from 'fast-xml-parser';
+import {
+  buildRssDiscoveryCandidates,
+  extractReadableArticleFromHtml,
+  isBoilerplateOrJsWarning,
+  parseFeedDate,
+  UNDATED_FALLBACK_EPOCH,
+} from './src/utils/feedParser';
+import {
+  isPrivateOrReservedIp,
+  checkSafeExternalUrl,
+} from './src/utils/urlSecurity';
 
 export interface FeedItem {
   id: string;
@@ -31,6 +43,16 @@ export interface FeedItem {
   readTimeMin: number;
 }
 
+function escapeHtmlServer(raw: string): string {
+  if (!raw) return '';
+  return String(raw)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function calculateReadTime(text: string): number {
   if (!text) return 1;
   const words = text.trim().split(/\s+/).filter(Boolean).length;
@@ -44,6 +66,7 @@ function stripHtml(html: string): string {
   return capped
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -52,6 +75,10 @@ function stripHtml(html: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&#039;/g, "'")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -63,7 +90,20 @@ function cleanCdata(text: string): string {
 
 function resolveUrl(relativeOrAbsolute: string, baseUrl?: string): string {
   if (!relativeOrAbsolute) return '';
-  let trimmed = relativeOrAbsolute.trim();
+  let trimmed = relativeOrAbsolute
+    .trim()
+    .replace(/&amp;/g, '&');
+
+  if (trimmed.includes('apiclick.aspx') || trimmed.includes('url=http')) {
+    try {
+      const parsedWrapper = new URL(trimmed, baseUrl || 'https://example.com');
+      const unwrapped = parsedWrapper.searchParams.get('url');
+      if (unwrapped && /^https?:\/\//i.test(unwrapped)) {
+        trimmed = unwrapped;
+      }
+    } catch {}
+  }
+
   if (trimmed.startsWith('//')) {
     return 'https:' + trimmed;
   }
@@ -178,9 +218,8 @@ function parseXmlWithRegexFallback(
     const dateMatch = block.match(
       /<(?:pubDate|published|updated|dc:date)[^>]*>([\s\S]*?)<\/(?:pubDate|published|updated|dc:date)>/i
     );
-    const rawDate = dateMatch ? cleanCdata(dateMatch[1]) : new Date().toISOString();
-    const timestamp = Date.parse(rawDate) || Date.now();
-    const pubDate = new Date(timestamp).toISOString();
+    const rawDate = dateMatch ? cleanCdata(dateMatch[1]) : undefined;
+    const { timestamp, pubDate } = parseFeedDate(rawDate, items.length);
 
     const authorMatch = block.match(/<(?:author|dc:creator)[^>]*>([\s\S]*?)<\/(?:author|dc:creator)>/i);
     const author = authorMatch ? stripHtml(cleanCdata(authorMatch[1])) : undefined;
@@ -275,9 +314,8 @@ function parseXmlFeed(
       }
       link = resolveUrl(String(link || '').trim(), feedInfo.url);
 
-      const rawDate = raw.pubDate || raw['dc:date'] || raw.published || raw.updated || new Date().toISOString();
-      const timestamp = Date.parse(rawDate) || Date.now();
-      const pubDate = new Date(timestamp).toISOString();
+      const rawDate = raw.pubDate || raw['dc:date'] || raw.published || raw.updated;
+      const { timestamp, pubDate } = parseFeedDate(rawDate, items.length);
 
       let author: string | undefined;
       if (raw.author) {
@@ -472,7 +510,8 @@ function parseHtmlPortalToFeed(
         ? pText.slice(0, 260)
         : '';
 
-    const timestamp = now - items.length * 60 * 1000;
+    // Portal anchor items have no explicit date in anchor markup; use deterministic past epoch so undated items do not masquerade as breaking news
+    const timestamp = UNDATED_FALLBACK_EPOCH - items.length * 60 * 1000;
     const id = `${feedInfo.id}_${encodeURIComponent(fullUrl.slice(-70))}`;
 
     items.push({
@@ -504,19 +543,159 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '64kb' }));
 
-// Allow CORS for native iOS Capacitor IPA builds (capacitor://localhost) and web clients
+const ALLOWED_ORIGINS = new Set<string>([
+  'capacitor://localhost',
+  'ionic://localhost',
+  'http://localhost',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app',
+  'https://ais-dev-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app',
+  ...(process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+    : []),
+]);
+
+// Explicit origin allowlist CORS (no wildcard '*')
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  const origin = req.headers.origin;
+  res.header('Vary', 'Origin');
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Chinta-Client');
+  }
   if (req.method === 'OPTIONS') {
+    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+      res.sendStatus(403);
+      return;
+    }
     res.sendStatus(204);
     return;
   }
   next();
 });
+
+function getClientIp(req: Request): string {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim();
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function createRateLimiter(options: { windowMs: number; maxRequests: number }) {
+  const hits = new Map<string, number[]>();
+  return (req: Request, res: Response, next: NextFunction) => {
+    const now = Date.now();
+    const ip = getClientIp(req);
+    const cutoff = now - options.windowMs;
+    const recent = (hits.get(ip) || []).filter((t) => t > cutoff);
+    if (recent.length >= options.maxRequests) {
+      res.setHeader('Retry-After', String(Math.ceil(options.windowMs / 1000)));
+      res.status(429).json({
+        success: false,
+        error: 'Rate limit exceeded. Please wait before making additional requests.',
+      });
+      return;
+    }
+    recent.push(now);
+    hits.set(ip, recent);
+    if (hits.size > 2000) {
+      for (const [key, times] of hits.entries()) {
+        if (times.every((t) => t <= cutoff)) hits.delete(key);
+      }
+    }
+    next();
+  };
+}
+
+function requireApiAccess(req: Request, res: Response, next: NextFunction) {
+  const configuredToken = process.env.API_AUTH_TOKEN?.trim();
+  if (configuredToken) {
+    const authHeader = req.headers.authorization || '';
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (bearer !== configuredToken) {
+      res.status(401).json({ success: false, error: 'Unauthorized API request' });
+      return;
+    }
+  }
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    res.status(403).json({ success: false, error: 'Origin not permitted' });
+    return;
+  }
+  next();
+}
+
+const rssRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 60 });
+const extractRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 40 });
+const summarizeRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 10 });
+const publishBlogRateLimiter = createRateLimiter({ windowMs: 10 * 60_000, maxRequests: 6 });
+
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB hard cap
+
+async function assertSafeUrlAndResolve(rawUrl: string): Promise<URL> {
+  const validation = checkSafeExternalUrl(rawUrl);
+  if (!validation.ok || !validation.url) {
+    throw new Error(validation.reason || 'Disallowed target URL');
+  }
+  const parsed = validation.url;
+  let records: Array<{ address: string; family: number }> = [];
+  try {
+    records = await dns.lookup(parsed.hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error(`Could not resolve hostname: ${parsed.hostname}`);
+  }
+  if (!records || records.length === 0) {
+    throw new Error(`No DNS records found for hostname: ${parsed.hostname}`);
+  }
+  for (const record of records) {
+    if (isPrivateOrReservedIp(record.address)) {
+      throw new Error(`Blocked private or reserved IP address for ${parsed.hostname}`);
+    }
+  }
+  return parsed;
+}
+
+async function readResponseTextWithCap(
+  res: globalThis.Response,
+  maxBytes = MAX_RESPONSE_BYTES
+): Promise<string> {
+  const contentLength = Number(res.headers.get('content-length') || '0');
+  if (contentLength > maxBytes) {
+    throw new Error(`Response Content-Length (${contentLength} bytes) exceeds 2 MB limit`);
+  }
+  if (!res.body) {
+    const text = await res.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+      throw new Error('Response body exceeds 2 MB limit');
+    }
+    return text;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBytes) {
+          await reader.cancel();
+          throw new Error('Response stream exceeded 2 MB limit');
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
 
 // Curated Bangladeshi & International newspaper portals and Travel Community Blogs
 const CURATED_FEEDS = [
@@ -621,15 +800,15 @@ const CURATED_FEEDS = [
   },
 ];
 
-// Helper to fetch with realistic browser User-Agent and automatic Googlebot fallback for Cloudflare-protected news portals
+// Fetch with SSRF IP verification on every hop, 2 MB response size cap, and legitimate User-Agents (no Googlebot spoofing)
 async function fetchWithUserAgent(
   targetUrl: string,
   timeoutMs = 8500
 ): Promise<{ text: string; contentType: string; finalUrl: string }> {
   const userAgents = [
+    'ChintaReader/2.0 (+https://chinta.app)',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
   ];
 
   let lastError: Error | null = null;
@@ -637,28 +816,55 @@ async function fetchWithUserAgent(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(targetUrl, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': ua,
-          Accept:
-            'text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,application/xml;q=0.9,text/xml;q=0.8,*/*;q=0.7',
-          'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
-        },
-      });
+      let currentUrl = targetUrl;
+      let redirectCount = 0;
 
-      if (res.ok) {
-        const contentType = res.headers.get('content-type') || '';
-        const text = await res.text();
-        return { text, contentType, finalUrl: res.url || targetUrl };
-      }
-      lastError = new Error(`HTTP error ${res.status}: ${res.statusText}`);
-      // Do not retry 404 Not Found with other User-Agents
-      if (res.status === 404 || res.status === 410) {
+      while (redirectCount <= 5) {
+        const safeParsed = await assertSafeUrlAndResolve(currentUrl);
+        const res = await fetch(safeParsed.href, {
+          signal: controller.signal,
+          redirect: 'manual',
+          headers: {
+            'User-Agent': ua,
+            Accept:
+              'text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,application/xml;q=0.9,text/xml;q=0.8,*/*;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
+          },
+        });
+
+        if ([301, 302, 303, 307, 308].includes(res.status)) {
+          const location = res.headers.get('location');
+          if (!location) {
+            throw new Error(`Redirect (${res.status}) missing Location header`);
+          }
+          currentUrl = new URL(location, safeParsed.href).href;
+          redirectCount += 1;
+          continue;
+        }
+
+        if (res.ok) {
+          const contentType = res.headers.get('content-type') || '';
+          const text = await readResponseTextWithCap(res, MAX_RESPONSE_BYTES);
+          return { text, contentType, finalUrl: safeParsed.href };
+        }
+
+        lastError = new Error(`HTTP error ${res.status}: ${res.statusText}`);
+        if (res.status === 404 || res.status === 410 || res.status === 400) {
+          clearTimeout(timer);
+          throw lastError;
+        }
         break;
       }
     } catch (err: any) {
       lastError = err;
+      if (
+        /Blocked|Disallowed|Private|exceeded 2 MB|HTTP error 404|HTTP error 410/i.test(
+          err?.message || ''
+        )
+      ) {
+        clearTimeout(timer);
+        throw err;
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -688,59 +894,7 @@ async function loadPortalOrRssFeed(
   if (!/^https?:\/\//i.test(url)) {
     url = 'https://' + url;
   }
-
-  // Specialized high-reliability loader for The Business Standard (tbsnews.net)
-  if (url.includes('tbsnews.net')) {
-    try {
-      const r2jUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(
-        'https://www.tbsnews.net/top-news/rss.xml'
-      )}`;
-      const r2jRes = await fetch(r2jUrl, { signal: AbortSignal.timeout(5500) });
-      if (r2jRes.ok) {
-        const r2jData = await r2jRes.json();
-        if (r2jData.status === 'ok' && Array.isArray(r2jData.items) && r2jData.items.length > 0) {
-          const items: FeedItem[] = r2jData.items.map((item: any) => {
-            const timestamp = Date.parse(item.pubDate) || Date.now();
-            const summary = stripHtml(item.description || item.content || '').slice(0, 240);
-            return {
-              id: `${feedInfo.id}_${encodeURIComponent(item.link || item.guid || item.title).slice(0, 80)}`,
-              feedId: feedInfo.id,
-              feedTitle:
-                feedInfo.title && feedInfo.title !== 'Newspaper Feed'
-                  ? feedInfo.title
-                  : 'The Business Standard (TBS)',
-              feedUrl: url,
-              title: stripHtml(item.title),
-              link: item.link,
-              pubDate: new Date(timestamp).toISOString(),
-              timestamp,
-              author: item.author ? stripHtml(item.author) : 'TBS Report',
-              summary,
-              contentHtml: item.content || item.description || `<p>${summary}</p>`,
-              contentClean: stripHtml(item.content || item.description || ''),
-              imageUrl: item.thumbnail || item.enclosure?.link,
-              tags: [...feedInfo.defaultTags],
-              isRead: false,
-              isBookmarked: false,
-              isOfflineCached: true,
-              readTimeMin: calculateReadTime(item.content || item.description || summary),
-            };
-          });
-          return {
-            feedTitle:
-              feedInfo.title && feedInfo.title !== 'Newspaper Feed'
-                ? feedInfo.title
-                : 'The Business Standard (TBS)',
-            items,
-            resolvedUrl: 'https://www.tbsnews.net/top-news/rss.xml',
-            sourceMode: 'rss',
-          };
-        }
-      }
-    } catch (e) {
-      console.warn('TBS rss2json fallback failed, falling back to direct...', e);
-    }
-  }
+  await assertSafeUrlAndResolve(url);
 
   let fetchedHtml = '';
   let fetchedUrl = url;
@@ -812,14 +966,43 @@ async function loadPortalOrRssFeed(
     // Will continue to candidate paths and domain fallback
   }
 
-  // Step 2: If the fetched HTML portal already has articles (e.g. bdnews24.com, thefinancialexpress.com.bd), return them fast!
-  let htmlParsedFallback: { feedTitle: string; items: FeedItem[] } | null = null;
+  // Step 2: Search for an RSS feed link first (from <link>/<a> tags in HTML + common RSS path combinations)
+  // BEFORE falling back to website HTML scraping!
+  const allRssCandidates = buildRssDiscoveryCandidates(url, fetchedHtml).filter(
+    (c) => !htmlDiscoveredCandidates.includes(c) && c !== url && c !== fetchedUrl
+  );
+
+  const candidateList = allRssCandidates.slice(0, 8);
+  const batchSize = 4;
+  for (let i = 0; i < candidateList.length; i += batchSize) {
+    const batch = candidateList.slice(i, i + batchSize);
+    const found = await Promise.all(
+      batch.map(async (candidate) => {
+        try {
+          const { text } = await fetchWithUserAgent(candidate, 3000);
+          if (isXmlFeedContent(text)) {
+            const parsed = parseXmlFeed(text, { ...feedInfo, url: candidate });
+            if (parsed.items.length > 0) {
+              return { ...parsed, resolvedUrl: candidate, sourceMode: 'rss' as const };
+            }
+          }
+        } catch {}
+        return null;
+      })
+    );
+    const match = found.find(Boolean);
+    if (match) {
+      return match;
+    }
+  }
+
+  // Step 3: If no RSS link is available, keep the website link and parse articles directly from the website HTML!
   if (fetchedHtml) {
-    htmlParsedFallback = parseHtmlPortalToFeed(fetchedHtml, {
+    const htmlParsedFallback = parseHtmlPortalToFeed(fetchedHtml, {
       ...feedInfo,
       url: fetchedUrl,
     });
-    if (htmlParsedFallback.items.length >= 4) {
+    if (htmlParsedFallback.items.length > 0) {
       return {
         ...htmlParsedFallback,
         resolvedUrl: url,
@@ -828,175 +1011,133 @@ async function loadPortalOrRssFeed(
     }
   }
 
-  // Step 3: Try common RSS/Atom URL combinations for blogs and websites where HTML scraping didn't find enough items
+  // Step 4: Fallback for Cloudflare-protected websites (uses Bing News RSS with unwrapped direct links first, then Google News RSS)
   let parsedTarget: URL | null = null;
   try {
     parsedTarget = new URL(url);
   } catch {}
 
   if (parsedTarget) {
-    const cleanBase = url.replace(/\/+$/, '');
-    const origin = parsedTarget.origin;
-    const pathClean = parsedTarget.pathname.replace(/\/+$/, '');
-    const comboSet = new Set<string>();
-
-    if (parsedTarget.hostname.includes('medium.com') && pathClean && !pathClean.startsWith('/feed')) {
-      comboSet.add(`${origin}/feed${pathClean}`);
-    }
-
-    const suffixes = [
-      '/feed',
-      '/rss.xml',
-      '/rss',
-      '/feed.xml',
-      '/atom.xml',
-      '/index.xml',
-      '/?feed=rss2',
-      '/feeds/posts/default?alt=rss',
+    const hostname = parsedTarget.hostname.replace(/^www\./, '');
+    const isBanglaDomain = /jugantor|kalerkantho|samakal|ittefaq|banglatribune|manabzamin|bonikbarta|somoynews|jamuna|deshrupantor/i.test(
+      hostname
+    );
+    const indexQueryUrls = [
+      `https://www.bing.com/news/search?q=${encodeURIComponent(`site:${hostname}`)}&format=rss`,
+      isBanglaDomain
+        ? `https://news.google.com/rss/search?q=${encodeURIComponent(`site:${hostname}`)}&hl=bn&gl=BD&ceid=BD:bn`
+        : `https://news.google.com/rss/search?q=${encodeURIComponent(`site:${hostname}`)}&hl=en-BD&gl=BD&ceid=BD:en`,
     ];
 
-    for (const suffix of suffixes) {
-      comboSet.add(`${cleanBase}${suffix}`);
-    }
-    if (cleanBase !== origin) {
-      for (const suffix of suffixes.slice(0, 4)) {
-        comboSet.add(`${origin}${suffix}`);
-      }
-    }
+    for (const queryUrl of indexQueryUrls) {
+      try {
+        const { text } = await fetchWithUserAgent(queryUrl, 6000);
+        if (isXmlFeedContent(text)) {
+          const parsed = parseXmlFeed(text, {
+            ...feedInfo,
+            title: feedInfo.title !== 'Newspaper Feed' ? feedInfo.title : hostname,
+            url,
+          });
+          const cleanFeedTitle =
+            feedInfo.title && feedInfo.title !== 'Newspaper Feed' && feedInfo.title !== 'RSS Feed'
+              ? feedInfo.title
+              : hostname;
+          const cleanedItems = parsed.items.map((item) => {
+            const cleanTitle = item.title.replace(/\s+-\s+[^-]+$/, '').trim() || item.title;
+            const rawSum = (item.summary || '').replace(/\s+-\s+[^-]+$/, '').trim();
+            const hasDistinctSummary =
+              rawSum.length > 35 &&
+              rawSum.toLowerCase() !== cleanTitle.toLowerCase() &&
+              !cleanTitle.toLowerCase().includes(rawSum.toLowerCase().slice(0, 30));
+            return {
+              ...item,
+              feedTitle: cleanFeedTitle,
+              title: cleanTitle,
+              link: resolveUrl(item.link, url),
+              summary: hasDistinctSummary ? rawSum : '',
+              contentHtml: hasDistinctSummary ? `<p>${rawSum}</p>` : '',
+              contentClean: '', // Trigger full extraction when opened
+            };
+          });
 
-    comboSet.delete(url);
-    comboSet.delete(fetchedUrl);
-    for (const seen of htmlDiscoveredCandidates) comboSet.delete(seen);
-
-    const candidateList = Array.from(comboSet).slice(0, 8);
-    const batchSize = 4;
-    for (let i = 0; i < candidateList.length; i += batchSize) {
-      const batch = candidateList.slice(i, i + batchSize);
-      const found = await Promise.all(
-        batch.map(async (candidate) => {
-          try {
-            const { text } = await fetchWithUserAgent(candidate, 2500);
-            if (isXmlFeedContent(text)) {
-              const parsed = parseXmlFeed(text, { ...feedInfo, url: candidate });
-              if (parsed.items.length > 0) {
-                return { ...parsed, resolvedUrl: candidate, sourceMode: 'rss' as const };
-              }
-            }
-          } catch {}
-          return null;
-        })
-      );
-      const match = found.find(Boolean);
-      if (match) {
-        return match;
-      }
-    }
-  }
-
-  if (htmlParsedFallback && htmlParsedFallback.items.length > 0) {
-    return {
-      ...htmlParsedFallback,
-      resolvedUrl: url,
-      sourceMode: 'direct_html',
-    };
-  }
-
-  // Step 4: Fallback for Cloudflare-protected Bangladeshi portals (e.g., tbsnews.net, dhakatribune.com, jugantor.com)
-  if (parsedTarget) {
-    const hostname = parsedTarget.hostname.replace(/^www\./, '');
-    const isBanglaDomain = /jugantor|kalerkantho|samakal|ittefaq|banglatribune|manabzamin|bonikbarta/i.test(hostname);
-    const queryUrl = isBanglaDomain
-      ? `https://news.google.com/rss/search?q=${encodeURIComponent(`site:${hostname}`)}&hl=bn&gl=BD&ceid=BD:bn`
-      : `https://news.google.com/rss/search?q=${encodeURIComponent(`site:${hostname}`)}&hl=en-BD&gl=BD&ceid=BD:en`;
-
-    try {
-      const { text } = await fetchWithUserAgent(queryUrl, 6500);
-      if (isXmlFeedContent(text)) {
-        const parsed = parseXmlFeed(text, {
-          ...feedInfo,
-          title: feedInfo.title !== 'Newspaper Feed' ? feedInfo.title : hostname,
-          url,
-        });
-        // Clean up Google News suffix in title & set feedTitle cleanly
-        const cleanFeedTitle =
-          feedInfo.title && feedInfo.title !== 'Newspaper Feed' && feedInfo.title !== 'RSS Feed'
-            ? feedInfo.title
-            : hostname;
-        const cleanedItems = parsed.items.map((item) => {
-          const cleanTitle = item.title.replace(/\s+-\s+[^-]+$/, '').trim() || item.title;
-          // Google News RSS descriptions often just repeat the headline + source name
-          const rawSum = (item.summary || '').replace(/\s+-\s+[^-]+$/, '').trim();
-          const hasDistinctSummary =
-            rawSum.length > 35 &&
-            rawSum.toLowerCase() !== cleanTitle.toLowerCase() &&
-            !cleanTitle.toLowerCase().includes(rawSum.toLowerCase().slice(0, 30));
-          return {
-            ...item,
-            feedTitle: cleanFeedTitle,
-            title: cleanTitle,
-            summary: hasDistinctSummary ? item.summary : '',
-            contentClean: '', // Trigger full extraction when opened
-          };
-        });
-
-        if (cleanedItems.length > 0) {
-          return {
-            feedTitle: cleanFeedTitle,
-            items: cleanedItems,
-            resolvedUrl: url,
-            sourceMode: 'domain_index',
-          };
+          if (cleanedItems.length > 0) {
+            return {
+              feedTitle: cleanFeedTitle,
+              items: cleanedItems,
+              resolvedUrl: url,
+              sourceMode: 'domain_index',
+            };
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
   throw new Error(`Could not load articles from "${rawUrl}". Please check the URL and try again.`);
 }
 
 // 1. Fetch and parse RSS or Direct HTML Portal
-app.get('/api/rss', async (req: Request, res: Response) => {
-  const feedUrl = req.query.url as string;
-  const feedId = (req.query.feedId as string) || (req.query.id as string) || `feed_${Date.now()}`;
-  const feedTitle = (req.query.title as string) || 'Newspaper Feed';
-  const defaultTags = req.query.tags ? (req.query.tags as string).split(',').filter(Boolean) : [];
+app.get('/api/rss', requireApiAccess, rssRateLimiter, async (req: Request, res: Response) => {
+  const feedUrl = String(req.query.url || '').trim();
+  const feedId = String(req.query.feedId || req.query.id || `feed_${Date.now()}`).slice(0, 120);
+  const feedTitle = String(req.query.title || 'Newspaper Feed').slice(0, 180);
+  const defaultTags = req.query.tags
+    ? String(req.query.tags)
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
 
-  if (!feedUrl) {
-    return res.status(400).json({ error: 'Missing url query parameter' });
+  if (!feedUrl || feedUrl.length > 2048) {
+    return res.status(400).json({ error: 'Missing or invalid url query parameter' });
   }
 
   // Handle Community Travel Blogs Feed directly from database
-  if (feedUrl === '/api/blogs' || feedUrl.includes('api/blogs') || feedId === 'travel_blogs_bd') {
+  if (feedUrl === '/api/blogs' || feedUrl.endsWith('/api/blogs') || feedId === 'travel_blogs_bd') {
     try {
       const blogs = await readBlogsFromDisk();
-      const items = blogs.map((b) => ({
-        id: b.id,
-        feedId: 'travel_blogs_bd',
-        feedTitle: b.groupName ? `${b.groupName} (${b.author})` : `Traveler: ${b.author}`,
-        feedUrl: '/api/blogs',
-        title: b.title,
-        link: `/blog/${b.id}`,
-        pubDate: b.publishedAt,
-        timestamp: b.timestamp,
-        author: `${b.author} · ${b.groupName || 'Bangladeshi Travel Group'}`,
-        summary: b.summary || b.content.slice(0, 180) + '...',
-        contentHtml: `
+      const items = blogs.map((b) => {
+        const safeGroup = escapeHtmlServer(b.groupName || 'Travel Group');
+        const safeAuthor = escapeHtmlServer(b.author || 'Traveler');
+        const safeLocation = b.location ? escapeHtmlServer(b.location) : '';
+        const safeContact = b.groupContact ? escapeHtmlServer(b.groupContact) : '';
+        const safeParagraphs = String(b.content || '')
+          .split(/\n\n+/)
+          .map((p: string) => `<p>${escapeHtmlServer(p.trim())}</p>`)
+          .join('\n');
+        const parsedDate = parseFeedDate(b.publishedAt);
+        const timestamp = parsedDate.hasValidDate ? parsedDate.timestamp : b.timestamp;
+
+        return {
+          id: b.id,
+          feedId: 'travel_blogs_bd',
+          feedTitle: b.groupName ? `${b.groupName} (${b.author})` : `Traveler: ${b.author}`,
+          feedUrl: '/api/blogs',
+          title: b.title,
+          link: `/blog/${b.id}`,
+          pubDate: b.publishedAt,
+          timestamp,
+          author: `${b.author} · ${b.groupName || 'Bangladeshi Travel Group'}`,
+          summary: b.summary || String(b.content || '').slice(0, 180) + '...',
+          contentHtml: `
           <div class="travel-group-badge mb-4 p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-200">
             <p class="text-xs uppercase font-bold tracking-wider text-emerald-400 mb-1">Bangladeshi Travel Group Dispatch</p>
-            <p class="text-sm font-semibold text-stone-100">${b.groupName || 'Travel Group'} · Writer: ${b.author}</p>
-            ${b.location ? `<p class="text-xs text-stone-300 mt-1">📍 Destination: ${b.location}</p>` : ''}
-            ${b.groupContact ? `<p class="text-xs text-emerald-300 mt-1.5 font-sans">Connect with Group: <span class="underline">${b.groupContact}</span></p>` : ''}
+            <p class="text-sm font-semibold text-stone-100">${safeGroup} · Writer: ${safeAuthor}</p>
+            ${safeLocation ? `<p class="text-xs text-stone-300 mt-1">📍 Destination: ${safeLocation}</p>` : ''}
+            ${safeContact ? `<p class="text-xs text-emerald-300 mt-1.5 font-sans">Connect with Group: <span class="underline">${safeContact}</span></p>` : ''}
           </div>
-          ${b.content.split(/\n\n+/).map((p: string) => `<p>${p.trim()}</p>`).join('\n')}
+          ${safeParagraphs}
         `,
-        contentClean: b.content,
-        imageUrl: b.coverImage,
-        tags: ['tag_travel', 'tag_bd'],
-        isRead: false,
-        isBookmarked: false,
-        isOfflineCached: true,
-        readTimeMin: b.readTimeMin || calculateReadTime(b.content),
-      }));
+          contentClean: b.content,
+          imageUrl: b.coverImage,
+          tags: ['tag_travel', 'tag_bd'],
+          isRead: false,
+          isBookmarked: false,
+          isOfflineCached: true,
+          readTimeMin: b.readTimeMin || calculateReadTime(b.content),
+        };
+      });
 
       return res.json({
         success: true,
@@ -1008,6 +1149,17 @@ app.get('/api/rss', async (req: Request, res: Response) => {
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
+  }
+
+  try {
+    await assertSafeUrlAndResolve(
+      /^https?:\/\//i.test(feedUrl) ? feedUrl : `https://${feedUrl}`
+    );
+  } catch (ssrfErr: any) {
+    return res.status(400).json({
+      success: false,
+      error: ssrfErr.message || 'Unsafe or disallowed URL',
+    });
   }
 
   try {
@@ -1038,13 +1190,22 @@ app.get('/api/rss', async (req: Request, res: Response) => {
 const EXTRACTED_ARTICLE_CACHE = new Map<string, any>();
 
 // 2. Direct URL Reader & Clean Distraction-Free Article Extractor
-app.get('/api/extract', async (req: Request, res: Response) => {
-  let articleUrl = (req.query.url as string) || '';
-  if (!articleUrl) {
-    return res.status(400).json({ error: 'Missing url query parameter' });
+app.get('/api/extract', requireApiAccess, extractRateLimiter, async (req: Request, res: Response) => {
+  let articleUrl = resolveUrl(String(req.query.url || '').trim());
+  if (!articleUrl || articleUrl.length > 2048) {
+    return res.status(400).json({ error: 'Missing or invalid url query parameter' });
   }
   if (!/^https?:\/\//i.test(articleUrl.trim())) {
     articleUrl = 'https://' + articleUrl.trim();
+  }
+
+  try {
+    await assertSafeUrlAndResolve(articleUrl);
+  } catch (ssrfErr: any) {
+    return res.status(400).json({
+      success: false,
+      error: ssrfErr.message || 'Unsafe or disallowed URL',
+    });
   }
 
   // Check cache first for instant retrieval
@@ -1054,6 +1215,7 @@ app.get('/api/extract', async (req: Request, res: Response) => {
 
   try {
     const { text: html, finalUrl } = await fetchWithUserAgent(articleUrl, 6500);
+    const fallbackExtracted = extractReadableArticleFromHtml(html, finalUrl);
     const $ = cheerio.load(html);
 
     // 1. Extract structured JSON-LD metadata & articleBody BEFORE removing <script> tags
@@ -1105,17 +1267,20 @@ app.get('/api/extract', async (req: Request, res: Response) => {
       new URL(finalUrl).hostname.replace(/^www\./, '');
 
     // Title
-    const title =
+    const rawTitle =
       jsonLdHeadline ||
+      fallbackExtracted.title ||
       $('meta[property="og:title"]').attr('content') ||
       $('meta[name="twitter:title"]').attr('content') ||
       $('h1').first().text().trim() ||
       $('title').text().trim() ||
       'Article';
+    const title = isBoilerplateOrJsWarning(rawTitle) ? 'Article' : rawTitle;
 
     // Author
     const author =
       jsonLdAuthor ||
+      fallbackExtracted.author ||
       $('meta[name="author"]').attr('content') ||
       $('meta[property="article:author"]').attr('content') ||
       $('[rel="author"]').first().text().trim() ||
@@ -1134,6 +1299,7 @@ app.get('/api/extract', async (req: Request, res: Response) => {
     // Lead / Hero Image
     const rawLeadImage =
       jsonLdImage ||
+      fallbackExtracted.leadImage ||
       $('meta[property="og:image"]').attr('content') ||
       $('meta[name="twitter:image"]').attr('content');
     const leadImage = rawLeadImage ? resolveUrl(rawLeadImage, finalUrl) : undefined;
@@ -1144,17 +1310,16 @@ app.get('/api/extract', async (req: Request, res: Response) => {
       $('meta[name="description"]').attr('content') ||
       '';
 
-    // Remove noise, scripts, ads, sidebars, related links, popups, and clutter
+    // Remove noise, scripts, noscript warnings, ads, sidebars, related links, popups, and clutter
     $(
       'script, style, noscript, iframe, svg, nav, footer, header, aside, form, button, ' +
+      '[class*="noscript"], [class*="no-js"], [id*="noscript"], ' +
       '.advertisement, .ads, .ad-slot, .ad-container, [id*="google_ads"], [class*="google-ads"], ' +
       '.cookie-banner, .subscribe-banner, .subscription-wall, .paywall, .social-share, .share-buttons, ' +
       '.newsletter-signup, .related-news, .most-viewed, .trending-news, .read-more, .comments, ' +
       '.print-only, .embedded-widget, .outbrain, .taboola, [class*="sponsored"], [id*="sponsored"]'
     ).remove();
 
-    // Choose the richest article-like container rather than the first matching
-    // wrapper, which is often only a headline/teaser on modern news sites.
     const articleSelectors =
       'article, [itemprop="articleBody"], .story-element, .story-content, .article-body, .story-body, ' +
       '.entry-content, .post-content, .node-content, .details-content, .news-details, .content-details, ' +
@@ -1168,7 +1333,7 @@ app.get('/api/extract', async (req: Request, res: Response) => {
         .find('p, h2, h3, blockquote')
         .map((__, element) => $(element).text().replace(/\s+/g, ' ').trim())
         .get()
-        .filter((text) => text.length >= 20);
+        .filter((text) => text.length >= 20 && !isBoilerplateOrJsWarning(text));
       const textLength = paragraphText.reduce((total, text) => total + text.length, 0);
       const score = textLength + paragraphText.length * 120;
       if (score > bestScore) {
@@ -1177,7 +1342,7 @@ app.get('/api/extract', async (req: Request, res: Response) => {
       }
     });
 
-    const contentBlocks: {
+    let contentBlocks: {
       type: 'p' | 'h2' | 'h3' | 'blockquote' | 'img';
       text?: string;
       src?: string;
@@ -1213,17 +1378,9 @@ app.get('/api/extract', async (req: Request, res: Response) => {
         return;
       }
 
-      const text = $(el).text().replace(/\s+/g, ' ').trim();
+      const text = stripHtml($(el).text());
       if (!text || (text.length < 20 && tagName === 'p')) return;
-
-      // Filter out boilerplate sentences, social prompts, and paywall banners
-      if (
-        /^(cookie|subscribe to|sign up for|advertisement|all rights reserved|follow us on|read more:|also read:|click here|download app|share this article)/i.test(
-          text
-        )
-      ) {
-        return;
-      }
+      if (isBoilerplateOrJsWarning(text) || /^editor'?s?\s+pick$/i.test(text)) return;
 
       if (seenParagraphs.has(text)) return;
       seenParagraphs.add(text);
@@ -1237,33 +1394,23 @@ app.get('/api/extract', async (req: Request, res: Response) => {
       }
     });
 
-    // If DOM extraction returned sparse text but JSON-LD articleBody is available, hydrate full paragraphs!
-    const domParagraphCount = contentBlocks.filter((b) => b.type === 'p').length;
-    const domTextLength = contentBlocks
-      .map((block) => block.text || '')
-      .join(' ')
-      .length;
+    // Compare with fallbackExtracted (which extracts Quintype story-elements, Next.js __NEXT_DATA__, JSON-LD @graph, and <br><br> divs)
+    const cheerioTextLen = contentBlocks.map((b) => b.text || '').join(' ').length;
+    const fallbackTextLen = fallbackExtracted.blocks.map((b) => b.text || '').join(' ').length;
     if (
-      jsonLdBody &&
-      (domParagraphCount < 3 ||
-        jsonLdBody.length > 600 ||
-        jsonLdBody.length > Math.max(800, domTextLength * 1.35))
+      fallbackExtracted.blocks.length > 0 &&
+      (contentBlocks.filter((b) => b.type === 'p').length < 3 || fallbackTextLen > cheerioTextLen * 1.25)
     ) {
-      const paragraphs = jsonLdBody
-        .split(/\n{2,}|\r\n{2,}/)
-        .map((p) => stripHtml(p).trim())
-        .filter((p) => p.length > 25);
-
-      if (paragraphs.length >= 2 || jsonLdBody.trim().length > Math.max(800, domTextLength * 1.35)) {
-        contentBlocks.length = 0;
-        for (const p of paragraphs.length > 0 ? paragraphs : [stripHtml(jsonLdBody).trim()]) {
-          contentBlocks.push({ type: 'p', text: p });
-        }
-      }
+      contentBlocks = fallbackExtracted.blocks;
     }
 
-    // Ensure at least metaDescription if page had minimal text
-    if (contentBlocks.length === 0 && metaDescription) {
+    // Ensure at least metaDescription if page had minimal text (and it's not a JS warning)
+    if (
+      contentBlocks.length === 0 &&
+      metaDescription &&
+      !isBoilerplateOrJsWarning(metaDescription) &&
+      !metaDescription.includes('aggregated from sources all over the world by Google News')
+    ) {
       contentBlocks.push({ type: 'p', text: stripHtml(metaDescription) });
     }
 
@@ -1272,9 +1419,10 @@ app.get('/api/extract', async (req: Request, res: Response) => {
       .filter(Boolean)
       .join(' ');
     const readTimeMin = calculateReadTime(fullText || metaDescription);
+    const isSuccess = contentBlocks.length > 0 && fullText.length >= 50;
 
     const responsePayload = {
-      success: true,
+      success: isSuccess,
       title: stripHtml(title),
       siteName: stripHtml(siteName),
       author: author ? stripHtml(author) : undefined,
@@ -1286,10 +1434,11 @@ app.get('/api/extract', async (req: Request, res: Response) => {
       url: finalUrl,
     };
 
-    // Cache the result for instant future opens
-    EXTRACTED_ARTICLE_CACHE.set(articleUrl, responsePayload);
-    if (finalUrl !== articleUrl) {
-      EXTRACTED_ARTICLE_CACHE.set(finalUrl, responsePayload);
+    if (isSuccess) {
+      EXTRACTED_ARTICLE_CACHE.set(articleUrl, responsePayload);
+      if (finalUrl !== articleUrl) {
+        EXTRACTED_ARTICLE_CACHE.set(finalUrl, responsePayload);
+      }
     }
 
     res.json(responsePayload);
@@ -1302,16 +1451,20 @@ app.get('/api/extract', async (req: Request, res: Response) => {
 });
 
 // 3. AI Newspaper Article Summarizer (Powered by Gemini 3.8 Flash with Fallback)
-app.post('/api/summarize', async (req: Request, res: Response) => {
+app.post('/api/summarize', requireApiAccess, summarizeRateLimiter, async (req: Request, res: Response) => {
   try {
-    const { title, text, language } = req.body;
+    const { title, text, language } = req.body || {};
     if (!text || typeof text !== 'string' || text.trim().length < 50) {
       res.status(400).json({ success: false, error: 'Article text too short to summarize' });
       return;
     }
+    if (text.length > 50000) {
+      res.status(413).json({ success: false, error: 'Article text exceeds maximum allowed length' });
+      return;
+    }
 
     const cleanBody = stripHtml(text).slice(0, 15000);
-    const articleTitle = stripHtml(title || 'Newspaper Article');
+    const articleTitle = stripHtml(String(title || 'Newspaper Article')).slice(0, 300);
 
     // Check if GEMINI_API_KEY is available
     if (process.env.GEMINI_API_KEY) {
@@ -1333,19 +1486,46 @@ Headline: ${articleTitle}
 Article Text:
 ${cleanBody}
 
-Provide your response in JSON format with exactly:
+Provide your response in JSON format with:
 - "executiveSummary": A concise, authoritative 2-3 sentence overview capturing the core news development, significance, and primary parties involved.
 - "keyTakeaways": An array of 3 to 5 concise bullet points highlighting crucial facts, numbers, dates, policy impacts, or statements.
 - "context": A 1-sentence note on why this news matters to readers or its broader national/international impact.
-Keep language professional, objective, and neutral (in ${language || 'the original article language'}).`;
+Keep language professional, objective, and neutral (in ${String(language || 'the original article language').slice(0, 40)}).`;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
+        const summarySchema = {
+          type: Type.OBJECT,
+          properties: {
+            executiveSummary: { type: Type.STRING },
+            keyTakeaways: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            context: { type: Type.STRING },
           },
-        });
+          required: ['executiveSummary', 'keyTakeaways', 'context'],
+        };
+
+        let response;
+        try {
+          response = await ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: prompt,
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: summarySchema,
+            },
+          });
+        } catch (primaryErr: any) {
+          // If gemini-3.8-flash is unavailable on a specific key/region, try gemini-flash-latest before extractive fallback
+          response = await ai.models.generateContent({
+            model: 'gemini-flash-latest',
+            contents: prompt,
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: summarySchema,
+            },
+          });
+        }
 
         const jsonText = response.text || '{}';
         const parsed = JSON.parse(jsonText);
@@ -1384,8 +1564,18 @@ Keep language professional, objective, and neutral (in ${language || 'the origin
   }
 });
 
-// --- Travel Blogs Database (Persistent Storage in data/blogs.json) ---
+// --- Travel Blogs Database (Persistent Storage in data/blogs.json with Mutex & Atomic Writes) ---
 const BLOGS_FILE_PATH = path.resolve(__dirname, 'data', 'blogs.json');
+let blogsMutexChain: Promise<void> = Promise.resolve();
+
+function withBlogsLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = blogsMutexChain.then(fn, fn);
+  blogsMutexChain = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
 
 async function readBlogsFromDisk(): Promise<any[]> {
   try {
@@ -1400,20 +1590,18 @@ async function readBlogsFromDisk(): Promise<any[]> {
   return [];
 }
 
-async function writeBlogsToDisk(blogs: any[]): Promise<void> {
-  try {
-    const dir = path.dirname(BLOGS_FILE_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    await fsPromises.writeFile(BLOGS_FILE_PATH, JSON.stringify(blogs, null, 2), 'utf-8');
-  } catch (err: any) {
-    console.error('Failed to write to blogs.json database:', err.message);
+async function writeBlogsToDiskAtomic(blogs: any[]): Promise<void> {
+  const dir = path.dirname(BLOGS_FILE_PATH);
+  if (!fs.existsSync(dir)) {
+    await fsPromises.mkdir(dir, { recursive: true });
   }
+  const tmpFile = `${BLOGS_FILE_PATH}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 7)}`;
+  await fsPromises.writeFile(tmpFile, JSON.stringify(blogs, null, 2), 'utf-8');
+  await fsPromises.rename(tmpFile, BLOGS_FILE_PATH);
 }
 
 // 4. Get all published travel group blogs
-app.get('/api/blogs', async (_req: Request, res: Response) => {
+app.get('/api/blogs', requireApiAccess, rssRateLimiter, async (_req: Request, res: Response) => {
   try {
     const blogs = await readBlogsFromDisk();
     res.json({
@@ -1425,40 +1613,88 @@ app.get('/api/blogs', async (_req: Request, res: Response) => {
   }
 });
 
-// 5. Publish new blog to database
-app.post('/api/blogs', async (req: Request, res: Response) => {
+// 5. Publish new blog to database (Authenticated/origin-checked, rate-limited, length-bounded, mutex-locked)
+app.post('/api/blogs', requireApiAccess, publishBlogRateLimiter, async (req: Request, res: Response) => {
   try {
-    const { title, author, groupName, groupContact, location, content, coverImage } = req.body;
-    if (!title || !author || !content) {
+    const { title, author, groupName, groupContact, location, content, coverImage } = req.body || {};
+    if (
+      typeof title !== 'string' ||
+      typeof author !== 'string' ||
+      typeof content !== 'string' ||
+      !title.trim() ||
+      !author.trim() ||
+      !content.trim()
+    ) {
       res.status(400).json({ success: false, error: 'Title, Author Name, and Content are required.' });
       return;
     }
 
-    const blogs = await readBlogsFromDisk();
-    const newBlog = {
-      id: 'tb_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-      title: title.trim(),
-      author: author.trim(),
-      groupName: (groupName || 'Bangladeshi Travel Group').trim(),
-      groupContact: (groupContact || '').trim(),
-      location: (location || 'Bangladesh').trim(),
-      summary: content.trim().replace(/\s+/g, ' ').slice(0, 190) + '...',
-      content: content.trim(),
-      coverImage: coverImage && typeof coverImage === 'string' && coverImage.trim().startsWith('http') ? coverImage.trim() : undefined,
-      publishedAt: new Date().toISOString(),
-      timestamp: Date.now(),
-      readTimeMin: calculateReadTime(content),
-      likesCount: 0,
-    };
+    const cleanTitle = stripHtml(title).trim();
+    const cleanAuthor = stripHtml(author).trim();
+    const cleanGroupName = stripHtml(typeof groupName === 'string' ? groupName : 'Bangladeshi Travel Group').trim();
+    const cleanGroupContact = stripHtml(typeof groupContact === 'string' ? groupContact : '').trim();
+    const cleanLocation = stripHtml(typeof location === 'string' ? location : 'Bangladesh').trim();
+    const cleanContent = stripHtml(content).trim();
 
-    blogs.unshift(newBlog);
-    await writeBlogsToDisk(blogs);
+    if (cleanTitle.length < 3 || cleanTitle.length > 180) {
+      res.status(400).json({ success: false, error: 'Title must be between 3 and 180 characters.' });
+      return;
+    }
+    if (cleanAuthor.length < 2 || cleanAuthor.length > 80) {
+      res.status(400).json({ success: false, error: 'Author name must be between 2 and 80 characters.' });
+      return;
+    }
+    if (cleanGroupName.length > 100 || cleanGroupContact.length > 120 || cleanLocation.length > 100) {
+      res.status(400).json({ success: false, error: 'Group metadata fields exceed maximum length.' });
+      return;
+    }
+    if (cleanContent.length < 20 || cleanContent.length > 25000) {
+      res.status(400).json({ success: false, error: 'Blog content must be between 20 and 25,000 characters.' });
+      return;
+    }
 
-    console.log(`[Blog Database] Published new travel blog "${newBlog.title}" by ${newBlog.author} (${newBlog.groupName})`);
+    let safeCoverImage: string | undefined;
+    if (coverImage && typeof coverImage === 'string' && coverImage.trim()) {
+      const trimmedCover = coverImage.trim();
+      if (trimmedCover.length > 500) {
+        res.status(400).json({ success: false, error: 'Cover image URL is too long.' });
+        return;
+      }
+      const coverCheck = checkSafeExternalUrl(trimmedCover);
+      if (!coverCheck.ok || !coverCheck.url) {
+        res.status(400).json({ success: false, error: 'Cover image must be a valid public HTTP(S) URL.' });
+        return;
+      }
+      safeCoverImage = coverCheck.url.href;
+    }
+
+    const createdBlog = await withBlogsLock(async () => {
+      const blogs = await readBlogsFromDisk();
+      const now = Date.now();
+      const newBlog = {
+        id: 'tb_' + now + '_' + Math.random().toString(36).substring(2, 7),
+        title: cleanTitle,
+        author: cleanAuthor,
+        groupName: cleanGroupName || 'Bangladeshi Travel Group',
+        groupContact: cleanGroupContact,
+        location: cleanLocation || 'Bangladesh',
+        summary: cleanContent.replace(/\s+/g, ' ').slice(0, 190) + '...',
+        content: cleanContent,
+        coverImage: safeCoverImage,
+        publishedAt: new Date(now).toISOString(),
+        timestamp: now,
+        readTimeMin: calculateReadTime(cleanContent),
+        likesCount: 0,
+      };
+
+      const cappedBlogs = [newBlog, ...blogs].slice(0, 200);
+      await writeBlogsToDiskAtomic(cappedBlogs);
+      return newBlog;
+    });
 
     res.status(201).json({
       success: true,
-      blog: newBlog,
+      blog: createdBlog,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -1475,7 +1711,7 @@ app.get('/api/curated', (_req: Request, res: Response) => {
 
 // Health check
 app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', service: 'PaperPress iPhone RSS Reader' });
+  res.json({ status: 'ok', service: 'Chinta iPhone RSS Reader' });
 });
 
 // Production static or dev vite middleware

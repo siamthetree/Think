@@ -33,8 +33,9 @@ import {
   loadPreferencesFromStorage,
   savePreferencesToStorage,
   hasFullBody,
+  hydrateArticlesFromIndexedDb,
 } from './utils/storage';
-import { filterArticles } from './utils/feedParser';
+import { filterArticles, UNDATED_FALLBACK_EPOCH } from './utils/feedParser';
 import {
   fetchFeedWithFallback,
   extractArticleWithFallback,
@@ -56,6 +57,18 @@ export default function App() {
     document.documentElement.classList.toggle('dark', isDark);
     document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
   }, [preferences.theme]);
+
+  // Recover cached/saved articles from IndexedDB if WKWebView evicted localStorage
+  useEffect(() => {
+    let cancelled = false;
+    hydrateArticlesFromIndexedDb().then((idbItems) => {
+      if (cancelled || !idbItems || idbItems.length === 0) return;
+      setArticles((prev) => mergeFeedItems(prev, idbItems));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Navigation & Active Source / Folder State
   const [currentTab, setCurrentTab] = useState<TabType>('stories');
@@ -187,7 +200,7 @@ export default function App() {
     await Promise.all(workers);
   };
 
-  // Sync a single feed (supports XML RSS, Direct HTML Portal Scraping, and standalone iOS IPA fallback)
+  // Sync a single feed (searches for RSS feed link first; if available saves RSS link, otherwise website link)
   const syncFeed = async (feed: Feed): Promise<FeedItem[] | null> => {
     try {
       const data = await fetchFeedWithFallback({
@@ -197,7 +210,7 @@ export default function App() {
         tags: feed.defaultTags || [],
       });
       if (data && Array.isArray(data.items)) {
-        const discoveredUrl = data.resolvedFeedUrl;
+        const discoveredUrl = data.resolvedFeedUrl || feed.url;
         setFeeds((prev) =>
           prev.map((f) => {
             if (f.id !== feed.id) return f;
@@ -207,7 +220,8 @@ export default function App() {
               /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(f.title.trim());
             return {
               ...f,
-              url: discoveredUrl || f.url,
+              url: discoveredUrl,
+              siteUrl: f.siteUrl || feed.url,
               title:
                 looksLikeRawDomain && data.feedTitle && data.feedTitle !== 'RSS Feed'
                   ? data.feedTitle
@@ -240,8 +254,12 @@ export default function App() {
       const latest = incomingById.get(article.id) || incomingByLink.get(article.link);
       if (!latest) return article;
       seen.add(latest.id);
+      const keepExistingDate =
+        latest.timestamp <= UNDATED_FALLBACK_EPOCH && article.timestamp > UNDATED_FALLBACK_EPOCH;
       return {
         ...latest,
+        timestamp: keepExistingDate ? article.timestamp : latest.timestamp,
+        pubDate: keepExistingDate ? article.pubDate : latest.pubDate,
         isRead: article.isRead,
         isBookmarked: article.isBookmarked,
         // Keep the stored body if the fresh copy only has a teaser
@@ -429,7 +447,7 @@ export default function App() {
     }
   };
 
-  // Direct URL Loader: Load any article or Bangladeshi news portal URL directly into clean Reader Mode
+  // Direct URL Loader: When a link is given, search for its RSS link first; if available add RSS link, otherwise website link
   const processDirectUrl = async (rawUrl: string) => {
     let targetUrl = rawUrl.trim();
     if (!targetUrl) return;
@@ -448,46 +466,72 @@ export default function App() {
         return;
       }
 
-      const pathSegments = parsedUrl.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
-      const onlySegment = pathSegments[0] || '';
-      const looksLikeArticleSlug =
-        /\d/.test(onlySegment) || (onlySegment.match(/-/g) || []).length >= 2 || onlySegment.endsWith('.html');
-      const isHomepageOrPortalRoot =
-        pathSegments.length === 0 || (pathSegments.length === 1 && !looksLikeArticleSlug);
+      const hostName = parsedUrl.hostname.replace(/^www\./, '');
+      const existingFeed = feeds.find(
+        (f) =>
+          f.url === targetUrl ||
+          f.siteUrl === targetUrl ||
+          f.url.includes(hostName) ||
+          (f.siteUrl && f.siteUrl.includes(hostName))
+      );
 
-      // If it's a portal homepage (like https://bdnews24.com or https://samakal.com), load as a Portal Source!
-      if (isHomepageOrPortalRoot) {
-        const hostName = parsedUrl.hostname.replace(/^www\./, '');
-        const existingFeed = feeds.find(
-          (f) => f.url.includes(hostName) || (f.siteUrl && f.siteUrl.includes(hostName))
-        );
+      if (existingFeed) {
+        setDirectUrlInput('');
+        await handleSelectSource(existingFeed);
+        return;
+      }
 
-        if (existingFeed) {
-          setDirectUrlInput('');
-          await handleSelectSource(existingFeed);
-          return;
-        }
+      const tempFeedId = makeFeedId();
+      const feedResult = await fetchFeedWithFallback({
+        url: targetUrl,
+        feedId: tempFeedId,
+        title: hostName,
+        tags: ['tag_bd'],
+      });
 
+      if (feedResult && Array.isArray(feedResult.items) && feedResult.items.length > 0) {
+        const finalUrl = feedResult.resolvedFeedUrl || targetUrl;
+        const resolvedTitle =
+          feedResult.feedTitle && feedResult.feedTitle !== 'RSS Feed'
+            ? feedResult.feedTitle
+            : hostName;
         const newFeed: Feed = {
-          id: makeFeedId(),
-          title: hostName,
-          url: targetUrl,
-          siteUrl: targetUrl,
-          description: `Direct Portal Reader for ${hostName}`,
-          category: 'Direct Portal',
+          id: tempFeedId,
+          title: resolvedTitle,
+          url: finalUrl,
+          siteUrl: parsedUrl.origin,
+          description: `Source for ${resolvedTitle}`,
+          category: '',
           defaultTags: ['tag_bd'],
           unreadCount: 0,
         };
         setFeeds((prev) => [newFeed, ...prev]);
+        setArticles((prev) =>
+          mergeFeedItems(
+            prev,
+            feedResult.items.map((item) => ({
+              ...item,
+              feedId: newFeed.id,
+              feedTitle: newFeed.title,
+            }))
+          )
+        );
+        setSelectedFeedId(newFeed.id);
+        setSelectedFolder(null);
+        setSelectedTagId(null);
+        setFilterMode('all');
+        setCurrentTab('stories');
         setDirectUrlInput('');
-        await handleSelectSource(newFeed);
-        notify(`Loaded portal feed from ${hostName}`);
+        notify(
+          finalUrl !== targetUrl
+            ? `Added RSS feed for ${resolvedTitle}`
+            : `Added website source ${resolvedTitle}`
+        );
         return;
       }
 
-      // Otherwise it's a direct article URL: extract and open immediately in Clean Distraction-Free Reader View!
+      // If no feed items were returned, check if it's a single article or still add as website link
       const data = await extractArticleWithFallback(targetUrl);
-
       if (data.success && data.blocks && data.blocks.length > 0) {
         const htmlContent = blocksToHtml(data.blocks);
         const cleanText = data.blocks
@@ -497,8 +541,8 @@ export default function App() {
 
         const directArticle: FeedItem = {
           id: `direct_${Date.now()}`,
-          feedId: selectedFeedId || 'direct_reader',
-          feedTitle: data.siteName || parsedUrl.hostname.replace(/^www\./, ''),
+          feedId: selectedFeedId || tempFeedId,
+          feedTitle: data.siteName || hostName,
           feedUrl: parsedUrl.origin,
           title: data.title || 'Direct Article',
           link: targetUrl,
@@ -522,14 +566,12 @@ export default function App() {
         setActiveArticle(directArticle);
         notify('Loaded directly in Distraction-Free Reader Mode');
       } else {
-        // Fallback: try loading as a portal feed if it wasn't a single article
-        const hostName = parsedUrl.hostname.replace(/^www\./, '');
         const newFeed: Feed = {
-          id: makeFeedId(),
+          id: tempFeedId,
           title: hostName,
           url: targetUrl,
           siteUrl: targetUrl,
-          category: 'Direct Portal',
+          category: '',
           defaultTags: ['tag_bd'],
           unreadCount: 0,
         };
@@ -876,31 +918,8 @@ export default function App() {
                 }`}
               >
                 <div className="flex items-center justify-between gap-2 pt-1">
-                  {/* Top-Left: Floating 3D Liquid Glass Ribbon Orb + Active Folder/Source Pill */}
+                  {/* Top-Left: Active Folder/Source Filter Pill (if any filter is active) */}
                   <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        triggerHapticSelection();
-                        setSelectedFeedId(null);
-                        setSelectedFolder(null);
-                        setSelectedTagId(null);
-                        setFilterMode('all');
-                      }}
-                      title="All Stories"
-                      aria-label="All Stories"
-                      className="liquid-glass-pill w-12 h-12 rounded-full flex items-center justify-center shrink-0 active:scale-92 transition-transform"
-                    >
-                      {/* Iconic Orange Ribbon Bookmark Icon */}
-                      <svg
-                        viewBox="0 0 24 24"
-                        className="w-5 h-5 text-[#FF6719] fill-current"
-                        aria-hidden="true"
-                      >
-                        <path d="M4 3h16v2.5H4V3zm0 4.5h16V10H4V7.5zm0 4.5h16v9l-8-3.8L4 21v-9z" />
-                      </svg>
-                    </button>
-
                     {(selectedFeed || selectedFolder || filterMode !== 'all') && (
                       <button
                         type="button"
@@ -930,7 +949,7 @@ export default function App() {
                   </div>
 
                   {/* Top-Right: Floating 3D Liquid Glass Capsule Pill (Search + View/Refresh + Layered Avatar Orb) */}
-                  <div className="liquid-glass-pill h-12 pl-3.5 pr-2 rounded-full flex items-center gap-2.5 shrink-0 pointer-events-auto">
+                  <div className="liquid-glass-pill h-12 pl-3.5 pr-2 rounded-full flex items-center gap-2.5 shrink-0 pointer-events-auto ml-auto">
                     <button
                       type="button"
                       onClick={() => {
@@ -1288,7 +1307,6 @@ export default function App() {
           <TabBar
             currentTab={currentTab}
             isVisible={isHeaderVisible || currentTab !== 'stories'}
-            onQuickAction={() => setIsFeedModalOpen(true)}
             onSelectTab={(tab) => {
               setCurrentTab(tab);
               setIsHeaderVisible(true);

@@ -68,10 +68,10 @@ export const IPhoneFrame: React.FC<IPhoneFrameProps> = ({
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="font-serif font-bold tracking-tight text-base text-stone-950 dark:text-stone-50">
-              PaperPress
+              Chinta (চিন্তা)
             </span>
             <span className="text-xs text-stone-400 dark:text-stone-500 font-sans">
-              Inoreader Feed
+              iOS RSS Reader
             </span>
           </div>
           <span className="hidden sm:inline-block text-xs text-stone-300 dark:text-stone-700">|</span>

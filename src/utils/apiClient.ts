@@ -1,3 +1,4 @@
+import { CapacitorHttp } from '@capacitor/core';
 import type { FeedItem, TravelBlog } from '../types';
 import {
   parseXmlFeed,
@@ -5,11 +6,30 @@ import {
   stripHtml,
   resolveUrl,
   calculateReadTime,
+  buildRssDiscoveryCandidates,
+  extractReadableArticleFromHtml,
+  isBoilerplateOrJsWarning,
+  parseFeedDate,
 } from './feedParser';
 import { escapeHtml } from './sanitize';
+import { checkSafeExternalUrl } from './urlSecurity';
 
-const CLOUD_BACKEND =
+const ENV_BACKEND =
   (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL?.trim() || '';
+
+const FALLBACK_CLOUD_BACKENDS = Array.from(
+  new Set(
+    [
+      ENV_BACKEND,
+      'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app',
+      'https://ais-dev-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app',
+    ].filter(Boolean)
+  )
+);
+
+const CLIENT_HEADERS: Record<string, string> = {
+  'X-Chinta-Client': 'chinta-ios-2.0',
+};
 
 // AbortSignal.timeout throws on older iOS WebViews, so use a manual timer.
 function timeoutSignal(ms: number): AbortSignal {
@@ -24,75 +44,93 @@ function isNativeCapacitor(): boolean {
     window.location.protocol === 'capacitor:' ||
     window.location.protocol === 'ionic:' ||
     window.location.protocol === 'file:' ||
-    Boolean((window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.())
+    Boolean(
+      (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.()
+    )
   );
 }
 
 function getApiEndpoints(pathAndQuery: string): string[] {
-  const cloud = CLOUD_BACKEND ? [`${CLOUD_BACKEND}${pathAndQuery}`] : [];
+  const cloud = FALLBACK_CLOUD_BACKENDS.map((base) => `${base.replace(/\/+$/, '')}${pathAndQuery}`);
   if (isNativeCapacitor()) {
-    // Native app: only the configured backend (if any). There is no local server.
+    // Native iOS app: use configured/cloud backends
     return cloud;
   }
-  // Web: local Express proxy first, then the configured backend
+  // Web: local Express proxy first, then cloud backends
   return [pathAndQuery, ...cloud];
 }
 
-async function fetchRawUrlClientSide(targetUrl: string): Promise<string> {
-  // 1. Direct native fetch (works natively on iOS via CapacitorHttp / NSURLSession without CORS)
+function isValidFetchedDocument(text: string): boolean {
+  if (!text || text.trim().length <= 50) return false;
+  const sample = text.slice(0, 1200);
+  if (sample.includes('"A valid API key is required"')) return false;
+  if (
+    sample.includes('<title>Just a moment...</title>') ||
+    sample.includes('Enable JavaScript and cookies to continue')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function fetchRawUrlClientSide(targetUrl: string, timeoutMs = 7500): Promise<string> {
+  const check = checkSafeExternalUrl(targetUrl);
+  if (!check.ok || !check.url) {
+    throw new Error(check.reason || 'Blocked unsafe URL');
+  }
+  const safeUrl = check.url.href;
+
+  // 1. On native iOS Capacitor, use CapacitorHttp.get (NSURLSession, no WebView CORS restrictions)
+  if (isNativeCapacitor()) {
+    const userAgents = [
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+      'ChintaReader/2.0 (iOS; +https://chinta.app)',
+    ];
+    for (const ua of userAgents) {
+      try {
+        const res = await CapacitorHttp.get({
+          url: safeUrl,
+          responseType: 'text',
+          connectTimeout: timeoutMs,
+          readTimeout: timeoutMs,
+          headers: {
+            'User-Agent': ua,
+            Accept:
+              'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
+            'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
+          },
+        });
+        const body = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
+        if (res.status >= 200 && res.status < 300 && isValidFetchedDocument(body)) {
+          return body;
+        }
+        if (res.status === 404 || res.status === 410) break;
+      } catch {
+        // Fall through to next User-Agent or standard fetch
+      }
+    }
+  }
+
+  // 2. Standard fetch (works directly when CapacitorHttp plugin is enabled or when target allows CORS)
   try {
-    const directRes = await fetch(targetUrl, {
-      signal: timeoutSignal(8500),
+    const directRes = await fetch(safeUrl, {
+      signal: timeoutSignal(timeoutMs),
       headers: {
-        'Accept': 'application/rss+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
+        Accept:
+          'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
       },
     });
     if (directRes.ok) {
       const text = await directRes.text();
-      if (text && text.trim().length > 50) {
+      if (isValidFetchedDocument(text)) {
         return text;
       }
     }
-  } catch (directErr) {
-    // Direct fetch blocked by CORS in desktop browser or news site requires proxy
+  } catch {
+    // Direct fetch blocked by CORS or failed
   }
 
-  // 2. Resilient CORS proxy gateways
-  const gateways = [
-    `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
-    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
-  ];
-
-  for (const gateway of gateways) {
-    try {
-      const res = await fetch(gateway, { signal: timeoutSignal(9000) });
-      if (res.ok) {
-        const text = await res.text();
-        if (text && text.trim().length > 50) {
-          return text;
-        }
-      }
-    } catch {
-      // try next gateway
-    }
-  }
-
-  // 3. News domain RSS index fallback
-  try {
-    const parsed = new URL(targetUrl);
-    const domain = parsed.hostname.replace(/^www\./, '');
-    const gNewsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent('site:' + domain)}&hl=en-BD&gl=BD&ceid=BD:en`;
-    const gRes = await fetch(gNewsUrl, { signal: timeoutSignal(6000) });
-    if (gRes.ok) {
-      const gText = await gRes.text();
-      if (gText && gText.includes('<rss')) {
-        return gText;
-      }
-    }
-  } catch {}
-
-  throw new Error(`Unable to reach target news source from iPhone (${targetUrl})`);
+  throw new Error(`Unable to reach ${safeUrl} directly`);
 }
 
 export async function fetchFeedWithFallback(params: {
@@ -101,16 +139,27 @@ export async function fetchFeedWithFallback(params: {
   title: string;
   tags: string[];
 }): Promise<{ feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string }> {
-  const query = `url=${encodeURIComponent(params.url)}&feedId=${encodeURIComponent(
-    params.feedId
-  )}&title=${encodeURIComponent(params.title)}&tags=${encodeURIComponent(params.tags.join(','))}`;
+  let normalizedUrl = params.url.trim();
+  if (normalizedUrl && !/^https?:\/\//i.test(normalizedUrl) && !normalizedUrl.startsWith('/')) {
+    normalizedUrl = `https://${normalizedUrl}`;
+  }
+  const normalizedParams = { ...params, url: normalizedUrl };
+
+  const query = `url=${encodeURIComponent(normalizedParams.url)}&feedId=${encodeURIComponent(
+    normalizedParams.feedId
+  )}&title=${encodeURIComponent(normalizedParams.title)}&tags=${encodeURIComponent(
+    normalizedParams.tags.join(',')
+  )}`;
 
   const endpoints = getApiEndpoints(`/api/rss?${query}`);
 
   const viaBackend = async () => {
     for (const endpoint of endpoints) {
       try {
-        const response = await fetch(endpoint, { signal: timeoutSignal(12000) });
+        const response = await fetch(endpoint, {
+          headers: CLIENT_HEADERS,
+          signal: timeoutSignal(10000),
+        });
         const contentType = response.headers.get('content-type') || '';
         if (response.ok && contentType.includes('application/json')) {
           const data = await response.json();
@@ -125,20 +174,11 @@ export async function fetchFeedWithFallback(params: {
     return null;
   };
 
-  // Native app: on-device first (no dead backend wait), backend second.
-  if (isNativeCapacitor()) {
-    try {
-      return await fetchFeedOnDevice(params);
-    } catch (deviceErr) {
-      const backendData = await viaBackend();
-      if (backendData) return backendData;
-      throw deviceErr;
-    }
-  }
-
+  // Try backend first (works on Web and on iPhone via Cloud Run URL), then on-device fallback
   const backendData = await viaBackend();
   if (backendData) return backendData;
-  return fetchFeedOnDevice(params);
+
+  return fetchFeedOnDevice(normalizedParams);
 }
 
 async function fetchFeedOnDevice(params: {
@@ -147,58 +187,15 @@ async function fetchFeedOnDevice(params: {
   title: string;
   tags: string[];
 }): Promise<{ feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string }> {
-  if (params.url.includes('tbsnews.net')) {
-    try {
-      const r2jUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent('https://www.tbsnews.net/top-news/rss.xml')}`;
-      const r2jRes = await fetch(r2jUrl, { signal: timeoutSignal(6500) });
-      if (r2jRes.ok) {
-        const r2jData = await r2jRes.json();
-        if (r2jData.status === 'ok' && Array.isArray(r2jData.items) && r2jData.items.length > 0) {
-          const items: FeedItem[] = r2jData.items.map((item: any) => {
-            const timestamp = Date.parse(item.pubDate) || Date.now();
-            const summary = stripHtml(item.description || item.content || '').slice(0, 240);
-            return {
-              id: `${params.feedId}_${encodeURIComponent(item.link || item.guid || item.title).slice(0, 80)}`,
-              feedId: params.feedId,
-              feedTitle: params.title || 'The Business Standard (TBS)',
-              feedUrl: params.url,
-              title: stripHtml(item.title),
-              link: item.link,
-              pubDate: new Date(timestamp).toISOString(),
-              timestamp,
-              author: item.author ? stripHtml(item.author) : 'TBS Report',
-              summary,
-              contentHtml: item.content || item.description || `<p>${summary}</p>`,
-              contentClean: stripHtml(item.content || item.description || ''),
-              imageUrl: item.thumbnail || item.enclosure?.link,
-              tags: [...params.tags],
-              isRead: false,
-              isBookmarked: false,
-              isOfflineCached: true,
-              readTimeMin: calculateReadTime(item.content || item.description || summary),
-            };
-          });
-          return {
-            feedTitle: params.title || 'The Business Standard (TBS)',
-            items,
-            resolvedFeedUrl: 'https://www.tbsnews.net/top-news/rss.xml',
-          };
-        }
-      }
-    } catch {}
-  }
-
   const isXmlString = (s: string) => {
     const t = s.trim();
     return (
       t.startsWith('<?xml') ||
       t.startsWith('<rss') ||
       t.startsWith('<feed') ||
-      /<rss[\s>]|<feed[\s>]|<channel[\s>]/i.test(t.slice(0, 1200))
+      /<rss[\s>]|<feed[\s>]|<channel[\s>]|<rdf:RDF/i.test(t.slice(0, 1500))
     );
   };
-
-  const rawText = await fetchRawUrlClientSide(params.url);
 
   const feedInfo = {
     id: params.feedId,
@@ -207,84 +204,72 @@ async function fetchFeedOnDevice(params: {
     defaultTags: params.tags,
   };
 
-  if (isXmlString(rawText)) {
-    const parsed = parseXmlFeed(rawText, feedInfo);
-    return { ...parsed, resolvedFeedUrl: params.url };
-  }
-
-  // Website URL given: 1) Check <link> tags in HTML for RSS/Atom feed (at most 2 discovered tags)
-  const linkCandidates: string[] = [];
-  const linkTagMatches = [
-    ...rawText.matchAll(
-      /<link[^>]+(?:type=["']application\/(?:rss|atom)\+xml["']|rel=["']alternate["'])[^>]*>/gi
-    ),
-  ];
-  for (const m of linkTagMatches) {
-    const tag = m[0];
-    if (!/(rss|atom|xml|feed)/i.test(tag)) continue;
-    const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
-    if (hrefMatch?.[1]) {
-      const resolved = resolveUrl(hrefMatch[1], params.url);
-      if (resolved && resolved !== params.url && !linkCandidates.includes(resolved)) {
-        linkCandidates.push(resolved);
+  // Step 1: Try fetching the given URL directly
+  let rawText = '';
+  try {
+    rawText = await fetchRawUrlClientSide(params.url, 6500);
+    if (isXmlString(rawText)) {
+      const parsed = parseXmlFeed(rawText, feedInfo);
+      if (parsed.items.length > 0) {
+        return { ...parsed, resolvedFeedUrl: params.url };
       }
     }
+  } catch {
+    // Will continue to RSS candidate discovery
   }
 
-  for (const candidateUrl of linkCandidates.slice(0, 2)) {
+  // Step 2: Search for an RSS feed link BEFORE falling back to the website link!
+  const rssCandidates = buildRssDiscoveryCandidates(params.url, rawText);
+
+  for (const candidateUrl of rssCandidates.slice(0, 6)) {
     try {
-      const text = await fetchRawUrlClientSide(candidateUrl);
-      if (isXmlString(text)) {
-        const parsed = parseXmlFeed(text, { ...feedInfo, url: candidateUrl });
+      const candidateText = await fetchRawUrlClientSide(candidateUrl, 3500);
+      if (isXmlString(candidateText)) {
+        const parsed = parseXmlFeed(candidateText, { ...feedInfo, url: candidateUrl });
         if (parsed.items.length > 0) {
           return { ...parsed, resolvedFeedUrl: candidateUrl };
         }
       }
-    } catch {}
-  }
-
-  // 2) Parse direct portal HTML immediately if it already contains news articles (avoids 10 extra requests per portal on iOS)
-  const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
-  if (scraped.items.length >= 3) {
-    return { ...scraped, resolvedFeedUrl: params.url };
-  }
-
-  // 3) If HTML portal didn't yield articles, probe common RSS path combinations sequentially
-  const probeCandidates: string[] = [];
-  try {
-    const parsedTarget = new URL(params.url);
-    const cleanBase = params.url.replace(/\/+$/, '');
-    const origin = parsedTarget.origin;
-    const pathClean = parsedTarget.pathname.replace(/\/+$/, '');
-
-    if (parsedTarget.hostname.includes('medium.com') && pathClean && !pathClean.startsWith('/feed')) {
-      probeCandidates.push(`${origin}/feed${pathClean}`);
+    } catch {
+      // Try next RSS candidate
     }
+  }
 
-    const suffixes = ['/feed', '/rss.xml', '/rss', '/atom.xml', '/?feed=rss2'];
-    for (const s of suffixes) {
-      const u = `${cleanBase}${s}`;
-      if (!probeCandidates.includes(u)) probeCandidates.push(u);
+  // Step 3: If no RSS link is available, keep the website link and parse articles directly from the website HTML!
+  if (rawText) {
+    const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
+    if (scraped.items.length > 0) {
+      return { ...scraped, resolvedFeedUrl: params.url };
+    }
+  }
+
+  // Step 4: Website domain news index fallback (Bing News RSS with unwrapped direct links, then Google News RSS)
+  try {
+    const parsed = new URL(params.url);
+    const domain = parsed.hostname.replace(/^www\./, '');
+    const indexUrls = [
+      `https://www.bing.com/news/search?q=${encodeURIComponent('site:' + domain)}&format=rss`,
+      `https://news.google.com/rss/search?q=${encodeURIComponent('site:' + domain)}&hl=en-BD&gl=BD&ceid=BD:en`,
+    ];
+    for (const indexUrl of indexUrls) {
+      try {
+        const indexXml = await fetchRawUrlClientSide(indexUrl, 6000);
+        if (isXmlString(indexXml)) {
+          const parsedIndex = parseXmlFeed(indexXml, {
+            ...feedInfo,
+            title:
+              params.title && params.title !== 'Newspaper Feed' ? params.title : domain,
+            url: params.url,
+          });
+          if (parsedIndex.items.length > 0) {
+            return { ...parsedIndex, resolvedFeedUrl: params.url };
+          }
+        }
+      } catch {}
     }
   } catch {}
 
-  for (const candidateUrl of probeCandidates.slice(0, 4)) {
-    try {
-      const text = await fetchRawUrlClientSide(candidateUrl);
-      if (isXmlString(text)) {
-        const parsed = parseXmlFeed(text, { ...feedInfo, url: candidateUrl });
-        if (parsed.items.length > 0) {
-          return { ...parsed, resolvedFeedUrl: candidateUrl };
-        }
-      }
-    } catch {}
-  }
-
-  if (scraped.items.length > 0) {
-    return { ...scraped, resolvedFeedUrl: params.url };
-  }
-
-  throw new Error('No articles found for this source');
+  throw new Error(`No articles found for ${params.url}`);
 }
 
 export interface ExtractedArticleBlock {
@@ -305,18 +290,27 @@ export interface ExtractedArticleData {
 }
 
 export async function extractArticleWithFallback(url: string): Promise<ExtractedArticleData> {
-  const query = `url=${encodeURIComponent(url)}`;
+  const cleanUrl = resolveUrl(url);
+  const query = `url=${encodeURIComponent(cleanUrl)}`;
   const endpoints = getApiEndpoints(`/api/extract?${query}`);
 
   const viaBackend = async (): Promise<ExtractedArticleData | null> => {
     for (const endpoint of endpoints) {
       try {
-        const response = await fetch(endpoint, { signal: timeoutSignal(12000) });
+        const response = await fetch(endpoint, {
+          headers: CLIENT_HEADERS,
+          signal: timeoutSignal(10000),
+        });
         const contentType = response.headers.get('content-type') || '';
         if (response.ok && contentType.includes('application/json')) {
           const data = await response.json();
-          if (data && data.success && Array.isArray(data.blocks) && data.blocks.some((block: ExtractedArticleBlock) => (block.text || '').trim().length > 80)) {
-            return data as ExtractedArticleData;
+          if (data && data.success && Array.isArray(data.blocks)) {
+            const validBlocks = data.blocks.filter(
+              (b: ExtractedArticleBlock) => !b.text || !isBoilerplateOrJsWarning(b.text)
+            );
+            if (validBlocks.some((block: ExtractedArticleBlock) => (block.text || '').trim().length > 60)) {
+              return { ...data, blocks: validBlocks } as ExtractedArticleData;
+            }
           }
         }
       } catch {
@@ -326,101 +320,16 @@ export async function extractArticleWithFallback(url: string): Promise<Extracted
     return null;
   };
 
-  if (isNativeCapacitor()) {
-    try {
-      const local = await extractArticleOnDevice(url);
-      if (local.success) return local;
-    } catch {
-      // fall through to backend
-    }
-    const remote = await viaBackend();
-    if (remote) return remote;
-    throw new Error('Could not extract article');
-  }
-
+  // Try backend first, then on-device extraction
   const remote = await viaBackend();
   if (remote) return remote;
-  return extractArticleOnDevice(url);
+
+  return extractArticleOnDevice(cleanUrl);
 }
 
 async function extractArticleOnDevice(url: string): Promise<ExtractedArticleData> {
-  const html = await fetchRawUrlClientSide(url);
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-
-  let jsonLdBody = '';
-  let jsonLdTitle = '';
-  let jsonLdAuthor = '';
-  let jsonLdImage = '';
-
-  doc.querySelectorAll('script[type="application/ld+json"]').forEach((el) => {
-    try {
-      const parsed = JSON.parse(el.textContent || '');
-      const candidates = Array.isArray(parsed) ? parsed : [parsed];
-      for (const item of candidates) {
-        if (item?.articleBody && String(item.articleBody).length > jsonLdBody.length) {
-          jsonLdBody = String(item.articleBody);
-        }
-        if (!jsonLdTitle && (item?.headline || item?.name)) {
-          jsonLdTitle = stripHtml(String(item.headline || item.name));
-        }
-        if (!jsonLdAuthor && item?.author) {
-          const a = Array.isArray(item.author) ? item.author[0] : item.author;
-          if (typeof a === 'string') jsonLdAuthor = a;
-          else if (a?.name) jsonLdAuthor = String(a.name);
-        }
-        if (!jsonLdImage && item?.image) {
-          const img = Array.isArray(item.image) ? item.image[0] : item.image;
-          if (typeof img === 'string') jsonLdImage = img;
-          else if (img?.url) jsonLdImage = String(img.url);
-        }
-      }
-    } catch {}
-  });
-
-  const title =
-    doc.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
-    jsonLdTitle ||
-    doc.querySelector('h1')?.textContent?.trim() ||
-    doc.title ||
-    'Newspaper Story';
-
-  const author =
-    doc.querySelector('meta[name="author"]')?.getAttribute('content') ||
-    jsonLdAuthor ||
-    '';
-
-  const leadImageRaw =
-    doc.querySelector('meta[property="og:image"]')?.getAttribute('content') ||
-    jsonLdImage ||
-    '';
-  const leadImage = leadImageRaw ? resolveUrl(leadImageRaw, url) : '';
-
-  const blocks: ExtractedArticleBlock[] = [];
-  doc.querySelectorAll('article p, main p, p').forEach((p) => {
-    const text = (p.textContent || '').replace(/\s+/g, ' ').trim();
-    if (text.length >= 35) {
-      blocks.push({ type: 'p', text });
-    }
-  });
-
-  if (blocks.length < 3 && jsonLdBody.trim().length > 80) {
-    jsonLdBody
-      .split(/\n+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 25)
-      .forEach((s) => blocks.push({ type: 'p', text: s }));
-  }
-
-  const contentClean = blocks.map((b) => b.text || '').join(' ');
-  return {
-    success: blocks.length > 0,
-    title: stripHtml(title),
-    author: stripHtml(author),
-    leadImage,
-    readTimeMin: calculateReadTime(contentClean),
-    blocks,
-  };
+  const html = await fetchRawUrlClientSide(url, 8000);
+  return extractReadableArticleFromHtml(html, url);
 }
 
 export interface ArticleSummaryResult {
@@ -442,7 +351,10 @@ export async function summarizeArticleWithFallback(params: {
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...CLIENT_HEADERS,
+        },
         body: JSON.stringify({
           title: params.title,
           text: params.text,
@@ -482,6 +394,8 @@ export async function summarizeArticleWithFallback(params: {
 }
 
 export function blogToFeedItem(blog: TravelBlog): FeedItem {
+  const parsedDate = parseFeedDate(blog.publishedAt);
+  const timestamp = parsedDate.hasValidDate ? parsedDate.timestamp : blog.timestamp;
   return {
     id: blog.id,
     feedId: 'travel_blogs_bd',
@@ -490,7 +404,7 @@ export function blogToFeedItem(blog: TravelBlog): FeedItem {
     title: blog.title,
     link: `/blog/${blog.id}`,
     pubDate: blog.publishedAt,
-    timestamp: blog.timestamp,
+    timestamp,
     author: `${blog.author} · ${blog.groupName || 'Bangladeshi Travel Group'}`,
     summary: blog.summary || blog.content.slice(0, 180) + '...',
     contentHtml: `
@@ -517,7 +431,10 @@ export async function fetchTravelBlogsFromDatabase(): Promise<TravelBlog[]> {
 
   for (const endpoint of endpoints) {
     try {
-      const res = await fetch(endpoint, { signal: timeoutSignal(10000) });
+      const res = await fetch(endpoint, {
+        headers: CLIENT_HEADERS,
+        signal: timeoutSignal(10000),
+      });
       if (res.ok) {
         const data = await res.json();
         if (data && data.success && Array.isArray(data.blogs)) {
@@ -547,7 +464,10 @@ export async function publishBlogToDatabase(params: {
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...CLIENT_HEADERS,
+        },
         body: JSON.stringify(params),
         signal: timeoutSignal(12000),
       });
@@ -564,8 +484,9 @@ export async function publishBlogToDatabase(params: {
   }
 
   // Client-side fallback if server is unreachable
+  const now = Date.now();
   return {
-    id: 'tb_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    id: 'tb_' + now + '_' + Math.random().toString(36).substring(2, 6),
     title: params.title,
     author: params.author,
     groupName: params.groupName,
@@ -574,8 +495,8 @@ export async function publishBlogToDatabase(params: {
     summary: params.summary,
     content: params.content,
     coverImage: params.coverImage,
-    publishedAt: new Date().toISOString(),
-    timestamp: Date.now(),
+    publishedAt: new Date(now).toISOString(),
+    timestamp: now,
     readTimeMin: calculateReadTime(params.content),
     likesCount: 0,
   };

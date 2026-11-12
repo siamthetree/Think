@@ -8,17 +8,18 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .library(
+        .executable(
             name: "ChintaApp",
             targets: ["ChintaApp"]
         )
     ],
     dependencies: [],
     targets: [
-        .target(
+        .executableTarget(
             name: "ChintaApp",
             dependencies: [],
-            path: "Sources/ChintaApp"
+            path: "Sources/ChintaApp",
+            exclude: ["Resources/Info.plist"]
         )
     ]
 )
