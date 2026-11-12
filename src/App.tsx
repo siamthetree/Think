@@ -1081,15 +1081,17 @@ export default function App() {
     });
   };
 
-  // Learn the reader's personal Bangla & English reading speed over 15 completed articles per language
+  // Learn the reader's personal (words, lines, language) reading pace after 15 completed articles
   const handleCompleteReadingSession = (session: {
     article: FeedItem;
     text: string;
+    contentHtml?: string;
     activeMs: number;
   }) => {
     const res = recordCompletedReadingSession(readingSpeedProfileRef.current, {
       articleId: session.article.id,
       text: session.text,
+      contentHtml: session.contentHtml ?? session.article.contentHtml,
       title: session.article.title,
       activeMs: session.activeMs,
     });
@@ -1098,10 +1100,14 @@ export default function App() {
     readingSpeedProfileRef.current = res.nextProfile;
     setReadingSpeedProfile(res.nextProfile);
 
-    if (res.justCalibrated && res.learnedWpm) {
+    if (res.justCalibrated) {
       const langLabel = res.language === 'bn' ? 'Bangla' : 'English';
       triggerHapticComplete();
-      notify(`Calibrated ${langLabel} pace (${res.learnedWpm.toLocaleString()} wpm)`);
+      if (res.learnedWpm) {
+        notify(`Reading pace calibrated (${langLabel}: ${res.learnedWpm.toLocaleString()} wpm)`);
+      } else {
+        notify('Reading pace calibrated across 15 articles');
+      }
     }
   };
 

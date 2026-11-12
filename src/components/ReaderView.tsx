@@ -65,6 +65,7 @@ interface ReaderViewProps {
   onCompleteReadingSession?: (session: {
     article: FeedItem;
     text: string;
+    contentHtml?: string;
     activeMs: number;
   }) => void;
   onCacheExtractedArticle?: (
@@ -308,18 +309,23 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       {
         ...article,
         contentClean: fullReadableText || article.contentClean,
+        contentHtml: extractedBlocks ? undefined : article.contentHtml,
       },
       readingSpeedProfile || createDefaultReadingSpeedProfile()
     );
-  }, [article, fullReadableText, readingSpeedProfile]);
+  }, [article, extractedBlocks, fullReadableText, readingSpeedProfile]);
 
-  // Active reading time & completion refs for adaptive Bangla/English pace learning
+  // Active reading time & completion refs for adaptive (words, lines, language) pace learning
   const activeReadingMsRef = useRef(0);
+  const lastTickAtRef = useRef(Date.now());
   const lastUserActivityRef = useRef(Date.now());
   const maxScrollProgressRef = useRef(0);
+  const bodyReachedBottomRef = useRef(false);
   const lastReportedActiveMsRef = useRef(0);
   const latestTextRef = useRef(fullReadableText);
   latestTextRef.current = fullReadableText;
+  const latestHtmlRef = useRef(extractedBlocks ? undefined : article.contentHtml);
+  latestHtmlRef.current = extractedBlocks ? undefined : article.contentHtml;
   const latestArticleRef = useRef(article);
   latestArticleRef.current = article;
   const onCompleteReadingSessionRef = useRef(onCompleteReadingSession);
@@ -329,32 +335,66 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     lastUserActivityRef.current = Date.now();
   }, []);
 
-  const flushReadingSession = useCallback((forceCompleted = false) => {
-    const cb = onCompleteReadingSessionRef.current;
-    if (!cb) return;
-    const activeMs = activeReadingMsRef.current;
-    if (activeMs < 5000) return;
-
-    const scrollable = containerRef.current
-      ? containerRef.current.scrollHeight - containerRef.current.clientHeight
-      : 0;
-    const isShortNonScrollable = scrollable <= 60 && activeMs >= 8000;
-    const hasFinished = forceCompleted || maxScrollProgressRef.current >= 65 || isShortNonScrollable;
-    if (!hasFinished) return;
-
-    // Avoid redundant re-submits unless user stayed noticeably longer finishing the tail
-    if (lastReportedActiveMsRef.current > 0 && activeMs - lastReportedActiveMsRef.current < 2000) {
-      return;
+  const accumulateElapsedReadingMs = useCallback(() => {
+    const now = Date.now();
+    const elapsed = now - lastTickAtRef.current;
+    lastTickAtRef.current = now;
+    if (
+      document.visibilityState === 'visible' &&
+      now - lastUserActivityRef.current <= 45000 &&
+      elapsed > 0 &&
+      elapsed <= 5000
+    ) {
+      activeReadingMsRef.current += elapsed;
     }
-
-    lastReportedActiveMsRef.current = activeMs;
-    const art = latestArticleRef.current;
-    cb({
-      article: art,
-      text: latestTextRef.current || art.contentClean || art.summary || art.title,
-      activeMs,
-    });
   }, []);
+
+  const checkBodyCompletion = useCallback(() => {
+    const container = containerRef.current;
+    const body = articleBodyRef.current;
+    if (!container || !body) return false;
+    const bodyRect = body.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    if (bodyRect.height > 0 && bodyRect.bottom <= containerRect.bottom + 48) {
+      bodyReachedBottomRef.current = true;
+      return true;
+    }
+    return false;
+  }, []);
+
+  const flushReadingSession = useCallback(
+    (forceCompleted = false) => {
+      accumulateElapsedReadingMs();
+      const cb = onCompleteReadingSessionRef.current;
+      if (!cb) return;
+      const activeMs = activeReadingMsRef.current;
+      if (activeMs < 5000) return;
+
+      const scrollable = containerRef.current
+        ? containerRef.current.scrollHeight - containerRef.current.clientHeight
+        : 0;
+      const isShortNonScrollable = scrollable <= 80 && activeMs >= 6000;
+      const reachedEnd = bodyReachedBottomRef.current || checkBodyCompletion();
+      const hasFinished =
+        forceCompleted || reachedEnd || maxScrollProgressRef.current >= 65 || isShortNonScrollable;
+      if (!hasFinished) return;
+
+      // Avoid redundant re-submits unless user stayed noticeably longer finishing the tail
+      if (lastReportedActiveMsRef.current > 0 && activeMs - lastReportedActiveMsRef.current < 2000) {
+        return;
+      }
+
+      lastReportedActiveMsRef.current = activeMs;
+      const art = latestArticleRef.current;
+      cb({
+        article: art,
+        text: latestTextRef.current || art.contentClean || art.summary || art.title,
+        contentHtml: latestHtmlRef.current,
+        activeMs,
+      });
+    },
+    [accumulateElapsedReadingMs, checkBodyCompletion]
+  );
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -625,6 +665,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   // Handle scroll progress & auto-hide floating dock on downward scroll
   const handleScroll = () => {
     markUserActive();
+    accumulateElapsedReadingMs();
     if (!containerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
     const scrollable = scrollHeight - clientHeight;
@@ -640,6 +681,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
     lastScrollTopRef.current = scrollTop;
 
+    const reachedEnd = checkBodyCompletion();
+
     if (scrollable <= 0) {
       setScrollProgress(0);
       return;
@@ -649,8 +692,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       maxScrollProgressRef.current = progress;
     }
     setScrollProgress(progress);
-    if (progress >= 92) {
-      flushReadingSession(true);
+    if (progress >= 92 || reachedEnd) {
+      flushReadingSession(progress >= 92);
     }
     if (onReadingProgressChange) {
       onReadingProgressChange(article, progress, scrollTop);
@@ -689,8 +732,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   // Reset per-article state & flush any completed reading session when story changes or Reader unmounts
   useEffect(() => {
     activeReadingMsRef.current = 0;
+    lastTickAtRef.current = Date.now();
     lastUserActivityRef.current = Date.now();
     maxScrollProgressRef.current = 0;
+    bodyReachedBottomRef.current = false;
     lastReportedActiveMsRef.current = 0;
 
     setSummaryData(null);
@@ -711,26 +756,34 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [article.id, flushReadingSession]);
 
-  // Foreground active-reading timer (pauses automatically when app backgrounded or idle >45s)
+  // Foreground active-reading timer (high-precision delta, pauses when backgrounded or idle >45s)
   useEffect(() => {
     const onInteract = () => markUserActive();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        lastTickAtRef.current = Date.now();
+        lastUserActivityRef.current = Date.now();
+      } else {
+        accumulateElapsedReadingMs();
+      }
+    };
     window.addEventListener('touchstart', onInteract, { passive: true });
     window.addEventListener('pointerdown', onInteract, { passive: true });
     window.addEventListener('keydown', onInteract, { passive: true });
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     const interval = window.setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      if (Date.now() - lastUserActivityRef.current > 45000) return;
-      activeReadingMsRef.current += 1000;
-    }, 1000);
+      accumulateElapsedReadingMs();
+    }, 500);
 
     return () => {
       window.clearInterval(interval);
       window.removeEventListener('touchstart', onInteract);
       window.removeEventListener('pointerdown', onInteract);
       window.removeEventListener('keydown', onInteract);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [markUserActive]);
+  }, [accumulateElapsedReadingMs, markUserActive]);
 
   // Listen for native iOS/Web text highlight changes inside the article body
   useEffect(() => {
