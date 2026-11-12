@@ -261,8 +261,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     time: number;
     axisLock: GestureAxisLock;
     armedFired: boolean;
+    pointerId?: number;
     samples: VelocitySample[];
   } | null>(null);
+  const suppressCanvasClickRef = useRef(false);
   const pinchStartRef = useRef<{ distance: number; baseFontSize: number } | null>(null);
   const lastParagraphTapRef = useRef<{ time: number; x: number; y: number; text: string }>({
     time: 0,
@@ -369,6 +371,119 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     showToast(res.message);
   };
 
+  const hasActiveTextSelection = () => {
+    const sel = window.getSelection();
+    return Boolean(sel && !sel.isCollapsed && sel.toString().trim().length > 0);
+  };
+
+  const beginHorizontalGesture = (cx: number, cy: number, pointerId?: number) => {
+    if (hasActiveTextSelection()) {
+      swipeStartRef.current = null;
+      return;
+    }
+    const now = performance.now();
+    suppressCanvasClickRef.current = false;
+    swipeStartRef.current = {
+      x: cx,
+      y: cy,
+      time: now,
+      axisLock: 'undecided',
+      armedFired: false,
+      pointerId,
+      samples: [{ x: cx, y: cy, t: now }],
+    };
+  };
+
+  const updateHorizontalGesture = (cx: number, cy: number, captureTarget?: HTMLElement, pointerId?: number) => {
+    const start = swipeStartRef.current;
+    if (!start) return;
+
+    const dx = cx - start.x;
+    const dy = cy - start.y;
+    const now = performance.now();
+
+    start.samples.push({ x: cx, y: cy, t: now });
+    if (start.samples.length > 8) start.samples.shift();
+
+    const prevLock = start.axisLock;
+    start.axisLock = resolveGestureAxisLock(start.axisLock, dx, dy);
+    if (start.axisLock !== 'horizontal') {
+      return;
+    }
+
+    if (prevLock !== 'horizontal') {
+      window.getSelection()?.removeAllRanges();
+      if (captureTarget && pointerId !== undefined) {
+        try {
+          if (!captureTarget.hasPointerCapture(pointerId)) {
+            captureTarget.setPointerCapture(pointerId);
+          }
+        } catch {
+          // ignore if unsupported
+        }
+      }
+    }
+
+    suppressCanvasClickRef.current = true;
+
+    // 1. Swipe Right from anywhere on screen -> interactive pop/back to feed
+    if (dx > 0) {
+      const clamped = Math.min(240, Math.round(dx * 0.9));
+      setEdgeBackOffset(clamped);
+      setStorySwipeOffset(0);
+      if (clamped >= 68 && !start.armedFired) {
+        start.armedFired = true;
+        triggerHapticPull();
+      } else if (clamped < 58 && start.armedFired) {
+        start.armedFired = false;
+        triggerHapticDisarm();
+      }
+      return;
+    }
+
+    // 2. Swipe Left -> Next Story preview (swipe to previous story intentionally removed)
+    if (dx < -10 && onNextArticle) {
+      setEdgeBackOffset(0);
+      setStorySwipeOffset(Math.round(rubberBand(dx, 38, 0.5)));
+    }
+  };
+
+  const endHorizontalGesture = (cx: number, cy: number, cancelled: boolean) => {
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    setEdgeBackOffset(0);
+    setStorySwipeOffset(0);
+
+    if (cancelled || !start || start.axisLock !== 'horizontal') return;
+
+    const now = performance.now();
+    start.samples.push({ x: cx, y: cy, t: now });
+    const { vx } = computeReleaseVelocity(start.samples);
+
+    const intent = classifyHorizontalSwipe({
+      startX: start.x,
+      startY: start.y,
+      endX: cx,
+      endY: cy,
+      durationMs: now - start.time,
+      velocityX: vx,
+      edgeThreshold: Number.POSITIVE_INFINITY,
+      minSwipeDistance: 64,
+    });
+
+    if (intent === 'edge-back') {
+      triggerHapticComplete();
+      onBack();
+      return;
+    }
+
+    if (intent === 'next-item' && onNextArticle) {
+      triggerHapticSelection();
+      onNextArticle();
+      showToast('Next story');
+    }
+  };
+
   const handleTouchStartSwipe = (e: React.TouchEvent) => {
     if (e.touches.length === 2) {
       // Two-finger pinch-to-zoom typography scale
@@ -385,15 +500,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
     if (e.touches.length !== 1) return;
     pinchStartRef.current = null;
-    const now = performance.now();
-    swipeStartRef.current = {
-      x: e.touches[0].clientX,
-      y: e.touches[0].clientY,
-      time: now,
-      axisLock: 'undecided',
-      armedFired: false,
-      samples: [{ x: e.touches[0].clientX, y: e.touches[0].clientY, t: now }],
-    };
+    beginHorizontalGesture(e.touches[0].clientX, e.touches[0].clientY);
   };
 
   const handleTouchMoveSwipe = (e: React.TouchEvent) => {
@@ -414,92 +521,49 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       return;
     }
 
-    if (!swipeStartRef.current || e.touches.length !== 1) return;
-    const start = swipeStartRef.current;
-    const cx = e.touches[0].clientX;
-    const cy = e.touches[0].clientY;
-    const dx = cx - start.x;
-    const dy = cy - start.y;
-    const now = performance.now();
-
-    start.samples.push({ x: cx, y: cy, t: now });
-    if (start.samples.length > 8) start.samples.shift();
-
-    start.axisLock = resolveGestureAxisLock(start.axisLock, dx, dy);
-    if (start.axisLock !== 'horizontal') {
-      return;
-    }
-
-    // 1. Interactive iOS left-edge swipe-back gesture
-    if (start.x <= 38 && dx > 0) {
-      const clamped = Math.min(200, Math.round(dx * 0.88));
-      setEdgeBackOffset(clamped);
-      setStorySwipeOffset(0);
-      if (clamped >= 76 && !start.armedFired) {
-        start.armedFired = true;
-        triggerHapticPull();
-      } else if (clamped < 66 && start.armedFired) {
-        start.armedFired = false;
-        triggerHapticDisarm();
-      }
-      return;
-    }
-
-    // 2. Horizontal Next / Previous Story Swipe (subtle rubber-band preview)
-    if (Math.abs(dx) > 10) {
-      setStorySwipeOffset(Math.round(rubberBand(dx, 38, 0.5)));
-    }
+    if (e.touches.length !== 1) return;
+    updateHorizontalGesture(e.touches[0].clientX, e.touches[0].clientY);
   };
 
-  const handleTouchEndSwipe = (e: React.TouchEvent) => {
+  const handleTouchEndSwipe = (e: React.TouchEvent, cancelled = false) => {
     if (pinchStartRef.current) {
       pinchStartRef.current = null;
       return;
     }
 
-    if (!swipeStartRef.current || e.changedTouches.length !== 1) {
+    if (e.changedTouches.length !== 1) {
+      swipeStartRef.current = null;
       setEdgeBackOffset(0);
       setStorySwipeOffset(0);
       return;
     }
-    const start = swipeStartRef.current;
-    swipeStartRef.current = null;
-    setEdgeBackOffset(0);
-    setStorySwipeOffset(0);
-
-    if (start.axisLock !== 'horizontal') return;
-
     const endTouch = e.changedTouches[0];
-    const now = performance.now();
-    start.samples.push({ x: endTouch.clientX, y: endTouch.clientY, t: now });
-    const { vx } = computeReleaseVelocity(start.samples);
+    endHorizontalGesture(endTouch.clientX, endTouch.clientY, cancelled);
+  };
 
-    const intent = classifyHorizontalSwipe({
-      startX: start.x,
-      startY: start.y,
-      endX: endTouch.clientX,
-      endY: endTouch.clientY,
-      durationMs: now - start.time,
-      velocityX: vx,
-      edgeThreshold: 38,
-      minSwipeDistance: 72,
-    });
+  // Pointer fallback for mouse / trackpad horizontal swipe-back (ignores touch so touch events don't double-fire)
+  const handlePointerDownSwipe = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    beginHorizontalGesture(e.clientX, e.clientY, e.pointerId);
+  };
 
-    if (intent === 'edge-back') {
-      triggerHapticComplete();
-      onBack();
-      return;
+  const handlePointerMoveSwipe = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.pointerType === 'touch' || e.buttons !== 1) return;
+    if (!swipeStartRef.current || swipeStartRef.current.pointerId !== e.pointerId) return;
+    updateHorizontalGesture(e.clientX, e.clientY, e.currentTarget, e.pointerId);
+  };
+
+  const handlePointerUpSwipe = (e: React.PointerEvent<HTMLElement>, cancelled = false) => {
+    if (e.pointerType === 'touch') return;
+    if (!swipeStartRef.current || swipeStartRef.current.pointerId !== e.pointerId) return;
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // ignore
     }
-
-    if (intent === 'next-item' && onNextArticle) {
-      triggerHapticSelection();
-      onNextArticle();
-      showToast('Next story');
-    } else if (intent === 'prev-item' && onPrevArticle) {
-      triggerHapticSelection();
-      onPrevArticle();
-      showToast('Previous story');
-    }
+    endHorizontalGesture(e.clientX, e.clientY, cancelled);
   };
 
   // Double-tap any paragraph in ReaderView to open Editorial Quote Card with that passage
@@ -1097,7 +1161,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         >
           <div
             className={`w-10 h-10 rounded-full liquid-glass-dock flex items-center justify-center border border-white/25 shadow-2xl transition-transform ${
-              edgeBackOffset >= 76 ? 'scale-110 text-[#FF6719]' : 'text-white'
+              edgeBackOffset >= 68 ? 'scale-110 text-[#FF6719]' : 'text-white'
             }`}
           >
             <ChevronLeft className="w-5 h-5" />
@@ -1111,8 +1175,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         onScroll={handleScroll}
         onTouchStart={handleTouchStartSwipe}
         onTouchMove={handleTouchMoveSwipe}
-        onTouchEnd={handleTouchEndSwipe}
+        onTouchEnd={(e) => handleTouchEndSwipe(e, false)}
+        onTouchCancel={(e) => handleTouchEndSwipe(e, true)}
+        onPointerDown={handlePointerDownSwipe}
+        onPointerMove={handlePointerMoveSwipe}
+        onPointerUp={(e) => handlePointerUpSwipe(e, false)}
+        onPointerCancel={(e) => handlePointerUpSwipe(e, true)}
         onClick={() => {
+          if (suppressCanvasClickRef.current) {
+            suppressCanvasClickRef.current = false;
+            return;
+          }
           // Tapping the reading canvas toggles the floating bottom liquid glass controls
           // (skip toggling if user just finished selecting/highlighting text)
           if (!showTypographyMenu && !showQuoteModal) {
@@ -1122,6 +1195,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           }
         }}
         style={{
+          touchAction: 'pan-y',
           transform:
             edgeBackOffset > 0
               ? `translate3d(${edgeBackOffset}px, 0, 0)`
@@ -1362,6 +1436,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 src={extractedMeta.leadImage || article.imageUrl}
                 alt={extractedMeta.title || article.title}
                 referrerPolicy="no-referrer"
+                draggable={false}
                 loading="eager"
                 className="w-full h-auto object-cover block"
                 onError={(e) => {
@@ -1462,6 +1537,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                           src={imgSrc}
                           alt=""
                           referrerPolicy="no-referrer"
+                          draggable={false}
                           className="w-full h-auto object-cover block"
                         />
                         {!preferences.distractionFree && (
@@ -1788,7 +1864,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       <QuoteShareModal
         isOpen={showQuoteModal}
         onClose={() => setShowQuoteModal(false)}
-        article={article}
+        article={{
+          ...article,
+          title: extractedMeta.title || article.title,
+          author: extractedMeta.author || article.author,
+          imageUrl: extractedMeta.leadImage || article.imageUrl,
+        }}
         initialQuoteText={selectedQuoteText}
         articleText={fullReadableText}
         estimatedReadTimeMin={adaptiveEstimate.minutes}

@@ -65,11 +65,113 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
 
+        let allowMusic = call.getBool("allowMusic") ?? true
         let topColor = call.getString("topColor") ?? "#EA580C"
         let bottomColor = call.getString("bottomColor") ?? "#140C08"
-        let attributionUrl = call.getString("attributionUrl")
         let sourceApp = Bundle.main.bundleIdentifier ?? "app.chinta.reader"
 
+        // Mode A (Allow IG Music): Save the composed 9:16 card (with user's exact layout)
+        // directly to Photos and open Instagram's story camera so Instagram does NOT lock
+        // the Music sticker with "You can't add a song because the story is shared from another app".
+        if allowMusic {
+            let openCameraAndResolve: () -> Void = {
+                DispatchQueue.main.async {
+                    if let stickerPng = stickerData, let stickerImg = UIImage(data: stickerPng) {
+                        UIPasteboard.general.image = stickerImg
+                    }
+                    let cameraUrl = URL(string: "instagram://story-camera")
+                    let appUrl = URL(string: "instagram://app")
+                    if let url = cameraUrl, UIApplication.shared.canOpenURL(url) {
+                        UIApplication.shared.open(url, options: [:]) { opened in
+                            if opened {
+                                call.resolve([
+                                    "ok": true,
+                                    "method": "ios-instagram-music-ready",
+                                    "message": "Saved to Photos — pick it in Instagram Stories to add any song."
+                                ])
+                            } else {
+                                self.presentActivitySheet(
+                                    image: fallbackImage,
+                                    title: nil,
+                                    call: call,
+                                    message: "Saved to Photos — open Instagram Stories & add music."
+                                )
+                            }
+                        }
+                    } else if let url = appUrl, UIApplication.shared.canOpenURL(url) {
+                        UIApplication.shared.open(url, options: [:]) { _ in
+                            call.resolve([
+                                "ok": true,
+                                "method": "ios-instagram-music-ready",
+                                "message": "Saved to Photos — create a Story in Instagram to add any song."
+                            ])
+                        }
+                    } else {
+                        self.presentActivitySheet(
+                            image: fallbackImage,
+                            title: nil,
+                            call: call,
+                            message: "Saved to Photos — share to Instagram to add music."
+                        )
+                    }
+                }
+            }
+
+            let saveAndOpen: () -> Void = {
+                PHPhotoLibrary.shared().performChanges({
+                    let request = PHAssetCreationRequest.forAsset()
+                    request.addResource(with: .photo, data: fallbackData, options: nil)
+                }) { success, _ in
+                    if success {
+                        openCameraAndResolve()
+                    } else {
+                        DispatchQueue.main.async {
+                            self.presentActivitySheet(
+                                image: fallbackImage,
+                                title: nil,
+                                call: call,
+                                message: "Tap Save Image, then pick from Photos in Instagram to add music."
+                            )
+                        }
+                    }
+                }
+            }
+
+            if #available(iOS 14, *) {
+                PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                    if status == .authorized || status == .limited {
+                        saveAndOpen()
+                    } else {
+                        DispatchQueue.main.async {
+                            self.presentActivitySheet(
+                                image: fallbackImage,
+                                title: nil,
+                                call: call,
+                                message: "Tap Save Image, then open Instagram Stories to add music."
+                            )
+                        }
+                    }
+                }
+            } else {
+                PHPhotoLibrary.requestAuthorization { status in
+                    if status == .authorized {
+                        saveAndOpen()
+                    } else {
+                        DispatchQueue.main.async {
+                            self.presentActivitySheet(
+                                image: fallbackImage,
+                                title: nil,
+                                call: call,
+                                message: "Tap Save Image, then open Instagram Stories to add music."
+                            )
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        // Mode B (Floating Interactive Sticker): Direct instagram-stories://share pasteboard
         DispatchQueue.main.async {
             guard let schemeUrl = URL(string: "instagram-stories://share?source_application=\(sourceApp)"),
                   UIApplication.shared.canOpenURL(schemeUrl) else {
@@ -87,13 +189,9 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                 "com.instagram.sharedSticker.backgroundBottomColor": bottomColor
             ]
             if let stickerPng = stickerData {
-                // Interactive floating card sticker over independent background gradient
                 pasteboardItem["com.instagram.sharedSticker.stickerImage"] = stickerPng
             } else {
                 pasteboardItem["com.instagram.sharedSticker.backgroundImage"] = fallbackData
-            }
-            if let urlStr = attributionUrl, !urlStr.isEmpty {
-                pasteboardItem["com.instagram.sharedSticker.contentURL"] = urlStr
             }
 
             let options: [UIPasteboard.OptionsKey: Any] = [

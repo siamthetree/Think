@@ -3,6 +3,7 @@ import type { SpotifyReadingStats } from './feedIntelligence';
 import {
   stripDataUrlPrefix,
   buildInstagramStoryDeepLink,
+  buildInstagramStoryCameraDeepLink,
   buildFacebookStoryDeepLink,
   detectClientPlatform,
   guessImageExtensionFromMime,
@@ -19,6 +20,7 @@ interface ChintaMediaNativePlugin {
     topColor?: string;
     bottomColor?: string;
     attributionUrl?: string;
+    allowMusic?: boolean;
   }): Promise<{ ok: boolean; method: string; message: string }>;
   shareToFacebookStory(opts: {
     stickerBase64?: string;
@@ -197,7 +199,11 @@ function loadSingleImageUrl(src: string, timeoutMs = 2200): Promise<HTMLImageEle
 }
 
 async function loadCorsSafeImage(url?: string): Promise<HTMLImageElement | null> {
-  if (!url || !url.startsWith('http')) return null;
+  if (!url) return null;
+  if (url.startsWith('data:image/')) {
+    return loadSingleImageUrl(url, 1800);
+  }
+  if (!url.startsWith('http')) return null;
   if (!isNativePlatformSafe()) {
     const proxied = buildImageProxyUrl(url);
     if (proxied) {
@@ -328,9 +334,14 @@ export async function renderStoryStickerCanvas(
     ctx.fillRect(cardX + 70, cardY + 1185, 760, 2);
 
     const mins = Math.max(1, payload.readTimeMin || 3);
-    const metaLine = payload.author ? `${payload.author}` : 'Distraction-Free Edition';
-    ctx.fillStyle = 'rgba(255,255,255,0.68)';
-    ctx.font = '500 25px "Plus Jakarta Sans", -apple-system, sans-serif';
+    const cleanAuthor = (payload.author || '').trim();
+    const metaLine = cleanAuthor
+      ? cleanAuthor.toLowerCase().startsWith('by ')
+        ? cleanAuthor
+        : `By ${cleanAuthor}`
+      : payload.publisher || 'Chinta Edition';
+    ctx.fillStyle = cleanAuthor ? 'rgba(255,255,255,0.88)' : 'rgba(255,255,255,0.68)';
+    ctx.font = `${cleanAuthor ? '600' : '500'} 25px "Plus Jakarta Sans", -apple-system, sans-serif`;
     ctx.textAlign = 'left';
     ctx.fillText(
       metaLine.length > 34 ? `${metaLine.slice(0, 32)}…` : metaLine,
@@ -338,7 +349,7 @@ export async function renderStoryStickerCanvas(
       cardY + 1245
     );
     ctx.textAlign = 'right';
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillStyle = 'rgba(255,255,255,0.78)';
     ctx.font = '600 25px "Plus Jakarta Sans", -apple-system, sans-serif';
     ctx.fillText(`${mins} min read`, cardX + 830, cardY + 1245);
 
@@ -383,9 +394,17 @@ export async function renderStoryStickerCanvas(
     }
 
     const mins = Math.max(1, payload.readTimeMin || 3);
-    ctx.fillStyle = 'rgba(255,255,255,0.58)';
+    const cleanAuthor = (payload.author || '').trim();
+    const quoteFooter = cleanAuthor
+      ? `${cleanAuthor.toLowerCase().startsWith('by ') ? cleanAuthor : `By ${cleanAuthor}`} · ${mins} min read`
+      : `${mins} min read · Saved on Chinta`;
+    ctx.fillStyle = 'rgba(255,255,255,0.64)';
     ctx.font = '600 23px "Plus Jakarta Sans", -apple-system, sans-serif';
-    ctx.fillText(`${mins} min read · Saved on Chinta`, cardX + 75, cardY + 1230);
+    ctx.fillText(
+      quoteFooter.length > 48 ? `${quoteFooter.slice(0, 46)}…` : quoteFooter,
+      cardX + 75,
+      cardY + 1230
+    );
 
     drawFooterSignature(ctx, theme.accentColor, 500, footerY);
     return canvas;
@@ -590,15 +609,17 @@ async function copyImageBlobToClipboard(blob: Blob | null): Promise<boolean> {
  */
 export async function shareSpotifyStyleStory(
   platform: 'instagram' | 'facebook' | 'native' | 'download',
-  payload: StoryCardPayload
+  payload: StoryCardPayload,
+  options: { allowInstagramMusic?: boolean } = {}
 ): Promise<{ ok: boolean; method: string; message: string }> {
+  const allowInstagramMusic = options.allowInstagramMusic ?? true;
   const canvas = await renderStoryCardCanvas(payload);
   const theme = getTheme(payload.themeId);
   const filename = sanitizePhotoFilename(`chinta-story-${Date.now().toString(36)}`, 'png');
   const dataUrl = canvas.toDataURL('image/png');
   const imageBase64 = stripDataUrlPrefix(dataUrl);
 
-  // 1. Native Capacitor iOS Bridge (Interactive floating Sticker + Static Backdrop Gradient -> Photos)
+  // 1. Native Capacitor iOS Bridge
   if (isNativePlatformSafe()) {
     try {
       if (platform === 'instagram' || platform === 'facebook') {
@@ -610,7 +631,8 @@ export async function shareSpotifyStyleStory(
             imageBase64,
             topColor: theme.topColor,
             bottomColor: theme.bottomColor,
-            attributionUrl: payload.attributionUrl,
+            attributionUrl: allowInstagramMusic ? undefined : payload.attributionUrl,
+            allowMusic: allowInstagramMusic,
           });
         }
         return await ChintaMedia.shareToFacebookStory({
@@ -680,6 +702,48 @@ export async function shareSpotifyStyleStory(
 
   // Copy image to clipboard as a reliable backup for pasting into Stories
   const copiedImage = await copyImageBlobToClipboard(blob);
+
+  // For Instagram with Music Enabled on mobile web: save via Share Sheet / Photos and open
+  // instagram://story-camera instead of third-party share extension, keeping IG Music unlocked.
+  if (platform === 'instagram' && allowInstagramMusic) {
+    if (isMobileWeb && blob && typeof File !== 'undefined') {
+      const file = new File([blob], filename, { type: 'image/png' });
+      const saveOnlyShare: ShareData = {
+        files: [file],
+        title: payload.headline || 'Chinta Story Card',
+      };
+      if (navigator.share && navigator.canShare && navigator.canShare(saveOnlyShare)) {
+        try {
+          await navigator.share(saveOnlyShare);
+          triggerAppSchemeLink(buildInstagramStoryCameraDeepLink());
+          return {
+            ok: true,
+            method: 'web-ig-music-ready',
+            message:
+              clientPlatform === 'ios-web'
+                ? 'Save Image, then pick from Recents in Instagram Stories to add any song.'
+                : 'Saved card — pick from Recents in Instagram Stories to add any song.',
+          };
+        } catch (err: unknown) {
+          if (err instanceof Error && err.name === 'AbortError') {
+            return { ok: false, method: 'cancelled', message: 'Share cancelled.' };
+          }
+        }
+      }
+    }
+
+    triggerPngDownload(canvas, filename);
+    if (isMobileWeb) {
+      triggerAppSchemeLink(buildInstagramStoryCameraDeepLink());
+    }
+    return {
+      ok: true,
+      method: 'download-ig-music-ready',
+      message: copiedImage
+        ? 'Saved & copied — pick from Photos or paste in Instagram Stories to add any song.'
+        : 'Saved 9:16 card — pick from Photos in Instagram Stories to add any song.',
+    };
+  }
 
   if (blob && typeof File !== 'undefined') {
     const file = new File([blob], filename, { type: 'image/png' });

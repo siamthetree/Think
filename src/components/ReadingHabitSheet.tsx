@@ -7,6 +7,7 @@ import {
   BookOpen,
   Instagram,
   Check,
+  Music2,
 } from 'lucide-react';
 import type {
   ReadingHabitState,
@@ -53,6 +54,7 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
   const [storyMode, setStoryMode] = useState<StoryCardMode>('wrapped');
   const [themeId, setThemeId] = useState<StoryBackdropThemeId>('sunset');
   const [selectedStoryIdx, setSelectedStoryIdx] = useState(0);
+  const [allowIgMusic, setAllowIgMusic] = useState(true);
   const [cardTransform, setCardTransform] = useState<StoryCardTransform>(
     DEFAULT_STORY_CARD_TRANSFORM
   );
@@ -122,12 +124,14 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
     triggerHapticSelection();
     setIsExporting(true);
     try {
-      const result = await shareSpotifyStyleStory(platform, storyPayload);
+      const result = await shareSpotifyStyleStory(platform, storyPayload, {
+        allowInstagramMusic: allowIgMusic,
+      });
       if (result.ok) triggerHapticComplete();
       setShareFeedback(result.message);
       setTimeout(() => {
         setShareFeedback((cur) => (cur === result.message ? null : cur));
-      }, 3000);
+      }, 3400);
     } finally {
       setIsExporting(false);
     }
@@ -512,6 +516,33 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
                   );
                 })}
               </div>
+
+              {/* Instagram Music Unlock Toggle */}
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHapticSelection();
+                  setAllowIgMusic((v) => !v);
+                }}
+                aria-pressed={allowIgMusic}
+                className="w-full px-3 py-1.5 rounded-full bg-white/[0.07] hover:bg-white/[0.11] border border-white/10 flex items-center justify-between text-[11px] transition-colors"
+              >
+                <span className="flex items-center gap-1.5 text-stone-200 font-medium">
+                  <Music2 className={`w-3.5 h-3.5 ${allowIgMusic ? 'text-emerald-400' : 'text-stone-400'}`} />
+                  <span>
+                    {allowIgMusic
+                      ? 'IG Music Enabled (via Camera Roll)'
+                      : 'Direct IG Sticker (No IG Music)'}
+                  </span>
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                    allowIgMusic ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/10 text-stone-400'
+                  }`}
+                >
+                  {allowIgMusic ? 'ON' : 'OFF'}
+                </span>
+              </button>
 
               {shareFeedback && (
                 <div className="px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-[11px] text-stone-200 text-center">

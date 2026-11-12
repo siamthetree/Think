@@ -18,6 +18,14 @@ export function buildInstagramStoryDeepLink(sourceApp = 'app.chinta.reader'): st
 }
 
 /**
+ * Opens Instagram's native Stories camera/gallery composer directly without
+ * third-party external-share flags so Instagram Music stickers remain unlocked.
+ */
+export function buildInstagramStoryCameraDeepLink(): string {
+  return 'instagram://story-camera';
+}
+
+/**
  * Builds Meta's official Facebook Stories iOS/Android URL scheme.
  */
 export function buildFacebookStoryDeepLink(

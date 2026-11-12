@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   stripDataUrlPrefix,
   buildInstagramStoryDeepLink,
+  buildInstagramStoryCameraDeepLink,
   buildFacebookStoryDeepLink,
   detectClientPlatform,
   guessImageExtensionFromMime,
@@ -24,10 +25,14 @@ test('stripDataUrlPrefix extracts pure base64 payload from PNG data URLs', () =>
   assert.equal(stripDataUrlPrefix(''), '');
 });
 
-test('Meta Stories deep links include source_application and optional app_id', () => {
+test('Meta Stories deep links include source_application, optional app_id, and music-ready camera link', () => {
   assert.equal(
     buildInstagramStoryDeepLink('app.chinta.reader'),
     'instagram-stories://share?source_application=app.chinta.reader'
+  );
+  assert.equal(
+    buildInstagramStoryCameraDeepLink(),
+    'instagram://story-camera'
   );
   assert.equal(
     buildFacebookStoryDeepLink('app.chinta.reader'),
@@ -176,6 +181,7 @@ test('configureIosNativeProject idempotently injects ChintaMediaPlugin with stic
     assert.equal(appDelegate.match(/BEGIN CHINTA MEDIA BRIDGE/g)?.length, 1);
     assert.match(appDelegate, /class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin/);
     assert.match(appDelegate, /com\.instagram\.sharedSticker\.stickerImage/);
+    assert.match(appDelegate, /instagram:\/\/story-camera/);
     assert.match(appDelegate, /com\.facebook\.sharedSticker\.stickerImage/);
     assert.match(appDelegate, /class ChintaViewController: CAPBridgeViewController/);
     assert.match(appDelegate, /import Photos/);

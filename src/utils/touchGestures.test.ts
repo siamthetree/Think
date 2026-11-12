@@ -135,6 +135,16 @@ describe('touchGestures Apple UIKit-grade engine', () => {
       durationMs: 210,
     });
     assert.equal(nextItem, 'next-item');
+
+    const anywhereBack = classifyHorizontalSwipe({
+      startX: 210,
+      startY: 420,
+      endX: 320,
+      endY: 424,
+      durationMs: 180,
+      edgeThreshold: Number.POSITIVE_INFINITY,
+    });
+    assert.equal(anywhereBack, 'edge-back');
   });
 
   it('detects double-tap within time and distance thresholds', () => {

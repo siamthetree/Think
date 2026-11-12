@@ -47,6 +47,7 @@ interface ArticleCardProps {
   onOpenTagManager?: (article: FeedItem, e: React.MouseEvent) => void;
   onQuickPeek?: (article: FeedItem) => void;
   onOpenPerspective?: (article: FeedItem) => void;
+  onShareArticle?: (article: FeedItem) => void;
 }
 
 const INITIAL_SWIPE_STATE: SwipeActionState = {
@@ -68,6 +69,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   onToggleRead,
   onQuickPeek,
   onOpenPerspective,
+  onShareArticle,
 }) => {
   const readTime = readingSpeedProfile
     ? estimateArticleReadTime(article, readingSpeedProfile).minutes
@@ -274,6 +276,10 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const handleShare = async (e: React.MouseEvent) => {
     e.stopPropagation();
     triggerHapticSelection();
+    if (onShareArticle) {
+      onShareArticle(article);
+      return;
+    }
     if (navigator.share) {
       try {
         await navigator.share({
@@ -443,6 +449,15 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                 <Sparkles className="w-4 h-4" />
               </button>
             )}
+            <button
+              type="button"
+              onClick={handleShare}
+              aria-label={`Share ${article.title}`}
+              title="Share story card"
+              className="p-2 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors active:scale-90"
+            >
+              <Share2 className="w-4 h-4" />
+            </button>
             <button
               type="button"
               onClick={(e) => {

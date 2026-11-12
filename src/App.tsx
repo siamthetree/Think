@@ -28,6 +28,7 @@ import { DailyBriefingCard } from './components/DailyBriefingCard';
 import { QuickPeekModal } from './components/QuickPeekModal';
 import { ReadingHabitSheet } from './components/ReadingHabitSheet';
 import { PerspectiveModal } from './components/PerspectiveModal';
+import { QuoteShareModal } from './components/QuoteShareModal';
 import { triggerHapticSelection, triggerHapticComplete } from './utils/haptics';
 import type { Feed, FeedItem, Tag, ReaderPreferences } from './types';
 import {
@@ -130,8 +131,16 @@ export default function App() {
   // Blurry transparent header on Newsfeed scroll + infinite scroll window expansion
   const [isScrolled, setIsScrolled] = useState(false);
   const [isHeaderVisible, setIsHeaderVisible] = useState(true);
+  const [isFeedActivelyScrolling, setIsFeedActivelyScrolling] = useState(false);
   const lastScrollYRef = useRef(0);
   const scrollDeltaRef = useRef(0);
+  const feedScrollIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (feedScrollIdleTimerRef.current) clearTimeout(feedScrollIdleTimerRef.current);
+    };
+  }, []);
 
   const handleFeedScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop: currentScrollY, scrollHeight, clientHeight } = e.currentTarget;
@@ -145,8 +154,19 @@ export default function App() {
     // Track scroll depth so header gets blurry and transparent
     setIsScrolled(currentScrollY > 4);
 
+    // Hide floating "Continue Reading" popup whenever user is actively scrolling
+    if (Math.abs(delta) > 1 && currentScrollY > 4) {
+      setIsFeedActivelyScrolling(true);
+      if (feedScrollIdleTimerRef.current) clearTimeout(feedScrollIdleTimerRef.current);
+      feedScrollIdleTimerRef.current = setTimeout(() => {
+        setIsFeedActivelyScrolling(false);
+      }, 700);
+    }
+
     // Near top: always reveal header & flush any buffered background stories silently
     if (currentScrollY <= 20) {
+      if (feedScrollIdleTimerRef.current) clearTimeout(feedScrollIdleTimerRef.current);
+      setIsFeedActivelyScrolling(false);
       if (!isHeaderVisible) setIsHeaderVisible(true);
       if (pendingNewArticlesRef.current.length > 0) {
         const toMerge = pendingNewArticlesRef.current;
@@ -190,6 +210,7 @@ export default function App() {
   const [isHabitSheetOpen, setIsHabitSheetOpen] = useState(false);
   const [quickPeekArticle, setQuickPeekArticle] = useState<FeedItem | null>(null);
   const [perspectiveArticle, setPerspectiveArticle] = useState<FeedItem | null>(null);
+  const [shareCardArticle, setShareCardArticle] = useState<FeedItem | null>(null);
   const [isScanningPerspectiveSources, setIsScanningPerspectiveSources] = useState(false);
   const [isOpeningFullArticle, setIsOpeningFullArticle] = useState(false);
   const [loadingArticleId, setLoadingArticleId] = useState<string | null>(null);
@@ -1084,6 +1105,57 @@ export default function App() {
     }
   };
 
+  // Share any feed article directly in Chinta's story card (with article photo & author name)
+  const handleShareArticleFromFeed = (article: FeedItem) => {
+    const latest = articles.find((a) => a.id === article.id) || article;
+    setShareCardArticle(latest);
+    if (
+      (!latest.imageUrl || !latest.author) &&
+      !isOffline &&
+      latest.link &&
+      latest.link.startsWith('http') &&
+      !/news\.google\.com\/rss\/articles\//i.test(latest.link)
+    ) {
+      extractArticleWithFallback(latest.link)
+        .then((data) => {
+          if (!data || !data.success) return;
+          const nextLeadImage = data.leadImage || latest.imageUrl;
+          const nextAuthor = data.author || latest.author;
+          const contentClean = (data.blocks || [])
+            .map((b) => b.text || '')
+            .filter(Boolean)
+            .join('\n\n');
+          const contentHtml =
+            data.blocks && data.blocks.length > 0 ? blocksToHtml(data.blocks) : undefined;
+          if (nextLeadImage || nextAuthor || contentClean) {
+            handleCacheExtractedArticle(latest.id, {
+              title: data.title || latest.title,
+              author: nextAuthor,
+              leadImage: nextLeadImage,
+              readTimeMin: data.readTimeMin || latest.readTimeMin,
+              contentClean: contentClean || undefined,
+              contentHtml,
+            });
+            setShareCardArticle((curr) =>
+              curr && curr.id === latest.id
+                ? {
+                    ...curr,
+                    title: data.title || curr.title,
+                    author: nextAuthor || curr.author,
+                    imageUrl: nextLeadImage || curr.imageUrl,
+                    contentClean: contentClean || curr.contentClean,
+                    contentHtml: contentHtml || curr.contentHtml,
+                  }
+                : curr
+            );
+          }
+        })
+        .catch(() => {
+          // ignore background enrichment failure
+        });
+    }
+  };
+
   // Open article fully loaded in ReaderView, mark as read, and record stats
   const handleOpenArticle = async (article: FeedItem, resumeScrollTop = 0) => {
     const rawLatest = articles.find((a) => a.id === article.id) || article;
@@ -1879,6 +1951,7 @@ export default function App() {
                       onToggleRead={handleToggleRead}
                       onQuickPeek={(art) => setQuickPeekArticle(art)}
                       onOpenPerspective={(art) => handleOpenPerspective(art)}
+                      onShareArticle={handleShareArticleFromFeed}
                       onOpenTagManager={(art, e) => {
                         e.stopPropagation();
                         setTagModalArticle(art);
@@ -1964,9 +2037,16 @@ export default function App() {
                 )}
               </PullToRefresh>
 
-              {/* Floating "Continue Reading" Resume Mini-Bar (above TabBar when an article was left mid-read) */}
+              {/* Floating "Continue Reading" Resume Mini-Bar (hides during scrolling) */}
               {readingProgress && !activeArticle && (
-                <div className="absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),0.5rem)+4.25rem)] left-4 right-4 z-30 pointer-events-auto animate-in fade-in duration-200">
+                <div
+                  data-testid="continue-reading-bar"
+                  className={`absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),0.5rem)+4.25rem)] left-4 right-4 z-30 transition-all duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                    isFeedActivelyScrolling || !isHeaderVisible
+                      ? 'translate-y-24 opacity-0 pointer-events-none'
+                      : 'translate-y-0 opacity-100 pointer-events-auto'
+                  }`}
+                >
                   <div className="liquid-glass-pill px-3.5 py-2.5 rounded-2xl flex items-center justify-between gap-3 shadow-xl border border-stone-200/80 dark:border-white/15">
                     <button
                       type="button"
@@ -2135,6 +2215,7 @@ export default function App() {
                     onToggleRead={handleToggleRead}
                     onQuickPeek={(art) => setQuickPeekArticle(art)}
                     onOpenPerspective={(art) => handleOpenPerspective(art)}
+                    onShareArticle={handleShareArticleFromFeed}
                     onOpenTagManager={(art, e) => {
                       e.stopPropagation();
                       setTagModalArticle(art);
@@ -2196,6 +2277,7 @@ export default function App() {
             onSelectTab={(tab) => {
               setCurrentTab(tab);
               setIsHeaderVisible(true);
+              setIsFeedActivelyScrolling(false);
               if (tab === 'stories') {
                 setSelectedFeedId(null);
                 setSelectedFolder(null);
@@ -2269,6 +2351,18 @@ export default function App() {
         onReadFull={(art) => handleOpenArticle(art, 0)}
         onToggleBookmark={(id) => handleToggleBookmark(id)}
       />
+
+      {shareCardArticle && (
+        <QuoteShareModal
+          isOpen={Boolean(shareCardArticle)}
+          onClose={() => setShareCardArticle(null)}
+          article={shareCardArticle}
+          initialMode="song"
+          estimatedReadTimeMin={
+            estimateArticleReadTime(shareCardArticle, readingSpeedProfile).minutes
+          }
+        />
+      )}
 
       <ReadingHabitSheet
         isOpen={isHabitSheetOpen}

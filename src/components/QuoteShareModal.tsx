@@ -10,6 +10,7 @@ import {
   AlignLeft,
   ChevronDown,
   ChevronUp,
+  Music2,
 } from 'lucide-react';
 import type { FeedItem } from '../types';
 import { generateQuickTldrBullets } from '../utils/feedIntelligence';
@@ -37,6 +38,7 @@ interface QuoteShareModalProps {
   onClose: () => void;
   article: FeedItem;
   initialQuoteText?: string;
+  initialMode?: StoryCardMode;
   articleText?: string;
   estimatedReadTimeMin?: number;
 }
@@ -46,6 +48,7 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
   onClose,
   article,
   initialQuoteText,
+  initialMode,
   articleText,
   estimatedReadTimeMin,
 }) => {
@@ -66,7 +69,8 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
   const [selectedLineIndices, setSelectedLineIndices] = useState<number[]>([0]);
   const [customHighlightedText, setCustomHighlightedText] = useState<string | null>(null);
   const [showLinePicker, setShowLinePicker] = useState<boolean>(true);
-  const [storyMode, setStoryMode] = useState<StoryCardMode>('lyrics');
+  const [storyMode, setStoryMode] = useState<StoryCardMode>(initialMode || 'lyrics');
+  const [allowIgMusic, setAllowIgMusic] = useState<boolean>(true);
   const [themeId, setThemeId] = useState<StoryBackdropThemeId>('sunset');
   const [copied, setCopied] = useState(false);
   const [shareFeedback, setShareFeedback] = useState<string | null>(null);
@@ -105,10 +109,11 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
     } else {
       setSelectedLineIndices([0]);
       setCustomHighlightedText(null);
-      setStoryMode('lyrics');
-      setShowLinePicker(articleLines.length > 1);
+      const nextMode = initialMode || 'lyrics';
+      setStoryMode(nextMode);
+      setShowLinePicker(nextMode === 'lyrics' && articleLines.length > 1);
     }
-  }, [isOpen, initialQuoteText, article.id, articleLines]);
+  }, [isOpen, initialQuoteText, initialMode, article.id, articleLines]);
 
   const activeQuote = useMemo(() => {
     if (customHighlightedText) return customHighlightedText;
@@ -229,12 +234,14 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
 
   const handleStoryShare = async (platform: 'instagram' | 'facebook' | 'download') => {
     triggerHapticSelection();
-    const res = await shareSpotifyStyleStory(platform, payload);
+    const res = await shareSpotifyStyleStory(platform, payload, {
+      allowInstagramMusic: allowIgMusic,
+    });
     if (res.ok) triggerHapticComplete();
     setShareFeedback(res.message);
     setTimeout(() => {
       setShareFeedback((cur) => (cur === res.message ? null : cur));
-    }, 3000);
+    }, 3400);
   };
 
   const isLinePickerExpanded = storyMode === 'lyrics' && showLinePicker;
@@ -420,6 +427,31 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
             );
           })}
         </div>
+
+        {/* Instagram Music Unlock Toggle */}
+        <button
+          type="button"
+          onClick={() => {
+            triggerHapticSelection();
+            setAllowIgMusic((v) => !v);
+          }}
+          aria-pressed={allowIgMusic}
+          className="mb-3 w-full px-3 py-1.5 rounded-full bg-white/[0.07] hover:bg-white/[0.11] border border-white/10 flex items-center justify-between text-[11px] transition-colors"
+        >
+          <span className="flex items-center gap-1.5 text-stone-200 font-medium">
+            <Music2 className={`w-3.5 h-3.5 ${allowIgMusic ? 'text-emerald-400' : 'text-stone-400'}`} />
+            <span>
+              {allowIgMusic ? 'IG Music Enabled (via Camera Roll)' : 'Direct IG Sticker (No IG Music)'}
+            </span>
+          </span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+              allowIgMusic ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/10 text-stone-400'
+            }`}
+          >
+            {allowIgMusic ? 'ON' : 'OFF'}
+          </span>
+        </button>
 
         {shareFeedback && (
           <div className="mb-3 px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-[11px] text-stone-200 text-center">
