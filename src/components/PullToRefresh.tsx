@@ -6,6 +6,7 @@ import {
   triggerHapticComplete,
   triggerHapticError,
 } from '../utils/haptics';
+import { resolveGestureAxisLock, type GestureAxisLock } from '../utils/touchGestures';
 
 interface PullToRefreshProps {
   onRefresh: () => Promise<void> | void;
@@ -76,7 +77,9 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({
   const [pullDistance, setPullDistance] = useState(0);
   const [isPulling, setIsPulling] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const startXRef = useRef<number | null>(null);
   const startYRef = useRef<number | null>(null);
+  const axisLockRef = useRef<GestureAxisLock>('undecided');
   const isDraggingRef = useRef(false);
   const hasTriggeredHapticRef = useRef(false);
   const prevRefreshingRef = useRef(isRefreshing);
@@ -102,17 +105,27 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({
 
     // Only allow pull-down if already scrolled to top
     if (container.scrollTop <= 1) {
+      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
       const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+      startXRef.current = clientX;
       startYRef.current = clientY;
+      axisLockRef.current = 'undecided';
       isDraggingRef.current = true;
       hasTriggeredHapticRef.current = false;
     }
   };
 
-  // Touch Move handler with Apple rubber-banding
+  // Touch Move handler with Apple directional axis lock + rubber-banding
   const handleTouchMove = useCallback(
     (e: TouchEvent | MouseEvent) => {
-      if (!isDraggingRef.current || startYRef.current === null || isRefreshing) return;
+      if (
+        !isDraggingRef.current ||
+        startYRef.current === null ||
+        startXRef.current === null ||
+        isRefreshing
+      ) {
+        return;
+      }
 
       const container = containerRef.current;
       if (!container) return;
@@ -120,6 +133,27 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({
       // Ensure we are at top of scroll
       if (container.scrollTop > 1) {
         isDraggingRef.current = false;
+        startXRef.current = null;
+        startYRef.current = null;
+        axisLockRef.current = 'undecided';
+        setPullDistance(0);
+        setIsPulling(false);
+        hasTriggeredHapticRef.current = false;
+        return;
+      }
+
+      const clientX =
+        'touches' in e ? (e as TouchEvent).touches[0].clientX : (e as MouseEvent).clientX;
+      const clientY =
+        'touches' in e ? (e as TouchEvent).touches[0].clientY : (e as MouseEvent).clientY;
+      const rawDx = clientX - startXRef.current;
+      const rawDiff = clientY - startYRef.current;
+
+      // Lock axis so horizontal swipes on DailyBriefingCard or ArticleCard never trigger PullToRefresh
+      axisLockRef.current = resolveGestureAxisLock(axisLockRef.current, rawDx, rawDiff);
+      if (axisLockRef.current === 'horizontal') {
+        isDraggingRef.current = false;
+        startXRef.current = null;
         startYRef.current = null;
         setPullDistance(0);
         setIsPulling(false);
@@ -127,11 +161,8 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({
         return;
       }
 
-      const clientY = 'touches' in e ? (e as TouchEvent).touches[0].clientY : (e as MouseEvent).clientY;
-      const rawDiff = clientY - startYRef.current;
-
       // Finger moving down from the top edge
-      if (rawDiff > 6) {
+      if (axisLockRef.current === 'vertical' && rawDiff > 6) {
         if (e.cancelable) {
           e.preventDefault();
         }
@@ -149,15 +180,17 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({
           }
         } else {
           // Pulled back above the threshold: refresh is disarmed, so give a light tick
-          if (hasTriggeredHapticRef.current) {
+          if (hasTriggeredHapticRef.current && dampened < THRESHOLD - 8) {
             triggerHapticDisarm();
+            hasTriggeredHapticRef.current = false;
           }
-          hasTriggeredHapticRef.current = false;
         }
       } else if (rawDiff < -10) {
         // User scrolling down into content
         isDraggingRef.current = false;
+        startXRef.current = null;
         startYRef.current = null;
+        axisLockRef.current = 'undecided';
         setPullDistance(0);
         setIsPulling(false);
         hasTriggeredHapticRef.current = false;
@@ -174,7 +207,9 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({
     if (!isDraggingRef.current) return;
     const wasPulling = pullDistance > 12;
     isDraggingRef.current = false;
+    startXRef.current = null;
     startYRef.current = null;
+    axisLockRef.current = 'undecided';
     setIsPulling(false);
 
     // Suppress accidental clicks on cards when ending drag

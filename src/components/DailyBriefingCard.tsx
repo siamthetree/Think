@@ -5,7 +5,14 @@ import type { DailyBriefingEdition } from '../utils/feedIntelligence';
 import { formatRelativeTime } from '../utils/feedParser';
 import { SourceAvatar } from './SourceAvatar';
 import { triggerHapticSelection } from '../utils/haptics';
-import { classifyHorizontalSwipe, rubberBand } from '../utils/touchGestures';
+import {
+  resolveGestureAxisLock,
+  computeReleaseVelocity,
+  classifyHorizontalSwipe,
+  rubberBand,
+  type GestureAxisLock,
+  type VelocitySample,
+} from '../utils/touchGestures';
 
 interface DailyBriefingCardProps {
   briefing: DailyBriefingEdition;
@@ -22,8 +29,15 @@ export const DailyBriefingCard: React.FC<DailyBriefingCardProps> = ({
   const [activeIndex, setActiveIndex] = useState(0);
   const [dragOffsetX, setDragOffsetX] = useState(0);
 
-  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
-  const didSwipeCarouselRef = useRef(false);
+  const touchSessionRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startTime: number;
+    axisLock: GestureAxisLock;
+    samples: VelocitySample[];
+  } | null>(null);
+  const suppressNextClickRef = useRef(false);
 
   if (!briefing.stories || briefing.stories.length === 0) return null;
 
@@ -38,37 +52,74 @@ export const DailyBriefingCard: React.FC<DailyBriefingCardProps> = ({
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference - (progressPct / 100) * circumference;
 
-  const handlePointerDown = (e: React.PointerEvent) => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
-    didSwipeCarouselRef.current = false;
-    touchStartRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
+    suppressNextClickRef.current = false;
+    const now = performance.now();
+    touchSessionRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      startTime: now,
+      axisLock: 'undecided',
+      samples: [{ x: e.clientX, y: e.clientY, t: now }],
+    };
   };
 
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!touchStartRef.current) return;
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const session = touchSessionRef.current;
+    if (!session || session.pointerId !== e.pointerId) return;
     if (e.pointerType !== 'touch' && e.buttons !== 1) return;
 
-    const dx = e.clientX - touchStartRef.current.x;
-    const dy = e.clientY - touchStartRef.current.y;
+    const dx = e.clientX - session.startX;
+    const dy = e.clientY - session.startY;
+    const now = performance.now();
 
-    if (Math.abs(dx) > Math.abs(dy) * 1.2 && Math.abs(dx) > 8) {
-      didSwipeCarouselRef.current = true;
-      setDragOffsetX(Math.round(rubberBand(dx, 90, 0.55)));
+    session.samples.push({ x: e.clientX, y: e.clientY, t: now });
+    if (session.samples.length > 8) session.samples.shift();
+
+    session.axisLock = resolveGestureAxisLock(session.axisLock, dx, dy);
+
+    if (session.axisLock === 'horizontal') {
+      suppressNextClickRef.current = true;
+      try {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore
+      }
+      setDragOffsetX(Math.round(rubberBand(dx, 92, 0.58)));
     }
   };
 
-  const handlePointerUpOrCancel = (e: React.PointerEvent) => {
-    if (!touchStartRef.current) return;
-    const start = touchStartRef.current;
-    touchStartRef.current = null;
+  const finishPointerGesture = (e: React.PointerEvent<HTMLDivElement>, cancelled: boolean) => {
+    const session = touchSessionRef.current;
+    touchSessionRef.current = null;
     setDragOffsetX(0);
 
+    if (!session) return;
+    try {
+      if (e.currentTarget.hasPointerCapture(session.pointerId)) {
+        e.currentTarget.releasePointerCapture(session.pointerId);
+      }
+    } catch {
+      // ignore
+    }
+
+    if (cancelled || session.axisLock !== 'horizontal') return;
+
+    const now = performance.now();
+    session.samples.push({ x: e.clientX, y: e.clientY, t: now });
+    const { vx } = computeReleaseVelocity(session.samples);
+
     const intent = classifyHorizontalSwipe({
-      startX: start.x,
-      startY: start.y,
+      startX: session.startX,
+      startY: session.startY,
       endX: e.clientX,
       endY: e.clientY,
-      durationMs: Date.now() - start.time,
+      durationMs: now - session.startTime,
+      velocityX: vx,
       edgeThreshold: 0,
       minSwipeDistance: 44,
     });
@@ -87,7 +138,7 @@ export const DailyBriefingCard: React.FC<DailyBriefingCardProps> = ({
       aria-label={briefing.editionTitle}
       className="mx-4 mt-2 mb-3 rounded-3xl liquid-glass border border-stone-200/80 dark:border-white/[0.12] overflow-hidden transition-all duration-200 select-none"
     >
-      {/* Briefing Top Bar (Tap or vertical swipe to expand/collapse) */}
+      {/* Briefing Top Bar (Tap to expand/collapse) */}
       <div
         onClick={() => {
           triggerHapticSelection();
@@ -161,12 +212,11 @@ export const DailyBriefingCard: React.FC<DailyBriefingCardProps> = ({
           <div
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUpOrCancel}
-            onPointerCancel={handlePointerUpOrCancel}
-            onPointerLeave={handlePointerUpOrCancel}
+            onPointerUp={(e) => finishPointerGesture(e, false)}
+            onPointerCancel={(e) => finishPointerGesture(e, true)}
             onClick={() => {
-              if (didSwipeCarouselRef.current) {
-                didSwipeCarouselRef.current = false;
+              if (suppressNextClickRef.current) {
+                suppressNextClickRef.current = false;
                 return;
               }
               triggerHapticSelection();
@@ -176,7 +226,7 @@ export const DailyBriefingCard: React.FC<DailyBriefingCardProps> = ({
               touchAction: 'pan-y',
               transform: dragOffsetX !== 0 ? `translate3d(${dragOffsetX}px, 0, 0)` : undefined,
               transition:
-                dragOffsetX !== 0 ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+                dragOffsetX !== 0 ? 'none' : 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)',
             }}
             className="cursor-pointer group py-2"
           >

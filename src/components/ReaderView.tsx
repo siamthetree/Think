@@ -19,13 +19,19 @@ import { extractArticleWithFallback, summarizeArticleWithFallback, type ArticleS
 import {
   triggerHapticSelection,
   triggerHapticPull,
+  triggerHapticDisarm,
   triggerHapticComplete,
 } from '../utils/haptics';
 import {
+  rubberBand,
+  resolveGestureAxisLock,
+  computeReleaseVelocity,
   getTouchDistance,
   computePinchFontSize,
   classifyHorizontalSwipe,
   isDoubleTapGesture,
+  type GestureAxisLock,
+  type VelocitySample,
 } from '../utils/touchGestures';
 import { QuoteShareModal } from './QuoteShareModal';
 
@@ -112,6 +118,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [faviconError, setFaviconError] = useState(false);
   const [edgeBackOffset, setEdgeBackOffset] = useState(0);
+  const [storySwipeOffset, setStorySwipeOffset] = useState(0);
   const [extractedBlocks, setExtractedBlocks] = useState<
     { type: string; text?: string; src?: string; caption?: string }[] | null
   >(null);
@@ -128,9 +135,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef(0);
-  const swipeStartRef = useRef<{ x: number; y: number; time: number; armedFired: boolean } | null>(
-    null
-  );
+  const swipeStartRef = useRef<{
+    x: number;
+    y: number;
+    time: number;
+    axisLock: GestureAxisLock;
+    armedFired: boolean;
+    samples: VelocitySample[];
+  } | null>(null);
   const pinchStartRef = useRef<{ distance: number; baseFontSize: number } | null>(null);
   const lastParagraphTapRef = useRef<{ time: number; x: number; y: number; text: string }>({
     time: 0,
@@ -151,6 +163,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       // Two-finger pinch-to-zoom typography scale
       swipeStartRef.current = null;
       setEdgeBackOffset(0);
+      setStorySwipeOffset(0);
       const dist = getTouchDistance(e.touches[0], e.touches[1]);
       pinchStartRef.current = {
         distance: dist,
@@ -161,11 +174,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
     if (e.touches.length !== 1) return;
     pinchStartRef.current = null;
+    const now = performance.now();
     swipeStartRef.current = {
       x: e.touches[0].clientX,
       y: e.touches[0].clientY,
-      time: Date.now(),
+      time: now,
+      axisLock: 'undecided',
       armedFired: false,
+      samples: [{ x: e.touches[0].clientX, y: e.touches[0].clientY, t: now }],
     };
   };
 
@@ -189,19 +205,38 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
     if (!swipeStartRef.current || e.touches.length !== 1) return;
     const start = swipeStartRef.current;
-    const dx = e.touches[0].clientX - start.x;
-    const dy = e.touches[0].clientY - start.y;
+    const cx = e.touches[0].clientX;
+    const cy = e.touches[0].clientY;
+    const dx = cx - start.x;
+    const dy = cy - start.y;
+    const now = performance.now();
 
-    // Interactive iOS left-edge swipe-back gesture
-    if (start.x <= 36 && dx > 10 && Math.abs(dx) > Math.abs(dy) * 1.25) {
-      const clamped = Math.min(180, Math.round(dx * 0.85));
+    start.samples.push({ x: cx, y: cy, t: now });
+    if (start.samples.length > 8) start.samples.shift();
+
+    start.axisLock = resolveGestureAxisLock(start.axisLock, dx, dy);
+    if (start.axisLock !== 'horizontal') {
+      return;
+    }
+
+    // 1. Interactive iOS left-edge swipe-back gesture
+    if (start.x <= 38 && dx > 0) {
+      const clamped = Math.min(200, Math.round(dx * 0.88));
       setEdgeBackOffset(clamped);
+      setStorySwipeOffset(0);
       if (clamped >= 76 && !start.armedFired) {
         start.armedFired = true;
         triggerHapticPull();
-      } else if (clamped < 76 && start.armedFired) {
+      } else if (clamped < 66 && start.armedFired) {
         start.armedFired = false;
+        triggerHapticDisarm();
       }
+      return;
+    }
+
+    // 2. Horizontal Next / Previous Story Swipe (subtle rubber-band preview)
+    if (Math.abs(dx) > 10) {
+      setStorySwipeOffset(Math.round(rubberBand(dx, 38, 0.5)));
     }
   };
 
@@ -213,21 +248,30 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
     if (!swipeStartRef.current || e.changedTouches.length !== 1) {
       setEdgeBackOffset(0);
+      setStorySwipeOffset(0);
       return;
     }
     const start = swipeStartRef.current;
     swipeStartRef.current = null;
     setEdgeBackOffset(0);
+    setStorySwipeOffset(0);
+
+    if (start.axisLock !== 'horizontal') return;
 
     const endTouch = e.changedTouches[0];
+    const now = performance.now();
+    start.samples.push({ x: endTouch.clientX, y: endTouch.clientY, t: now });
+    const { vx } = computeReleaseVelocity(start.samples);
+
     const intent = classifyHorizontalSwipe({
       startX: start.x,
       startY: start.y,
       endX: endTouch.clientX,
       endY: endTouch.clientY,
-      durationMs: Date.now() - start.time,
-      edgeThreshold: 36,
-      minSwipeDistance: 76,
+      durationMs: now - start.time,
+      velocityX: vx,
+      edgeThreshold: 38,
+      minSwipeDistance: 72,
     });
 
     if (intent === 'edge-back') {
@@ -747,9 +791,16 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           }
         }}
         style={{
-          transform: edgeBackOffset > 0 ? `translate3d(${edgeBackOffset}px, 0, 0)` : undefined,
+          transform:
+            edgeBackOffset > 0
+              ? `translate3d(${edgeBackOffset}px, 0, 0)`
+              : storySwipeOffset !== 0
+                ? `translate3d(${storySwipeOffset}px, 0, 0)`
+                : undefined,
           transition:
-            edgeBackOffset > 0 ? 'none' : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+            edgeBackOffset > 0 || storySwipeOffset !== 0
+              ? 'none'
+              : 'transform 250ms cubic-bezier(0.22, 1, 0.36, 1)',
         }}
         className="flex-1 overflow-y-auto px-[20px] pt-[max(env(safe-area-inset-top,0px),1.5rem)] pb-32 md:px-8 relative no-scrollbar"
       >

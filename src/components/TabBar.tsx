@@ -32,9 +32,14 @@ export const TabBar: React.FC<TabBarProps> = ({
   const [pressedTab, setPressedTab] = useState<TabType | null>(null);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navRef = useRef<HTMLElement | null>(null);
+  const scrubStartXRef = useRef<number | null>(null);
   const isScrubbingRef = useRef(false);
 
   const handleTabPress = (tabId: TabType) => {
+    if (isScrubbingRef.current) {
+      isScrubbingRef.current = false;
+      return;
+    }
     triggerHapticSelection();
 
     setPressedTab(tabId);
@@ -48,20 +53,55 @@ export const TabBar: React.FC<TabBarProps> = ({
   };
 
   // Interactive horizontal finger-scrubbing across the iOS 26 Liquid Glass TabBar
-  const handleTouchMoveScrub = (e: React.TouchEvent) => {
-    if (!navRef.current || e.touches.length !== 1) return;
+  // Requires >= 8px horizontal drag before activating scrub mode so normal taps never slip to a neighbor tab
+  const handlePointerDownScrub = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    scrubStartXRef.current = e.clientX;
+    isScrubbingRef.current = false;
+  };
+
+  const handlePointerMoveScrub = (e: React.PointerEvent<HTMLElement>) => {
+    if (scrubStartXRef.current === null || !navRef.current) return;
+    if (e.pointerType !== 'touch' && e.buttons !== 1) return;
+
+    const dx = Math.abs(e.clientX - scrubStartXRef.current);
+    if (!isScrubbingRef.current && dx < 8) return;
+
+    if (!isScrubbingRef.current) {
+      isScrubbingRef.current = true;
+      try {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     const rect = navRef.current.getBoundingClientRect();
-    const touch = e.touches[0];
-    const index = resolveScrubbedTabIndex(touch.clientX, rect.left, rect.width, TABS.length);
+    const index = resolveScrubbedTabIndex(e.clientX, rect.left, rect.width, TABS.length);
     const targetTab = TABS[index]?.id;
     if (targetTab && targetTab !== currentTab) {
-      isScrubbingRef.current = true;
       triggerHapticSelection();
       setPressedTab(targetTab);
       if (pressTimer.current) clearTimeout(pressTimer.current);
       pressTimer.current = setTimeout(() => setPressedTab(null), 160);
       onSelectTab(targetTab);
     }
+  };
+
+  const handlePointerUpOrCancelScrub = (e: React.PointerEvent<HTMLElement>) => {
+    scrubStartXRef.current = null;
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // ignore
+    }
+    setTimeout(() => {
+      isScrubbingRef.current = false;
+    }, 30);
   };
 
   useEffect(() => () => { if (pressTimer.current) clearTimeout(pressTimer.current); }, []);
@@ -79,10 +119,10 @@ export const TabBar: React.FC<TabBarProps> = ({
         <nav
           ref={navRef}
           aria-label="Main Navigation"
-          onTouchMove={handleTouchMoveScrub}
-          onTouchEnd={() => {
-            isScrubbingRef.current = false;
-          }}
+          onPointerDown={handlePointerDownScrub}
+          onPointerMove={handlePointerMoveScrub}
+          onPointerUp={handlePointerUpOrCancelScrub}
+          onPointerCancel={handlePointerUpOrCancelScrub}
           style={{ touchAction: 'none' }}
           className="pointer-events-auto liquid-glass-dock rounded-full p-1 px-1.5 flex items-center justify-between gap-0.5"
         >

@@ -1,12 +1,25 @@
 /**
- * Pure iOS 26 Liquid Glass Touch Gesture Math & Recognition Engine
+ * Apple iOS 26 UIKit-Grade Touch Gesture Physics & Recognition Engine
  *
- * Provides rubber-band physics, swipe-action detent calculation,
- * two-finger pinch-to-zoom typography scaling, bottom-sheet drag-to-dismiss,
- * edge-swipe back navigation, and double-tap detection.
+ * Implements:
+ * 1. Directional Axis Lock (`UIScrollView.isDirectionalLockEnabled` equivalent)
+ *    so vertical scrolling never triggers accidental horizontal swipes.
+ * 2. Logarithmic Apple Rubber-Banding (`c = 0.55`).
+ * 3. Hysteresis Arm/Disarm Detents (prevents haptic chatter at the threshold boundary).
+ * 4. Windowed Release Velocity Tracking (`px/ms` over the last 80ms of touch movement)
+ *    with momentum projection and reversal cancellation.
+ * 5. Two-Finger Pinch-to-Zoom Typography Scaling with deadzone stabilization.
+ * 6. Interactive Screen-Edge Pop Gesture & Bottom-Sheet Drag-to-Dismiss physics.
  */
 
 export type SwipeDirection = 'left' | 'right' | 'none';
+export type GestureAxisLock = 'undecided' | 'horizontal' | 'vertical';
+
+export interface VelocitySample {
+  x: number;
+  y: number;
+  t: number;
+}
 
 export interface SwipeActionState {
   /** Rubber-banded horizontal offset in px (positive = right swipe, negative = left swipe) */
@@ -17,13 +30,16 @@ export interface SwipeActionState {
   progress: number;
   /** Whether the user has pulled past the haptic detent threshold to arm the action */
   armed: boolean;
+  /** Locked gesture axis ('undecided' | 'horizontal' | 'vertical') */
+  axisLock: GestureAxisLock;
 }
 
 /**
- * Applies Apple-style rubber-band resistance beyond a threshold.
+ * Applies Apple UIKit rubber-band resistance beyond a threshold:
+ * f(x, d, c) = (1 - 1 / ((x * c / d) + 1)) * d
  */
 export function rubberBand(distance: number, dimension: number, constant = 0.55): number {
-  if (dimension <= 0) return 0;
+  if (dimension <= 0 || distance === 0) return 0;
   const abs = Math.abs(distance);
   const sign = distance < 0 ? -1 : 1;
   const result = (1 - 1 / ((abs * constant) / dimension + 1)) * dimension;
@@ -31,47 +47,163 @@ export function rubberBand(distance: number, dimension: number, constant = 0.55)
 }
 
 /**
- * Computes horizontal card/row swipe-action state with rubber-band elasticity
- * and detent threshold detection.
+ * Determines the locked gesture axis ('horizontal' | 'vertical' | 'undecided')
+ * from the initial touch displacement vector. Once locked to 'horizontal' or 'vertical',
+ * the lock persists for the entire remainder of the touch sequence.
+ */
+export function resolveGestureAxisLock(
+  currentLock: GestureAxisLock,
+  dx: number,
+  dy: number
+): GestureAxisLock {
+  if (currentLock !== 'undecided') return currentLock;
+
+  const absX = Math.abs(dx);
+  const absY = Math.abs(dy);
+  const distance = Math.hypot(absX, absY);
+
+  // Wait until finger moves at least 7px before locking axis
+  if (distance < 7) return 'undecided';
+
+  // Require a deliberate horizontal angle (< ~35 deg from horizontal) to lock horizontal
+  if (absX >= 9 && absX > absY * 1.4) {
+    return 'horizontal';
+  }
+
+  // Otherwise if vertical movement dominates or is diagonal, lock to vertical scroll
+  if (absY >= 7 && absY >= absX * 0.8) {
+    return 'vertical';
+  }
+
+  return 'undecided';
+}
+
+/**
+ * Computes instantaneous release velocity in px/ms using a sliding 85ms window
+ * of touch samples (matching UIKit UIPanGestureRecognizer velocity calculation).
+ */
+export function computeReleaseVelocity(samples: VelocitySample[]): { vx: number; vy: number } {
+  if (samples.length < 2) return { vx: 0, vy: 0 };
+  const latest = samples[samples.length - 1];
+
+  // Find the oldest sample within the last 85ms window (or the immediately preceding sample)
+  let anchor = samples[0];
+  for (let i = samples.length - 2; i >= 0; i--) {
+    const dt = latest.t - samples[i].t;
+    anchor = samples[i];
+    if (dt >= 28 && dt <= 95) {
+      break;
+    }
+  }
+
+  const dt = latest.t - anchor.t;
+  if (dt <= 2 || dt > 180) {
+    // If finger held still > 180ms before lifting, release velocity is 0
+    return { vx: 0, vy: 0 };
+  }
+
+  return {
+    vx: Number(((latest.x - anchor.x) / dt).toFixed(3)),
+    vy: Number(((latest.y - anchor.y) / dt).toFixed(3)),
+  };
+}
+
+/**
+ * Computes horizontal card/row swipe-action state with strict axis locking,
+ * hysteresis detent arming/disarming, and Apple rubber-band elasticity.
  */
 export function computeSwipeActionState(
   dx: number,
   dy: number,
   threshold = 72,
-  maxTranslate = 128
+  maxTranslate = 128,
+  currentAxisLock: GestureAxisLock = 'undecided',
+  previouslyArmed = false
 ): SwipeActionState {
-  // Ignore predominantly vertical scrolling gestures
-  if (Math.abs(dy) > Math.abs(dx) * 0.85 && Math.abs(dx) < 28) {
-    return { offsetX: 0, direction: 'none', progress: 0, armed: false };
+  const axisLock = resolveGestureAxisLock(currentAxisLock, dx, dy);
+
+  // If locked to vertical scrolling or still undecided, horizontal offset is strictly 0
+  if (axisLock !== 'horizontal') {
+    return { offsetX: 0, direction: 'none', progress: 0, armed: false, axisLock };
   }
 
-  // Deadzone of 8px to avoid jitter during taps
-  if (Math.abs(dx) < 8) {
-    return { offsetX: 0, direction: 'none', progress: 0, armed: false };
+  const absDx = Math.abs(dx);
+  if (absDx < 8) {
+    return { offsetX: 0, direction: 'none', progress: 0, armed: false, axisLock };
   }
 
   const direction: SwipeDirection = dx > 0 ? 'right' : 'left';
   const sign = dx > 0 ? 1 : -1;
-  const absDx = Math.abs(dx) - 8;
+  const activeDrag = absDx - 8;
 
   let offsetAbs: number;
-  if (absDx <= threshold) {
-    offsetAbs = absDx;
+  if (activeDrag <= threshold) {
+    // 1:1 tracking up to threshold
+    offsetAbs = activeDrag;
   } else {
-    const extra = absDx - threshold;
-    offsetAbs = threshold + rubberBand(extra, maxTranslate - threshold, 0.5);
+    // Smooth logarithmic rubber-band resistance past threshold
+    const extra = activeDrag - threshold;
+    offsetAbs = threshold + rubberBand(extra, maxTranslate - threshold, 0.55);
   }
 
   const clampedOffset = sign * Math.min(maxTranslate, Math.round(offsetAbs));
-  const progress = Math.min(1, Number((Math.abs(clampedOffset) / threshold).toFixed(2)));
-  const armed = Math.abs(clampedOffset) >= threshold;
+  const absOffset = Math.abs(clampedOffset);
+  const progress = Math.min(1, Number((absOffset / threshold).toFixed(2)));
+
+  // Hysteresis: arm at threshold, disarm only when pulled back 10px below threshold
+  const disarmThreshold = Math.max(24, threshold - 10);
+  const armed = previouslyArmed ? absOffset >= disarmThreshold : absOffset >= threshold;
 
   return {
     offsetX: clampedOffset,
     direction,
     progress,
     armed,
+    axisLock,
   };
+}
+
+/**
+ * Determines on touch release whether a swipe action should commit or cancel,
+ * incorporating both detent state and finger release velocity (flick to commit,
+ * reverse flick to cancel).
+ */
+export function shouldCommitSwipeAction(params: {
+  state: SwipeActionState;
+  velocityX: number;
+  minFlickOffset?: number;
+  minFlickVelocity?: number;
+}): boolean {
+  const {
+    state,
+    velocityX,
+    minFlickOffset = 34,
+    minFlickVelocity = 0.62,
+  } = params;
+
+  if (state.axisLock !== 'horizontal' || state.direction === 'none') {
+    return false;
+  }
+
+  const sign = state.direction === 'right' ? 1 : -1;
+  const alignedVelocity = velocityX * sign; // positive if moving in swipe direction, negative if reversing
+
+  // If the user flicked back toward the origin before releasing, cancel the action
+  if (alignedVelocity < -0.32) {
+    return false;
+  }
+
+  // If armed past the detent threshold and not reversing, commit
+  if (state.armed) {
+    return true;
+  }
+
+  // Fast intentional flick in the swipe direction commits even before full threshold
+  if (Math.abs(state.offsetX) >= minFlickOffset && alignedVelocity >= minFlickVelocity) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -88,7 +220,8 @@ export function getTouchDistance(
 
 /**
  * Computes new reader font size from a 2-finger pinch gesture.
- * Clamps between minSize (14px) and maxSize (26px).
+ * Includes a 8px deadzone so resting two fingers never causes jitter,
+ * and clamps between minSize (14px) and maxSize (26px).
  */
 export function computePinchFontSize(
   initialDistance: number,
@@ -97,12 +230,18 @@ export function computePinchFontSize(
   minSize = 14,
   maxSize = 26
 ): number {
-  if (initialDistance <= 10 || currentDistance <= 10) {
-    return Math.min(maxSize, Math.max(minSize, Math.round(baseFontSize)));
+  const clampedBase = Math.min(maxSize, Math.max(minSize, Math.round(baseFontSize)));
+  if (initialDistance <= 16 || currentDistance <= 16) {
+    return clampedBase;
   }
-  const scale = currentDistance / initialDistance;
-  // Map scale changes gently so pinching feels controllable and smooth
-  const dampedScale = 1 + (scale - 1) * 0.65;
+  const deltaDist = currentDistance - initialDistance;
+  // Deadzone of 8px so resting fingers don't fluctuate
+  if (Math.abs(deltaDist) < 8) {
+    return clampedBase;
+  }
+  const effectiveDelta = deltaDist > 0 ? deltaDist - 8 : deltaDist + 8;
+  const scale = (initialDistance + effectiveDelta) / initialDistance;
+  const dampedScale = 1 + (scale - 1) * 0.68;
   const rawSize = Math.round(baseFontSize * dampedScale);
   return Math.min(maxSize, Math.max(minSize, rawSize));
 }
@@ -118,7 +257,7 @@ export interface SheetDragState {
 
 /**
  * Computes bottom-sheet vertical drag-to-dismiss state with upward rubber-banding
- * and velocity/distance release checks.
+ * and velocity/distance release checks (cancels dismiss if user flicks upward).
  */
 export function computeSheetDragState(
   dy: number,
@@ -127,7 +266,7 @@ export function computeSheetDragState(
 ): SheetDragState {
   if (dy < 0) {
     // Upward pull gets strong rubber-band resistance
-    const upward = rubberBand(dy, 36, 0.4);
+    const upward = rubberBand(dy, 32, 0.45);
     return {
       offsetY: Math.round(upward),
       backdropScale: 1,
@@ -138,7 +277,13 @@ export function computeSheetDragState(
   const offsetY = Math.round(dy);
   const progress = Math.min(1, offsetY / (dismissThreshold * 2.2));
   const backdropScale = Number(Math.max(0.25, 1 - progress * 0.65).toFixed(2));
-  const shouldDismiss = offsetY >= dismissThreshold || (offsetY >= 36 && velocityY > 0.65);
+
+  // If user is actively pulling back upward at release, do not dismiss
+  if (velocityY < -0.3) {
+    return { offsetY, backdropScale, shouldDismiss: false };
+  }
+
+  const shouldDismiss = offsetY >= dismissThreshold || (offsetY >= 34 && velocityY > 0.58);
 
   return {
     offsetY,
@@ -155,7 +300,7 @@ export type HorizontalNavigationIntent =
 
 /**
  * Classifies horizontal swipe gestures for iOS left-edge back navigation,
- * carousel stepping, and tab/article switching.
+ * carousel stepping, and tab/article switching with velocity projection.
  */
 export function classifyHorizontalSwipe(params: {
   startX: number;
@@ -163,6 +308,7 @@ export function classifyHorizontalSwipe(params: {
   endX: number;
   endY: number;
   durationMs: number;
+  velocityX?: number;
   edgeThreshold?: number;
   minSwipeDistance?: number;
 }): HorizontalNavigationIntent {
@@ -172,20 +318,30 @@ export function classifyHorizontalSwipe(params: {
     endX,
     endY,
     durationMs,
-    edgeThreshold = 34,
+    velocityX,
+    edgeThreshold = 38,
     minSwipeDistance = 64,
   } = params;
 
   const dx = endX - startX;
   const dy = endY - startY;
 
-  // Must be predominantly horizontal
-  if (Math.abs(dx) < Math.abs(dy) * 1.35) {
+  // Must be strictly horizontal (< ~32 deg angle) so diagonal reading scrolls never misfire
+  if (Math.abs(dx) < Math.abs(dy) * 1.5) {
     return 'none';
   }
 
-  // Fast flicks require slightly less distance than slow drags
-  const effectiveMinDistance = durationMs < 260 ? Math.max(44, minSwipeDistance * 0.75) : minSwipeDistance;
+  const safeDuration = Math.max(1, durationMs);
+  const vx = velocityX !== undefined ? velocityX : dx / safeDuration;
+
+  // If user reversed direction at the end of the drag, cancel navigation
+  if (dx > 0 && vx < -0.25) return 'none';
+  if (dx < 0 && vx > 0.25) return 'none';
+
+  // Fast flicks require less distance than slow drags
+  const isFastFlick = Math.abs(vx) >= 0.55 && safeDuration < 300;
+  const effectiveMinDistance = isFastFlick ? Math.max(36, minSwipeDistance * 0.58) : minSwipeDistance;
+
   if (Math.abs(dx) < effectiveMinDistance) {
     return 'none';
   }
@@ -223,8 +379,8 @@ export function isDoubleTapGesture(params: {
     lastY = 0,
     currentX = 0,
     currentY = 0,
-    maxDelayMs = 300,
-    maxDistancePx = 36,
+    maxDelayMs = 280,
+    maxDistancePx = 32,
   } = params;
 
   if (lastTapTime <= 0) return false;

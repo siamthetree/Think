@@ -17,13 +17,18 @@ import { SourceAvatar } from './SourceAvatar';
 import {
   triggerHapticSelection,
   triggerHapticPull,
+  triggerHapticDisarm,
   triggerHapticComplete,
 } from '../utils/haptics';
 import { isPlaceholderSummary } from '../utils/storage';
 import {
   computeSwipeActionState,
+  computeReleaseVelocity,
+  shouldCommitSwipeAction,
   isDoubleTapGesture,
   type SwipeActionState,
+  type GestureAxisLock,
+  type VelocitySample,
 } from '../utils/touchGestures';
 
 interface ArticleCardProps {
@@ -36,6 +41,14 @@ interface ArticleCardProps {
   onOpenTagManager?: (article: FeedItem, e: React.MouseEvent) => void;
   onQuickPeek?: (article: FeedItem) => void;
 }
+
+const INITIAL_SWIPE_STATE: SwipeActionState = {
+  offsetX: 0,
+  direction: 'none',
+  progress: 0,
+  armed: false,
+  axisLock: 'undecided',
+};
 
 export const ArticleCard: React.FC<ArticleCardProps> = ({
   article,
@@ -73,18 +86,20 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const [showPerspectives, setShowPerspectives] = useState(false);
 
   // Horizontal Swipe-Action State (Right swipe = Save/Bookmark, Left swipe = Mark Read/Unread)
-  const [swipeState, setSwipeState] = useState<SwipeActionState>({
-    offsetX: 0,
-    direction: 'none',
-    progress: 0,
-    armed: false,
-  });
+  const [swipeState, setSwipeState] = useState<SwipeActionState>(INITIAL_SWIPE_STATE);
 
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const touchStartRef = useRef<{ x: number; y: number; armedFired: boolean } | null>(null);
-  const didSwipeRef = useRef(false);
-  const lastTapRef = useRef<{ time: number; x: number; y: number }>({ time: 0, x: 0, y: 0 });
+  const coverTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchSessionRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    axisLock: GestureAxisLock;
+    armed: boolean;
+    samples: VelocitySample[];
+  } | null>(null);
+  const suppressNextClickRef = useRef(false);
+  const lastCoverTapRef = useRef<{ time: number; x: number; y: number }>({ time: 0, x: 0, y: 0 });
 
   const extractedSummary =
     article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
@@ -97,93 +112,164 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     }
   };
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    // Only track primary touch/pointer
+  const handlePointerDown = (e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     setCardPressed(true);
-    didSwipeRef.current = false;
-    touchStartRef.current = { x: e.clientX, y: e.clientY, armedFired: false };
+    suppressNextClickRef.current = false;
+
+    const now = performance.now();
+    touchSessionRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      axisLock: 'undecided',
+      armed: false,
+      samples: [{ x: e.clientX, y: e.clientY, t: now }],
+    };
 
     if (onQuickPeek) {
       clearLongPress();
       longPressTimerRef.current = setTimeout(() => {
         setCardPressed(false);
-        didSwipeRef.current = true;
+        suppressNextClickRef.current = true;
+        touchSessionRef.current = null;
         triggerHapticSelection();
         onQuickPeek(article);
-      }, 520);
+      }, 500);
     }
   };
 
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!touchStartRef.current) return;
-    const dx = e.clientX - touchStartRef.current.x;
-    const dy = e.clientY - touchStartRef.current.y;
+  const handlePointerMove = (e: React.PointerEvent<HTMLElement>) => {
+    const session = touchSessionRef.current;
+    if (!session || session.pointerId !== e.pointerId) return;
 
-    // Cancel long-press if finger moves > 10px
-    if (Math.hypot(dx, dy) > 10) {
+    const dx = e.clientX - session.startX;
+    const dy = e.clientY - session.startY;
+
+    // Cancel long-press and pressed scale if finger moves > 8px in any direction
+    if (Math.hypot(dx, dy) > 8) {
       clearLongPress();
       setCardPressed(false);
     }
 
-    // Only compute horizontal swipe actions for touch or active drag
-    if (e.pointerType === 'touch' || e.buttons === 1) {
-      const nextSwipe = computeSwipeActionState(dx, dy, 68, 124);
-      if (nextSwipe.offsetX !== 0) {
-        didSwipeRef.current = true;
+    if (e.pointerType !== 'touch' && e.buttons !== 1) return;
+
+    const now = performance.now();
+    session.samples.push({ x: e.clientX, y: e.clientY, t: now });
+    if (session.samples.length > 8) {
+      session.samples.shift();
+    }
+
+    const nextSwipe = computeSwipeActionState(
+      dx,
+      dy,
+      68,
+      126,
+      session.axisLock,
+      session.armed
+    );
+
+    session.axisLock = nextSwipe.axisLock;
+
+    // Once locked into horizontal swipe, capture pointer so movement stays 100% locked to this card
+    if (nextSwipe.axisLock === 'horizontal') {
+      suppressNextClickRef.current = true;
+      try {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore if unsupported in synthetic events
       }
-      if (nextSwipe.armed && !touchStartRef.current.armedFired) {
-        touchStartRef.current.armedFired = true;
-        triggerHapticPull();
-      } else if (!nextSwipe.armed && touchStartRef.current.armedFired) {
-        touchStartRef.current.armedFired = false;
-      }
+    }
+
+    // Hysteresis Haptic Detents: crisp pull haptic on arm, light tick on disarm
+    if (nextSwipe.armed && !session.armed) {
+      session.armed = true;
+      triggerHapticPull();
+    } else if (!nextSwipe.armed && session.armed) {
+      session.armed = false;
+      triggerHapticDisarm();
+    }
+
+    if (nextSwipe.offsetX !== swipeState.offsetX || nextSwipe.armed !== swipeState.armed) {
       setSwipeState(nextSwipe);
     }
   };
 
-  const handlePointerUpOrCancel = () => {
+  const finishPointerGesture = (e: React.PointerEvent<HTMLElement>, cancelled: boolean) => {
     setCardPressed(false);
     clearLongPress();
 
-    if (swipeState.armed) {
-      triggerHapticComplete();
-      if (swipeState.direction === 'right') {
-        onToggleBookmark(article.id);
-      } else if (swipeState.direction === 'left') {
-        onToggleRead(article.id);
+    const session = touchSessionRef.current;
+    touchSessionRef.current = null;
+
+    if (session) {
+      try {
+        if (e.currentTarget.hasPointerCapture(session.pointerId)) {
+          e.currentTarget.releasePointerCapture(session.pointerId);
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!cancelled && session.axisLock === 'horizontal') {
+        session.samples.push({ x: e.clientX, y: e.clientY, t: performance.now() });
+        const { vx } = computeReleaseVelocity(session.samples);
+        const shouldCommit = shouldCommitSwipeAction({
+          state: swipeState,
+          velocityX: vx,
+        });
+
+        if (shouldCommit) {
+          triggerHapticComplete();
+          if (swipeState.direction === 'right') {
+            onToggleBookmark(article.id);
+          } else if (swipeState.direction === 'left') {
+            onToggleRead(article.id);
+          }
+        }
       }
     }
 
-    touchStartRef.current = null;
-    if (swipeState.offsetX !== 0) {
-      setSwipeState({ offsetX: 0, direction: 'none', progress: 0, armed: false });
+    if (swipeState.offsetX !== 0 || swipeState.axisLock !== 'undecided') {
+      setSwipeState(INITIAL_SWIPE_STATE);
     }
   };
 
-  // Handles Single-Tap (Open Article) vs Double-Tap (Heart / Like Burst)
-  const handleCardClick = (e: React.MouseEvent) => {
-    if (didSwipeRef.current) {
-      didSwipeRef.current = false;
+  // Zero-latency single-tap on headline/card body opens the article immediately!
+  const handleCardClick = () => {
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false;
+      return;
+    }
+    onSelect(article);
+  };
+
+  // Cover Image supports Double-Tap Heart Burst (while single tap still opens the article)
+  const handleCoverClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false;
       return;
     }
 
     const now = Date.now();
     const isDouble = isDoubleTapGesture({
-      lastTapTime: lastTapRef.current.time,
+      lastTapTime: lastCoverTapRef.current.time,
       currentTime: now,
-      lastX: lastTapRef.current.x,
-      lastY: lastTapRef.current.y,
+      lastX: lastCoverTapRef.current.x,
+      lastY: lastCoverTapRef.current.y,
       currentX: e.clientX,
       currentY: e.clientY,
     });
 
     if (isDouble) {
-      if (singleTapTimerRef.current) {
-        clearTimeout(singleTapTimerRef.current);
-        singleTapTimerRef.current = null;
+      if (coverTapTimerRef.current) {
+        clearTimeout(coverTapTimerRef.current);
+        coverTapTimerRef.current = null;
       }
-      lastTapRef.current = { time: 0, x: 0, y: 0 };
+      lastCoverTapRef.current = { time: 0, x: 0, y: 0 };
       triggerHapticComplete();
       setLikePopping(true);
       setDoubleTapHeartBurst(true);
@@ -196,12 +282,12 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       return;
     }
 
-    lastTapRef.current = { time: now, x: e.clientX, y: e.clientY };
-    if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
-    singleTapTimerRef.current = setTimeout(() => {
-      singleTapTimerRef.current = null;
+    lastCoverTapRef.current = { time: now, x: e.clientX, y: e.clientY };
+    if (coverTapTimerRef.current) clearTimeout(coverTapTimerRef.current);
+    coverTapTimerRef.current = setTimeout(() => {
+      coverTapTimerRef.current = null;
       onSelect(article);
-    }, 190);
+    }, 200);
   };
 
   const handleLike = (e: React.MouseEvent) => {
@@ -252,6 +338,8 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const renderSwipeActionTray = () => {
     if (swipeState.offsetX === 0) return null;
     const isRight = swipeState.direction === 'right';
+    const iconScale = Math.min(1.15, 0.8 + swipeState.progress * 0.35);
+
     return (
       <div
         aria-hidden="true"
@@ -267,9 +355,13 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       >
         {/* Left Tray (Swipe Right -> Bookmark / Save) */}
         <div
-          className={`flex items-center gap-2 text-xs font-semibold transition-transform duration-150 ${
-            isRight ? 'opacity-100' : 'opacity-0'
-          } ${swipeState.armed ? 'text-[#FF6719] scale-105' : 'text-stone-600 dark:text-stone-300'}`}
+          style={{
+            transform: `scale(${isRight ? iconScale : 0.85})`,
+            opacity: isRight ? Math.max(0.35, swipeState.progress) : 0,
+          }}
+          className={`flex items-center gap-2 text-xs font-semibold transition-transform duration-100 ${
+            swipeState.armed ? 'text-[#FF6719]' : 'text-stone-600 dark:text-stone-300'
+          }`}
         >
           <Bookmark className={`w-4 h-4 ${article.isBookmarked || swipeState.armed ? 'fill-current' : ''}`} />
           <span>{article.isBookmarked ? 'Remove Saved' : 'Save Story'}</span>
@@ -277,11 +369,13 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
 
         {/* Right Tray (Swipe Left -> Mark Read / Unread) */}
         <div
-          className={`flex items-center gap-2 text-xs font-semibold transition-transform duration-150 ml-auto ${
-            !isRight ? 'opacity-100' : 'opacity-0'
-          } ${
+          style={{
+            transform: `scale(${!isRight ? iconScale : 0.85})`,
+            opacity: !isRight ? Math.max(0.35, swipeState.progress) : 0,
+          }}
+          className={`flex items-center gap-2 text-xs font-semibold transition-transform duration-100 ml-auto ${
             swipeState.armed
-              ? 'text-emerald-600 dark:text-emerald-400 scale-105'
+              ? 'text-emerald-600 dark:text-emerald-400'
               : 'text-stone-600 dark:text-stone-300'
           }`}
         >
@@ -301,9 +395,8 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           onClick={handleCardClick}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUpOrCancel}
-          onPointerCancel={handlePointerUpOrCancel}
-          onPointerLeave={handlePointerUpOrCancel}
+          onPointerUp={(e) => finishPointerGesture(e, false)}
+          onPointerCancel={(e) => finishPointerGesture(e, true)}
           style={{
             transform:
               swipeState.offsetX !== 0
@@ -312,7 +405,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
             transition:
               swipeState.offsetX !== 0
                 ? 'none'
-                : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+                : 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)',
             touchAction: 'pan-y',
           }}
           className={`relative bg-stone-50 dark:bg-[#090A0C] group cursor-pointer px-4 sm:px-5 py-3 hover:bg-stone-100/50 dark:hover:bg-white/[0.03] transition-colors flex items-center justify-between gap-3 select-none ${
@@ -400,9 +493,8 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
         onClick={handleCardClick}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUpOrCancel}
-        onPointerCancel={handlePointerUpOrCancel}
-        onPointerLeave={handlePointerUpOrCancel}
+        onPointerUp={(e) => finishPointerGesture(e, false)}
+        onPointerCancel={(e) => finishPointerGesture(e, true)}
         className={`article-card relative bg-stone-50 dark:bg-[#090A0C] group cursor-pointer px-4 sm:px-5 pt-4 pb-3.5 select-none ${
           article.isRead ? 'feed-row-read opacity-85' : ''
         }`}
@@ -419,7 +511,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
               ? 'none'
               : cardPressed
                 ? 'transform 90ms cubic-bezier(0.4,0,1,1)'
-                : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+                : 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)',
         }}
       >
         {/* Double-Tap Heart Burst Overlay */}
@@ -493,9 +585,12 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           </p>
         )}
 
-        {/* 4. Large Featured Cover Image (16:9 Aspect Ratio) */}
+        {/* 4. Large Featured Cover Image (16:9 Aspect Ratio — Double-tap to Like, Single-tap to Read) */}
         {hasCover && (
-          <div className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 shadow-xs">
+          <div
+            onClick={handleCoverClick}
+            className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 shadow-xs"
+          >
             <img
               src={coverUrl}
               alt={article.title}

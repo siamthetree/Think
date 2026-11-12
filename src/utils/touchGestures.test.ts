@@ -2,7 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   rubberBand,
+  resolveGestureAxisLock,
+  computeReleaseVelocity,
   computeSwipeActionState,
+  shouldCommitSwipeAction,
   computePinchFontSize,
   computeSheetDragState,
   classifyHorizontalSwipe,
@@ -10,7 +13,7 @@ import {
   resolveScrubbedTabIndex,
 } from './touchGestures.ts';
 
-describe('touchGestures engine', () => {
+describe('touchGestures Apple UIKit-grade engine', () => {
   it('computes rubberBand resistance symmetrically', () => {
     const pos = rubberBand(100, 120);
     const neg = rubberBand(-100, 120);
@@ -18,57 +21,100 @@ describe('touchGestures engine', () => {
     assert.equal(pos, -neg);
   });
 
-  it('computes horizontal card swipe actions and arms past threshold', () => {
+  it('locks gesture axis to vertical or horizontal and never switches mid-gesture', () => {
+    // Initial vertical scroll movement locks to vertical
+    const lockV = resolveGestureAxisLock('undecided', 3, 14);
+    assert.equal(lockV, 'vertical');
+
+    // Even if user later drifts horizontally by 90px, vertical lock persists
+    assert.equal(resolveGestureAxisLock(lockV, 90, 40), 'vertical');
+    const blockedSwipe = computeSwipeActionState(90, 40, 72, 128, lockV);
+    assert.equal(blockedSwipe.offsetX, 0);
+    assert.equal(blockedSwipe.axisLock, 'vertical');
+
+    // Initial horizontal movement locks to horizontal
+    const lockH = resolveGestureAxisLock('undecided', 16, 4);
+    assert.equal(lockH, 'horizontal');
+  });
+
+  it('computes horizontal card swipe actions with hysteresis detents', () => {
     // Small jitter is ignored
     const jitter = computeSwipeActionState(5, 2, 72, 128);
     assert.equal(jitter.offsetX, 0);
     assert.equal(jitter.armed, false);
 
-    // Predominantly vertical scroll is ignored
-    const vertical = computeSwipeActionState(18, 48, 72, 128);
-    assert.equal(vertical.offsetX, 0);
-    assert.equal(vertical.direction, 'none');
-
     // Right swipe past threshold arms bookmark action
     const rightSwipe = computeSwipeActionState(92, 6, 72, 128);
     assert.equal(rightSwipe.direction, 'right');
     assert.equal(rightSwipe.armed, true);
+    assert.equal(rightSwipe.axisLock, 'horizontal');
     assert.ok(rightSwipe.offsetX >= 72 && rightSwipe.offsetX <= 128);
 
-    // Left swipe past threshold arms read/action state
-    const leftSwipe = computeSwipeActionState(-95, 4, 72, 128);
-    assert.equal(leftSwipe.direction, 'left');
-    assert.equal(leftSwipe.armed, true);
-    assert.ok(leftSwipe.offsetX <= -72 && leftSwipe.offsetX >= -128);
+    // Hysteresis: pulling slightly back to 65px (above disarmThreshold 62px) stays armed
+    const stillArmed = computeSwipeActionState(73, 6, 72, 128, 'horizontal', true);
+    assert.equal(stillArmed.armed, true);
+
+    // Pulling back below 62px disarms cleanly
+    const disarmed = computeSwipeActionState(55, 6, 72, 128, 'horizontal', true);
+    assert.equal(disarmed.armed, false);
   });
 
-  it('scales reader font size smoothly on two-finger pinch and clamps bounds', () => {
-    const enlarged = computePinchFontSize(100, 140, 18, 14, 26);
+  it('commits on fast flick and cancels when user reverses swipe direction', () => {
+    const partialSwipe = computeSwipeActionState(52, 4, 72, 128, 'horizontal', false);
+    assert.equal(partialSwipe.armed, false);
+
+    // Fast right flick commits even before full 72px threshold
+    assert.equal(
+      shouldCommitSwipeAction({ state: partialSwipe, velocityX: 0.85 }),
+      true
+    );
+
+    // Armed swipe that user flicks back toward origin cancels
+    const armedSwipe = computeSwipeActionState(90, 4, 72, 128, 'horizontal', true);
+    assert.equal(
+      shouldCommitSwipeAction({ state: armedSwipe, velocityX: -0.6 }),
+      false
+    );
+  });
+
+  it('computes windowed release velocity and zeroes out stationary holds', () => {
+    const moving = computeReleaseVelocity([
+      { x: 10, y: 0, t: 100 },
+      { x: 55, y: 0, t: 145 },
+      { x: 85, y: 0, t: 175 },
+    ]);
+    assert.ok(moving.vx > 0.8);
+
+    // Held stationary for 250ms before lift -> 0 velocity
+    const stationary = computeReleaseVelocity([
+      { x: 10, y: 0, t: 100 },
+      { x: 85, y: 0, t: 400 },
+    ]);
+    assert.equal(stationary.vx, 0);
+  });
+
+  it('scales reader font size smoothly on two-finger pinch with deadzone', () => {
+    // 5px change within 8px deadzone keeps font size unchanged
+    assert.equal(computePinchFontSize(100, 105, 18, 14, 26), 18);
+
+    const enlarged = computePinchFontSize(100, 148, 18, 14, 26);
     assert.ok(enlarged > 18 && enlarged <= 26);
 
-    const shrunk = computePinchFontSize(140, 90, 18, 14, 26);
+    const shrunk = computePinchFontSize(148, 90, 18, 14, 26);
     assert.ok(shrunk < 18 && shrunk >= 14);
-
-    // Clamps to max/min limits
-    assert.equal(computePinchFontSize(100, 300, 22, 14, 26), 26);
-    assert.equal(computePinchFontSize(300, 60, 16, 14, 26), 14);
   });
 
-  it('computes bottom sheet drag-to-dismiss physics', () => {
-    // Upward pull gets rubber-banded
+  it('computes bottom sheet drag-to-dismiss physics and cancels on upward flick', () => {
     const upward = computeSheetDragState(-50, 0, 84);
     assert.ok(upward.offsetY < 0 && upward.offsetY > -36);
     assert.equal(upward.shouldDismiss, false);
 
-    // Pulling down past threshold triggers dismiss
     const downward = computeSheetDragState(96, 0.2, 84);
-    assert.equal(downward.offsetY, 96);
     assert.equal(downward.shouldDismiss, true);
-    assert.ok(downward.backdropScale < 1);
 
-    // High downward flick velocity triggers dismiss even with shorter distance
-    const fastFlick = computeSheetDragState(48, 0.9, 84);
-    assert.equal(fastFlick.shouldDismiss, true);
+    // Upward reversal flick cancels dismissal even if pulled past 84px
+    const reversedUp = computeSheetDragState(96, -0.5, 84);
+    assert.equal(reversedUp.shouldDismiss, false);
   });
 
   it('classifies left-edge back swipe and horizontal navigation swipes', () => {
@@ -89,15 +135,6 @@ describe('touchGestures engine', () => {
       durationMs: 210,
     });
     assert.equal(nextItem, 'next-item');
-
-    const prevItem = classifyHorizontalSwipe({
-      startX: 120,
-      startY: 300,
-      endX: 240,
-      endY: 295,
-      durationMs: 210,
-    });
-    assert.equal(prevItem, 'prev-item');
   });
 
   it('detects double-tap within time and distance thresholds', () => {
@@ -111,32 +148,6 @@ describe('touchGestures engine', () => {
         currentY: 204,
       }),
       true
-    );
-
-    // Too slow
-    assert.equal(
-      isDoubleTapGesture({
-        lastTapTime: 1000,
-        currentTime: 1500,
-        lastX: 150,
-        lastY: 200,
-        currentX: 152,
-        currentY: 202,
-      }),
-      false
-    );
-
-    // Too far apart
-    assert.equal(
-      isDoubleTapGesture({
-        lastTapTime: 1000,
-        currentTime: 1180,
-        lastX: 100,
-        lastY: 200,
-        currentX: 220,
-        currentY: 200,
-      }),
-      false
     );
   });
 

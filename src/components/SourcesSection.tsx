@@ -17,10 +17,18 @@ import { SourceAvatar } from './SourceAvatar';
 import {
   triggerHapticSelection,
   triggerHapticPull,
+  triggerHapticDisarm,
   triggerHapticComplete,
   triggerHapticError,
 } from '../utils/haptics';
-import { computeSwipeActionState, type SwipeActionState } from '../utils/touchGestures';
+import {
+  computeSwipeActionState,
+  computeReleaseVelocity,
+  shouldCommitSwipeAction,
+  type SwipeActionState,
+  type GestureAxisLock,
+  type VelocitySample,
+} from '../utils/touchGestures';
 
 interface SourcesSectionProps {
   feeds: Feed[];
@@ -43,6 +51,14 @@ interface SourcesSectionProps {
   isLoadingDirectUrl: boolean;
   onOpenIosModal: () => void;
 }
+
+const INITIAL_ROW_SWIPE: SwipeActionState = {
+  offsetX: 0,
+  direction: 'none',
+  progress: 0,
+  armed: false,
+  axisLock: 'undecided',
+};
 
 export const SourcesSection: React.FC<SourcesSectionProps> = ({
   feeds,
@@ -78,17 +94,15 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
 
   // Swipe action state for individual source rows
   const [swipingFeedId, setSwipingFeedId] = useState<string | null>(null);
-  const [rowSwipeState, setRowSwipeState] = useState<SwipeActionState>({
-    offsetX: 0,
-    direction: 'none',
-    progress: 0,
-    armed: false,
-  });
+  const [rowSwipeState, setRowSwipeState] = useState<SwipeActionState>(INITIAL_ROW_SWIPE);
   const rowTouchStartRef = useRef<{
     feedId: string;
+    pointerId: number;
     x: number;
     y: number;
-    armedFired: boolean;
+    axisLock: GestureAxisLock;
+    armed: boolean;
+    samples: VelocitySample[];
   } | null>(null);
   const didRowSwipeRef = useRef(false);
 
@@ -295,55 +309,100 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
           onPointerDown={(e) => {
             if (e.button !== 0 && e.pointerType === 'mouse') return;
             didRowSwipeRef.current = false;
+            const now = performance.now();
             rowTouchStartRef.current = {
               feedId: feed.id,
+              pointerId: e.pointerId,
               x: e.clientX,
               y: e.clientY,
-              armedFired: false,
+              axisLock: 'undecided',
+              armed: false,
+              samples: [{ x: e.clientX, y: e.clientY, t: now }],
             };
           }}
           onPointerMove={(e) => {
-            if (!rowTouchStartRef.current || rowTouchStartRef.current.feedId !== feed.id) return;
+            const session = rowTouchStartRef.current;
+            if (!session || session.feedId !== feed.id || session.pointerId !== e.pointerId) return;
             if (e.pointerType !== 'touch' && e.buttons !== 1) return;
-            const dx = e.clientX - rowTouchStartRef.current.x;
-            const dy = e.clientY - rowTouchStartRef.current.y;
-            const next = computeSwipeActionState(dx, dy, 64, 110);
-            if (next.offsetX !== 0) {
+
+            const dx = e.clientX - session.x;
+            const dy = e.clientY - session.y;
+            const now = performance.now();
+            session.samples.push({ x: e.clientX, y: e.clientY, t: now });
+            if (session.samples.length > 8) session.samples.shift();
+
+            const next = computeSwipeActionState(
+              dx,
+              dy,
+              64,
+              112,
+              session.axisLock,
+              session.armed
+            );
+            session.axisLock = next.axisLock;
+
+            if (next.axisLock === 'horizontal') {
               didRowSwipeRef.current = true;
+              try {
+                if (!e.currentTarget.hasPointerCapture(e.pointerId)) {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }
+              } catch {
+                // ignore
+              }
               setSwipingFeedId(feed.id);
               setRowSwipeState(next);
             }
-            if (next.armed && !rowTouchStartRef.current.armedFired) {
-              rowTouchStartRef.current.armedFired = true;
+
+            if (next.armed && !session.armed) {
+              session.armed = true;
               triggerHapticPull();
-            } else if (!next.armed && rowTouchStartRef.current.armedFired) {
-              rowTouchStartRef.current.armedFired = false;
+            } else if (!next.armed && session.armed) {
+              session.armed = false;
+              triggerHapticDisarm();
             }
           }}
-          onPointerUp={() => {
-            if (swipingFeedId === feed.id && rowSwipeState.armed) {
-              triggerHapticComplete();
-              if (rowSwipeState.direction === 'right') {
-                handleSingleRefresh(null, feed);
-              } else if (rowSwipeState.direction === 'left') {
-                handleOpenMoveMenu(null, feed);
+          onPointerUp={(e) => {
+            const session = rowTouchStartRef.current;
+            rowTouchStartRef.current = null;
+            if (session) {
+              try {
+                if (e.currentTarget.hasPointerCapture(session.pointerId)) {
+                  e.currentTarget.releasePointerCapture(session.pointerId);
+                }
+              } catch {
+                // ignore
+              }
+              if (swipingFeedId === feed.id && session.axisLock === 'horizontal') {
+                session.samples.push({ x: e.clientX, y: e.clientY, t: performance.now() });
+                const { vx } = computeReleaseVelocity(session.samples);
+                if (shouldCommitSwipeAction({ state: rowSwipeState, velocityX: vx })) {
+                  triggerHapticComplete();
+                  if (rowSwipeState.direction === 'right') {
+                    handleSingleRefresh(null, feed);
+                  } else if (rowSwipeState.direction === 'left') {
+                    handleOpenMoveMenu(null, feed);
+                  }
+                }
               }
             }
-            rowTouchStartRef.current = null;
             setSwipingFeedId(null);
-            setRowSwipeState({ offsetX: 0, direction: 'none', progress: 0, armed: false });
+            setRowSwipeState(INITIAL_ROW_SWIPE);
           }}
-          onPointerCancel={() => {
+          onPointerCancel={(e) => {
+            const session = rowTouchStartRef.current;
             rowTouchStartRef.current = null;
-            setSwipingFeedId(null);
-            setRowSwipeState({ offsetX: 0, direction: 'none', progress: 0, armed: false });
-          }}
-          onPointerLeave={() => {
-            if (rowTouchStartRef.current?.feedId === feed.id) {
-              rowTouchStartRef.current = null;
-              setSwipingFeedId(null);
-              setRowSwipeState({ offsetX: 0, direction: 'none', progress: 0, armed: false });
+            if (session) {
+              try {
+                if (e.currentTarget.hasPointerCapture(session.pointerId)) {
+                  e.currentTarget.releasePointerCapture(session.pointerId);
+                }
+              } catch {
+                // ignore
+              }
             }
+            setSwipingFeedId(null);
+            setRowSwipeState(INITIAL_ROW_SWIPE);
           }}
           role="button"
           tabIndex={0}
