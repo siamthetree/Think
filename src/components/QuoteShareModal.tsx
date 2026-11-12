@@ -62,6 +62,7 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
       readTimeMin: article.readTimeMin || 3,
       imageUrl: article.imageUrl,
       quoteText: activeQuote,
+      attributionUrl: article.link,
     }),
     [storyMode, themeId, article, activeQuote]
   );
@@ -337,10 +338,11 @@ export const QuoteShareModal: React.FC<QuoteShareModalProps> = ({
           <button
             type="button"
             onClick={() => handleStoryShare('download')}
+            aria-label="Save story photo to gallery"
             className="py-2 px-3 rounded-full text-xs font-semibold bg-white/15 hover:bg-white/25 text-white flex items-center justify-center gap-1.5 transition-colors"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Save Image</span>
+            <span>Save Photo</span>
           </button>
         </div>
       </div>

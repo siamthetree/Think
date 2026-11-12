@@ -35,6 +35,7 @@ export interface FeedItem {
   isRead: boolean;
   isBookmarked: boolean;
   isOfflineCached: boolean;
+  hiddenFromFeed?: boolean;
   cachedAt?: number;
   readTimeMin: number;
 }

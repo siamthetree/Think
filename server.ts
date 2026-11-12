@@ -1479,6 +1479,55 @@ app.get('/api/extract', requireApiAccess, extractRateLimiter, async (req: Reques
   }
 });
 
+// 2b. SSRF-Safe Image Proxy for Canvas Story Cards & Save-to-Gallery
+app.get('/api/image-proxy', requireApiAccess, extractRateLimiter, async (req: Request, res: Response) => {
+  let imageUrl = resolveUrl(String(req.query.url || '').trim());
+  if (!imageUrl || imageUrl.length > 2048) {
+    return res.status(400).json({ error: 'Missing or invalid url query parameter' });
+  }
+  if (!/^https?:\/\//i.test(imageUrl)) {
+    imageUrl = 'https://' + imageUrl;
+  }
+
+  try {
+    await assertSafeUrlAndResolve(imageUrl);
+  } catch (ssrfErr: any) {
+    return res.status(400).json({ error: ssrfErr.message || 'Unsafe or disallowed URL' });
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
+  try {
+    const response = await fetch(imageUrl, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1',
+        Accept: 'image/avif,image/webp,image/apng,image/png,image/jpeg,image/*,*/*;q=0.8',
+      },
+    });
+    if (!response.ok) {
+      return res.status(502).json({ error: `Upstream returned ${response.status}` });
+    }
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    if (!contentType.toLowerCase().startsWith('image/')) {
+      return res.status(415).json({ error: 'URL did not return an image' });
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > 10 * 1024 * 1024) {
+      return res.status(413).json({ error: 'Image exceeds 10MB limit' });
+    }
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(Buffer.from(arrayBuffer));
+  } catch (err: any) {
+    res.status(502).json({ error: err?.message || 'Image fetch failed' });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+});
+
 // 3. AI Newspaper Article Summarizer (Powered by Gemini 3.8 Flash with Fallback)
 app.post('/api/summarize', requireApiAccess, summarizeRateLimiter, async (req: Request, res: Response) => {
   try {

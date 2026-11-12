@@ -1,4 +1,39 @@
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { SpotifyReadingStats } from './feedIntelligence';
+import {
+  stripDataUrlPrefix,
+  buildInstagramStoryDeepLink,
+  buildFacebookStoryDeepLink,
+  detectClientPlatform,
+  guessImageExtensionFromMime,
+  sanitizePhotoFilename,
+  buildImageProxyUrl,
+} from './mediaShare';
+
+interface ChintaMediaNativePlugin {
+  shareToInstagramStory(opts: {
+    imageBase64: string;
+    topColor?: string;
+    bottomColor?: string;
+    attributionUrl?: string;
+  }): Promise<{ ok: boolean; method: string; message: string }>;
+  shareToFacebookStory(opts: {
+    imageBase64: string;
+    topColor?: string;
+    bottomColor?: string;
+    appId?: string;
+  }): Promise<{ ok: boolean; method: string; message: string }>;
+  saveImageToGallery(opts: {
+    imageBase64?: string;
+    imageUrl?: string;
+  }): Promise<{ ok: boolean; method: string; message: string }>;
+  shareImageSheet(opts: {
+    imageBase64: string;
+    title?: string;
+  }): Promise<{ ok: boolean; method: string; message: string }>;
+}
+
+const ChintaMedia = registerPlugin<ChintaMediaNativePlugin>('ChintaMedia');
 
 export type StoryCardMode = 'song' | 'wrapped' | 'lyrics';
 export type StoryBackdropThemeId = 'emerald' | 'sunset' | 'midnight' | 'crimson' | 'gold';
@@ -76,6 +111,7 @@ export interface StoryCardPayload {
   readTimeMin?: number;
   imageUrl?: string;
   quoteText?: string;
+  attributionUrl?: string;
   stats?: SpotifyReadingStats;
 }
 
@@ -134,12 +170,11 @@ function wrapCanvasText(
   return lines;
 }
 
-function loadCorsSafeImage(url?: string): Promise<HTMLImageElement | null> {
-  if (!url || !url.startsWith('http')) return Promise.resolve(null);
+function loadSingleImageUrl(src: string, timeoutMs = 2200): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    const timer = setTimeout(() => resolve(null), 1800);
+    const timer = setTimeout(() => resolve(null), timeoutMs);
     img.onload = () => {
       clearTimeout(timer);
       resolve(img);
@@ -148,8 +183,20 @@ function loadCorsSafeImage(url?: string): Promise<HTMLImageElement | null> {
       clearTimeout(timer);
       resolve(null);
     };
-    img.src = url;
+    img.src = src;
   });
+}
+
+async function loadCorsSafeImage(url?: string): Promise<HTMLImageElement | null> {
+  if (!url || !url.startsWith('http')) return null;
+  if (!isNativePlatformSafe()) {
+    const proxied = buildImageProxyUrl(url);
+    if (proxied) {
+      const viaProxy = await loadSingleImageUrl(proxied, 2600);
+      if (viaProxy) return viaProxy;
+    }
+  }
+  return loadSingleImageUrl(url, 1800);
 }
 
 function drawFooterSignature(ctx: CanvasRenderingContext2D, accentColor: string, y: number) {
@@ -489,42 +536,152 @@ export async function renderStoryCardCanvas(
   return canvas;
 }
 
+function isNativePlatformSafe(): boolean {
+  try {
+    return Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+}
+
 function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   return new Promise((resolve) => {
     canvas.toBlob((blob) => resolve(blob), 'image/png', 1.0);
   });
 }
 
-function triggerPngDownload(canvas: HTMLCanvasElement, filename: string) {
-  const dataUrl = canvas.toDataURL('image/png');
+function triggerBlobDownload(blobUrlOrDataUrl: string, filename: string) {
   const a = document.createElement('a');
-  a.href = dataUrl;
+  a.href = blobUrlOrDataUrl;
   a.download = filename;
+  a.rel = 'noopener noreferrer';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
 }
 
+function triggerPngDownload(canvas: HTMLCanvasElement, filename: string) {
+  triggerBlobDownload(canvas.toDataURL('image/png'), filename);
+}
+
+function triggerAppSchemeLink(schemeUrl: string) {
+  try {
+    const a = document.createElement('a');
+    a.href = schemeUrl;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch {
+    // Scheme launch optional on unsupported browsers
+  }
+}
+
+async function copyImageBlobToClipboard(blob: Blob | null): Promise<boolean> {
+  if (!blob || typeof navigator === 'undefined' || !navigator.clipboard) return false;
+  if (typeof ClipboardItem === 'undefined') return false;
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Shares a 9:16 Story card via iOS Share Sheet (Instagram, Facebook, etc.) or saves PNG.
+ * Shares a 9:16 Story card directly to Instagram Stories, Facebook Stories, or saves to Photos Gallery.
+ * On Capacitor iOS, writes PNG + backdrop colors to UIPasteboard and opens instagram-stories:// or
+ * facebook-stories:// directly (matching Spotify's iOS Story sharing flow), or writes to PHPhotoLibrary.
  */
 export async function shareSpotifyStyleStory(
   platform: 'instagram' | 'facebook' | 'native' | 'download',
   payload: StoryCardPayload
 ): Promise<{ ok: boolean; method: string; message: string }> {
   const canvas = await renderStoryCardCanvas(payload);
-  const filename = `chinta-story-${Date.now().toString(36)}.png`;
+  const theme = getTheme(payload.themeId);
+  const filename = sanitizePhotoFilename(`chinta-story-${Date.now().toString(36)}`, 'png');
+  const dataUrl = canvas.toDataURL('image/png');
+  const imageBase64 = stripDataUrlPrefix(dataUrl);
 
+  // 1. Native Capacitor iOS Bridge (Direct Instagram/Facebook Story Pasteboard + Photos Library)
+  if (isNativePlatformSafe()) {
+    try {
+      if (platform === 'instagram') {
+        return await ChintaMedia.shareToInstagramStory({
+          imageBase64,
+          topColor: theme.topColor,
+          bottomColor: theme.bottomColor,
+          attributionUrl: payload.attributionUrl,
+        });
+      }
+      if (platform === 'facebook') {
+        return await ChintaMedia.shareToFacebookStory({
+          imageBase64,
+          topColor: theme.topColor,
+          bottomColor: theme.bottomColor,
+        });
+      }
+      if (platform === 'download') {
+        return await ChintaMedia.saveImageToGallery({ imageBase64 });
+      }
+      return await ChintaMedia.shareImageSheet({
+        imageBase64,
+        title: payload.headline,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg) {
+        return { ok: false, method: 'native-error', message: msg };
+      }
+    }
+  }
+
+  // 2. Web / iOS Safari / Android Mobile Web
+  const blob = await canvasToBlob(canvas);
+  const clientPlatform =
+    typeof navigator !== 'undefined'
+      ? detectClientPlatform(navigator.userAgent, navigator.maxTouchPoints || 0)
+      : 'desktop-web';
+  const isMobileWeb = clientPlatform === 'ios-web' || clientPlatform === 'android-web';
+
+  // Save to Gallery / Photos
   if (platform === 'download') {
+    if (isMobileWeb && blob && typeof File !== 'undefined') {
+      const file = new File([blob], filename, { type: 'image/png' });
+      const shareData: ShareData = {
+        files: [file],
+        title: payload.headline || 'Chinta Story Card',
+      };
+      if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+        try {
+          await navigator.share(shareData);
+          return {
+            ok: true,
+            method: 'web-share-save',
+            message:
+              clientPlatform === 'ios-web'
+                ? 'Tap "Save Image" to add to Photos.'
+                : 'Story image saved to gallery.',
+          };
+        } catch (err: unknown) {
+          if (err instanceof Error && err.name === 'AbortError') {
+            return { ok: false, method: 'cancelled', message: 'Save cancelled.' };
+          }
+        }
+      }
+    }
+
     triggerPngDownload(canvas, filename);
     return {
       ok: true,
       method: 'download',
-      message: 'Story image saved.',
+      message: 'Saved 9:16 story image.',
     };
   }
 
-  const blob = await canvasToBlob(canvas);
+  // Copy image to clipboard as a reliable backup for pasting into Stories
+  const copiedImage = await copyImageBlobToClipboard(blob);
+
   if (blob && typeof File !== 'undefined') {
     const file = new File([blob], filename, { type: 'image/png' });
     const shareData: ShareData = {
@@ -541,9 +698,9 @@ export async function shareSpotifyStyleStory(
           method: 'web-share-files',
           message:
             platform === 'instagram'
-              ? 'Select Instagram in the Share Sheet.'
+              ? 'Shared to Instagram Stories.'
               : platform === 'facebook'
-                ? 'Select Facebook in the Share Sheet.'
+                ? 'Shared to Facebook Stories.'
                 : 'Story shared.',
         };
       } catch (err: unknown) {
@@ -554,15 +711,116 @@ export async function shareSpotifyStyleStory(
     }
   }
 
+  // Fallback: Download PNG and on mobile deep-link directly to IG / FB Stories composer
   triggerPngDownload(canvas, filename);
+  if (isMobileWeb) {
+    if (platform === 'instagram') {
+      triggerAppSchemeLink(buildInstagramStoryDeepLink());
+    } else if (platform === 'facebook') {
+      triggerAppSchemeLink(buildFacebookStoryDeepLink());
+    }
+  }
+
   return {
     ok: true,
     method: 'download-fallback',
     message:
       platform === 'instagram'
-        ? 'Image saved — pick it from Photos in Instagram Stories.'
+        ? copiedImage
+          ? 'Saved & copied — paste or pick from Photos in Instagram Stories.'
+          : 'Saved — pick from Photos in Instagram Stories.'
         : platform === 'facebook'
-          ? 'Image saved — pick it from Photos in Facebook Stories.'
+          ? copiedImage
+            ? 'Saved & copied — paste or pick from Photos in Facebook Stories.'
+            : 'Saved — pick from Photos in Facebook Stories.'
           : 'Story image saved.',
+  };
+}
+
+/**
+ * Saves any article or feed photo directly to Apple Photos (Capacitor iOS) or browser gallery.
+ */
+export async function savePhotoToGallery(
+  imageUrl: string,
+  label = 'chinta-photo'
+): Promise<{ ok: boolean; method: string; message: string }> {
+  if (!imageUrl || !imageUrl.startsWith('http')) {
+    return { ok: false, method: 'invalid-url', message: 'Photo URL unavailable.' };
+  }
+
+  if (isNativePlatformSafe()) {
+    try {
+      return await ChintaMedia.saveImageToGallery({ imageUrl });
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        method: 'native-error',
+        message: err instanceof Error ? err.message : 'Unable to save to Photos.',
+      };
+    }
+  }
+
+  const proxyUrl = buildImageProxyUrl(imageUrl);
+  let blob: Blob | null = null;
+  let mimeType = 'image/jpeg';
+
+  for (const candidate of [proxyUrl, imageUrl].filter(Boolean)) {
+    try {
+      const res = await fetch(candidate);
+      if (!res.ok) continue;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType && !contentType.toLowerCase().startsWith('image/')) continue;
+      blob = await res.blob();
+      mimeType = contentType || blob.type || 'image/jpeg';
+      if (blob.size > 0) break;
+    } catch {
+      // Try next candidate
+    }
+  }
+
+  if (!blob) {
+    return { ok: false, method: 'fetch-failed', message: 'Could not download this photo.' };
+  }
+
+  const ext = guessImageExtensionFromMime(mimeType, imageUrl);
+  const filename = sanitizePhotoFilename(label, ext);
+  const clientPlatform =
+    typeof navigator !== 'undefined'
+      ? detectClientPlatform(navigator.userAgent, navigator.maxTouchPoints || 0)
+      : 'desktop-web';
+  const isMobileWeb = clientPlatform === 'ios-web' || clientPlatform === 'android-web';
+
+  if (isMobileWeb && typeof File !== 'undefined') {
+    const file = new File([blob], filename, { type: mimeType });
+    const shareData: ShareData = { files: [file], title: label };
+    if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+      try {
+        await navigator.share(shareData);
+        return {
+          ok: true,
+          method: 'web-share-save',
+          message:
+            clientPlatform === 'ios-web'
+              ? 'Tap "Save Image" to add to Photos.'
+              : 'Photo saved to gallery.',
+        };
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          return { ok: false, method: 'cancelled', message: 'Save cancelled.' };
+        }
+      }
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    triggerBlobDownload(objectUrl, filename);
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+  }
+  return {
+    ok: true,
+    method: 'download',
+    message: 'Photo saved.',
   };
 }

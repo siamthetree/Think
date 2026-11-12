@@ -680,6 +680,9 @@ export function filterArticles(
     }
 
     // Mode filter
+    if ((filterMode === 'all' || filterMode === 'unread') && article.hiddenFromFeed) {
+      return false;
+    }
     if (filterMode === 'unread' && article.isRead) {
       return false;
     }

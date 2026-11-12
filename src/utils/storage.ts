@@ -20,6 +20,7 @@ const STORAGE_KEYS = {
   TAGS: 'paperpress_tags_v2',
   PREFS: 'paperpress_reader_prefs_v2',
   FOLDERS: 'paperpress_folders_v1',
+  READ_KEYS: 'chinta_read_article_keys_v1',
 };
 
 export const DEFAULT_FOLDERS: string[] = [];
@@ -259,6 +260,20 @@ export function savePreferencesToStorage(prefs: ReaderPreferences): void {
     localStorage.setItem(STORAGE_KEYS.PREFS, JSON.stringify(prefs));
   } catch (e) {
     console.error('Failed to save preferences to localStorage', e);
+  }
+}
+
+export function loadReadArticleKeysFromStorage(): string[] {
+  return readArray<string>(STORAGE_KEYS.READ_KEYS) || [];
+}
+
+export function saveReadArticleKeysToStorage(keys: string[]): void {
+  try {
+    // Keep up to the 2000 most recent read keys so old read articles never return on refresh
+    const bounded = keys.length > 2000 ? keys.slice(-2000) : keys;
+    localStorage.setItem(STORAGE_KEYS.READ_KEYS, JSON.stringify(bounded));
+  } catch (e) {
+    console.error('Failed to save read article keys to localStorage', e);
   }
 }
 

@@ -1,0 +1,94 @@
+export type WebClientPlatform = 'ios-web' | 'android-web' | 'desktop-web';
+
+/**
+ * Strips `data:image/png;base64,` prefix so native iOS bridge receives raw base64 bytes.
+ */
+export function stripDataUrlPrefix(dataUrlOrBase64: string): string {
+  const raw = (dataUrlOrBase64 || '').trim();
+  const idx = raw.indexOf('base64,');
+  return idx !== -1 ? raw.slice(idx + 'base64,'.length) : raw;
+}
+
+/**
+ * Builds Meta's official Instagram Stories iOS/Android URL scheme.
+ */
+export function buildInstagramStoryDeepLink(sourceApp = 'app.chinta.reader'): string {
+  const safeApp = encodeURIComponent((sourceApp || 'app.chinta.reader').trim());
+  return `instagram-stories://share?source_application=${safeApp}`;
+}
+
+/**
+ * Builds Meta's official Facebook Stories iOS/Android URL scheme.
+ */
+export function buildFacebookStoryDeepLink(
+  sourceApp = 'app.chinta.reader',
+  appId?: string
+): string {
+  const safeApp = encodeURIComponent((sourceApp || 'app.chinta.reader').trim());
+  const params = [`source_application=${safeApp}`];
+  if (appId && appId.trim()) {
+    params.push(`app_id=${encodeURIComponent(appId.trim())}`);
+  }
+  return `facebook-stories://share?${params.join('&')}`;
+}
+
+/**
+ * Detects whether a browser runtime is iOS Safari/WebKit, Android browser, or desktop browser.
+ */
+export function detectClientPlatform(
+  userAgent = '',
+  maxTouchPoints = 0
+): WebClientPlatform {
+  const ua = userAgent || '';
+  if (/iPhone|iPad|iPod/i.test(ua) || (/Macintosh/i.test(ua) && maxTouchPoints > 1)) {
+    return 'ios-web';
+  }
+  if (/Android/i.test(ua)) {
+    return 'android-web';
+  }
+  return 'desktop-web';
+}
+
+/**
+ * Infers safe file extension from Content-Type MIME or URL path.
+ */
+export function guessImageExtensionFromMime(mimeType = '', url = ''): string {
+  const mime = mimeType.toLowerCase();
+  if (mime.includes('png')) return 'png';
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('gif')) return 'gif';
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
+
+  const cleanPath = url.split('?')[0].toLowerCase();
+  if (cleanPath.endsWith('.png')) return 'png';
+  if (cleanPath.endsWith('.webp')) return 'webp';
+  if (cleanPath.endsWith('.gif')) return 'gif';
+  return 'jpg';
+}
+
+/**
+ * Produces a filesystem/Photos-safe filename for saved cards and article images.
+ */
+export function sanitizePhotoFilename(
+  label = 'chinta-photo',
+  extension = 'png'
+): string {
+  const base = (label || 'chinta-photo')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'chinta-photo';
+  const ext = (extension || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+  return `${base}.${ext}`;
+}
+
+/**
+ * Builds the SSRF-checked backend image proxy URL for safe untainted canvas & gallery saving.
+ */
+export function buildImageProxyUrl(targetUrl: string): string {
+  const clean = (targetUrl || '').trim();
+  if (!clean || (!clean.startsWith('http://') && !clean.startsWith('https://'))) {
+    return '';
+  }
+  return `/api/image-proxy?url=${encodeURIComponent(clean)}`;
+}

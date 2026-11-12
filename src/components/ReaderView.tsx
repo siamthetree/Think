@@ -14,6 +14,7 @@ import {
   Quote,
   EyeOff,
   HardDriveDownload,
+  Download,
 } from 'lucide-react';
 import type { FeedItem, Tag, ReaderPreferences, ReaderTheme, ReaderFont, ReaderLineHeight } from '../types';
 import { sanitizeArticleHtml, blocksToHtml, isJavaScriptWarningText } from '../utils/sanitize';
@@ -38,6 +39,7 @@ import {
 import { QuoteShareModal } from './QuoteShareModal';
 import { PerspectiveLogo } from './PerspectiveLogo';
 import { generateQuickTldrBullets } from '../utils/feedIntelligence';
+import { savePhotoToGallery } from '../utils/storyCardRenderer';
 
 interface ReaderViewProps {
   article: FeedItem;
@@ -258,6 +260,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setTimeout(() => {
       setToastMessage((cur) => (cur === msg ? null : cur));
     }, 2200);
+  };
+
+  const handleSaveArticlePhoto = async (photoUrl: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    triggerHapticSelection();
+    const res = await savePhotoToGallery(photoUrl, extractedMeta.title || article.title);
+    if (res.ok) triggerHapticComplete();
+    showToast(res.message);
   };
 
   const handleTouchStartSwipe = (e: React.TouchEvent) => {
@@ -1188,7 +1198,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           {/* 7. Lead / Hero Image */}
           {(extractedMeta.leadImage || article.imageUrl) && (
             <figure
-              className="my-6 overflow-hidden rounded-[2px]"
+              className="my-6 overflow-hidden rounded-[2px] relative group"
               style={{ backgroundColor: 'var(--reader-surface)' }}
             >
               <img
@@ -1201,6 +1211,23 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   (e.target as HTMLElement).style.display = 'none';
                 }}
               />
+              {!preferences.distractionFree && (
+                <button
+                  type="button"
+                  onClick={(e) =>
+                    handleSaveArticlePhoto(
+                      (extractedMeta.leadImage || article.imageUrl) as string,
+                      e
+                    )
+                  }
+                  aria-label="Save photo to gallery"
+                  title="Save photo to gallery"
+                  className="absolute bottom-2.5 right-2.5 liquid-glass-dock px-2.5 py-1 rounded-full text-[10px] font-sans font-semibold text-white/95 flex items-center gap-1 border border-white/20 shadow-lg opacity-85 hover:opacity-100 active:scale-95 transition-all"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>Save</span>
+                </button>
+              )}
             </figure>
           )}
 
@@ -1261,18 +1288,33 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   );
                 }
                 if (block.type === 'img' && block.src) {
+                  const imgSrc = block.src;
                   return (
                     <figure
                       key={idx}
                       className="my-6 overflow-hidden rounded-[2px]"
                       style={{ backgroundColor: 'var(--reader-surface)' }}
                     >
-                      <img
-                        src={block.src}
-                        alt=""
-                        referrerPolicy="no-referrer"
-                        className="w-full h-auto object-cover block"
-                      />
+                      <div className="relative">
+                        <img
+                          src={imgSrc}
+                          alt=""
+                          referrerPolicy="no-referrer"
+                          className="w-full h-auto object-cover block"
+                        />
+                        {!preferences.distractionFree && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleSaveArticlePhoto(imgSrc, e)}
+                            aria-label="Save photo to gallery"
+                            title="Save photo to gallery"
+                            className="absolute bottom-2.5 right-2.5 liquid-glass-dock px-2.5 py-1 rounded-full text-[10px] font-sans font-semibold text-white/95 flex items-center gap-1 border border-white/20 shadow-lg opacity-85 hover:opacity-100 active:scale-95 transition-all"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Save</span>
+                          </button>
+                        )}
+                      </div>
                       {block.caption && (
                         <figcaption
                           className="pt-2 text-xs font-sans"

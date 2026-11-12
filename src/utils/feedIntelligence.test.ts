@@ -14,6 +14,9 @@ import {
   normalizeReadingHabitState,
   computeSpotifyReadingStats,
   findNewIncomingArticles,
+  canonicalizeArticleLink,
+  filterOutAlreadyReadIncoming,
+  clearReadArticlesForRefresh,
   type ReadingHabitState,
 } from './feedIntelligence';
 
@@ -279,4 +282,68 @@ test('findNewIncomingArticles returns only articles not already present by id or
   const diff = findNewIncomingArticles(existing, incoming);
   assert.equal(diff.length, 1);
   assert.equal(diff[0].id, '3');
+});
+
+test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read stories from returning on refresh', () => {
+  const readStory = makeArticle({
+    id: 'art_read_1',
+    feedId: 'f1',
+    title: 'Already read story',
+    link: 'https://example.com/news/story-1/?utm_source=rss',
+    isRead: true,
+    isBookmarked: false,
+  });
+  const savedReadStory = makeArticle({
+    id: 'art_saved_read',
+    feedId: 'f1',
+    title: 'Bookmarked read story',
+    link: 'https://example.com/news/story-2',
+    isRead: true,
+    isBookmarked: true,
+  });
+  const unreadStory = makeArticle({
+    id: 'art_unread_1',
+    feedId: 'f1',
+    title: 'Unread story still in feed',
+    link: 'https://example.com/news/story-3',
+    isRead: false,
+  });
+
+  const { nextArticles, newlyRecordedKeys } = clearReadArticlesForRefresh([
+    readStory,
+    savedReadStory,
+    unreadStory,
+  ]);
+
+  assert.equal(nextArticles.some((a) => a.id === 'art_read_1'), false);
+  const keptSaved = nextArticles.find((a) => a.id === 'art_saved_read');
+  assert.ok(keptSaved);
+  assert.equal(keptSaved.hiddenFromFeed, true);
+  assert.equal(nextArticles.some((a) => a.id === 'art_unread_1'), true);
+
+  const readKeys = new Set(newlyRecordedKeys);
+  const incomingFromRss = [
+    makeArticle({
+      id: 'art_read_1_new_guid',
+      feedId: 'f1',
+      title: 'Already read story',
+      link: 'https://example.com/news/story-1',
+      isRead: false,
+    }),
+    makeArticle({
+      id: 'art_brand_new',
+      feedId: 'f1',
+      title: 'Fresh breaking report',
+      link: 'https://example.com/news/story-4',
+      isRead: false,
+    }),
+  ];
+
+  const filteredIncoming = filterOutAlreadyReadIncoming(incomingFromRss, readKeys);
+  assert.equal(filteredIncoming.length, 1);
+  assert.equal(filteredIncoming[0].id, 'art_brand_new');
+  assert.equal(
+    canonicalizeArticleLink('https://example.com/news/story-1/?utm_source=rss'),
+    'https://example.com/news/story-1'
+  );
 });

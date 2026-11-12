@@ -78,6 +78,9 @@ jobs:
           echo "Syncing Capacitor iOS..."
           npx cap sync ios || (cd ios/App && pod install --repo-update && cd ../.. && npx cap copy ios)
 
+          echo "Configuring native Instagram/Facebook Story & Photos bridge..."
+          node scripts/configure-ios-native.mjs
+
       - name: Select Xcode Version
         run: |
           if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then

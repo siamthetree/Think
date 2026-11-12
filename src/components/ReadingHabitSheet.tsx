@@ -494,10 +494,11 @@ export const ReadingHabitSheet: React.FC<ReadingHabitSheetProps> = ({
                   type="button"
                   disabled={isExporting}
                   onClick={() => handleShareStory('download')}
-                  className="py-2.5 px-2 rounded-full text-[11px] font-semibold bg-white/15 hover:bg-white/25 text-white flex items-center justify-center gap-1.5 active:scale-95 transition-transform disabled:opacity-50"
+                  aria-label="Save story photo to gallery"
+                  className="py-2.5 px-2 rounded-full text-[11px] font-semibold bg-white/15 hover:bg-white/25 text-white flex items-center justify-center gap-1.5 active:scale-95 transition-transform disabled:opacity-50 whitespace-nowrap"
                 >
                   <Download className="w-3.5 h-3.5 shrink-0" />
-                  <span>Save</span>
+                  <span>Save Photo</span>
                 </button>
               </div>
             </div>

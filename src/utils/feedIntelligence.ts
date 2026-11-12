@@ -970,16 +970,114 @@ export function computeSpotifyReadingStats(
 }
 
 /**
- * Filters incoming articles to find genuinely new ones not yet present in currentArticles
+ * Produces a canonical article link key (strips tracking query params and trailing slashes)
+ */
+export function canonicalizeArticleLink(rawLink?: string): string {
+  if (!rawLink) return '';
+  const trimmed = rawLink.trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    const trackingParams = [
+      'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+      'fbclid', 'gclid', 'ref', 'mc_cid', 'mc_eid',
+    ];
+    for (const key of trackingParams) {
+      parsed.searchParams.delete(key);
+    }
+    const cleanPath = parsed.pathname.replace(/\/+$/, '') || '/';
+    const search = parsed.searchParams.toString();
+    return `${parsed.origin.toLowerCase()}${cleanPath}${search ? `?${search}` : ''}`;
+  } catch {
+    return trimmed.replace(/\/+$/, '').toLowerCase();
+  }
+}
+
+/**
+ * Checks whether an article has already been read using its ID or canonicalized link
+ */
+export function isArticleInReadKeys(
+  item: Pick<FeedItem, 'id' | 'link'>,
+  readKeys: Set<string>
+): boolean {
+  if (!readKeys || readKeys.size === 0) return false;
+  if (item.id && readKeys.has(item.id)) return true;
+  if (item.link) {
+    if (readKeys.has(item.link)) return true;
+    const canonical = canonicalizeArticleLink(item.link);
+    if (canonical && readKeys.has(canonical)) return true;
+  }
+  return false;
+}
+
+/**
+ * Excludes any incoming articles the user has already read so refreshes only bring new unread content
+ */
+export function filterOutAlreadyReadIncoming(
+  incomingArticles: FeedItem[],
+  readKeys: Set<string>
+): FeedItem[] {
+  if (!readKeys || readKeys.size === 0) return incomingArticles;
+  return incomingArticles.filter((item) => !isArticleInReadKeys(item, readKeys));
+}
+
+/**
+ * Clears read articles from the refreshed scope while recording their keys so they never come back.
+ * Bookmarked read stories are preserved with hiddenFromFeed=true so Saved tab keeps them intact.
+ */
+export function clearReadArticlesForRefresh(
+  articles: FeedItem[],
+  scopePredicate?: (item: FeedItem) => boolean
+): { nextArticles: FeedItem[]; newlyRecordedKeys: string[] } {
+  const keys = new Set<string>();
+  const nextArticles: FeedItem[] = [];
+
+  for (const item of articles) {
+    const inScope = !scopePredicate || scopePredicate(item);
+    if (item.isRead) {
+      if (item.id) keys.add(item.id);
+      if (item.link) {
+        keys.add(item.link);
+        const canonical = canonicalizeArticleLink(item.link);
+        if (canonical) keys.add(canonical);
+      }
+      if (inScope) {
+        if (item.isBookmarked) {
+          nextArticles.push({ ...item, hiddenFromFeed: true });
+        }
+        continue;
+      }
+    }
+    nextArticles.push(item);
+  }
+
+  return {
+    nextArticles,
+    newlyRecordedKeys: Array.from(keys),
+  };
+}
+
+/**
+ * Filters incoming articles to find genuinely new unread ones not yet present in currentArticles or readKeys
  */
 export function findNewIncomingArticles(
   currentArticles: FeedItem[],
-  incomingArticles: FeedItem[]
+  incomingArticles: FeedItem[],
+  readKeys?: Set<string>
 ): FeedItem[] {
   const existingIds = new Set(currentArticles.map((a) => a.id));
-  const existingLinks = new Set(currentArticles.map((a) => a.link));
-
-  return incomingArticles.filter(
-    (item) => !existingIds.has(item.id) && (!item.link || !existingLinks.has(item.link))
+  const existingLinks = new Set(
+    currentArticles.flatMap((a) => [a.link, canonicalizeArticleLink(a.link)].filter(Boolean))
   );
+
+  return incomingArticles.filter((item) => {
+    if (readKeys && isArticleInReadKeys(item, readKeys)) return false;
+    if (existingIds.has(item.id)) return false;
+    if (item.link) {
+      if (existingLinks.has(item.link)) return false;
+      const canonical = canonicalizeArticleLink(item.link);
+      if (canonical && existingLinks.has(canonical)) return false;
+    }
+    return true;
+  });
 }
