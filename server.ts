@@ -630,9 +630,9 @@ function requireApiAccess(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-const rssRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 60 });
-const extractRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 40 });
-const summarizeRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 10 });
+const rssRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 150 });
+const extractRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 100 });
+const summarizeRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 15 });
 const publishBlogRateLimiter = createRateLimiter({ windowMs: 10 * 60_000, maxRequests: 6 });
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB hard cap

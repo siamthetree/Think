@@ -174,11 +174,14 @@ export async function fetchFeedWithFallback(params: {
     return null;
   };
 
-  // Try backend first (works on Web and on iPhone via Cloud Run URL), then on-device fallback
+  // Try backend first (works on Web and on iPhone via Cloud Run URL), then on-device fallback on native iOS Capacitor
   const backendData = await viaBackend();
   if (backendData) return backendData;
 
-  return fetchFeedOnDevice(normalizedParams);
+  if (isNativeCapacitor()) {
+    return fetchFeedOnDevice(normalizedParams);
+  }
+  return { feedTitle: normalizedParams.title, items: [], resolvedFeedUrl: normalizedParams.url };
 }
 
 async function fetchFeedOnDevice(params: {

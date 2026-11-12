@@ -7,13 +7,13 @@ import {
   Sparkles,
   CheckCircle2,
   Clock,
-  Layers,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
 import type { FeedItem } from '../types';
 import { formatRelativeTime } from '../utils/feedParser';
 import { SourceAvatar } from './SourceAvatar';
+import { PerspectiveLogo } from './PerspectiveLogo';
 import {
   triggerHapticSelection,
   triggerHapticPull,
@@ -40,6 +40,7 @@ interface ArticleCardProps {
   onToggleRead: (id: string, e?: React.MouseEvent) => void;
   onOpenTagManager?: (article: FeedItem, e: React.MouseEvent) => void;
   onQuickPeek?: (article: FeedItem) => void;
+  onOpenPerspective?: (article: FeedItem) => void;
 }
 
 const INITIAL_SWIPE_STATE: SwipeActionState = {
@@ -58,6 +59,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   onToggleBookmark,
   onToggleRead,
   onQuickPeek,
+  onOpenPerspective,
 }) => {
   const readTime = article.readTimeMin || 3;
 
@@ -443,6 +445,25 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           </div>
 
           <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+            {onOpenPerspective && (
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHapticSelection();
+                  onOpenPerspective(article);
+                }}
+                aria-label={`Perspective for ${article.title}`}
+                title="Perspective — Search same news across all sources"
+                className="p-2 rounded-full text-stone-400 hover:text-[#FF6719] transition-colors active:scale-90 flex items-center gap-1"
+              >
+                <PerspectiveLogo className="w-4 h-4 text-[#FF6719]" />
+                {perspectives.length > 0 && (
+                  <span className="text-[10px] font-bold text-[#FF6719] tabular-nums">
+                    +{perspectives.length}
+                  </span>
+                )}
+              </button>
+            )}
             {onQuickPeek && (
               <button
                 type="button"
@@ -603,37 +624,52 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           </div>
         )}
 
-        {/* 4b. Multi-Source Developing Story Perspectives Cluster (when related coverage exists) */}
+        {/* 4b. Multi-Source Perspective Cluster (when related coverage exists) */}
         {perspectives.length > 0 && (
           <div
             onClick={(e) => e.stopPropagation()}
             className="mb-3 rounded-2xl bg-stone-100/80 dark:bg-white/[0.04] border border-stone-200/70 dark:border-white/[0.08] overflow-hidden"
           >
-            <button
-              type="button"
-              onClick={() => {
-                triggerHapticSelection();
-                setShowPerspectives((v) => !v);
-              }}
-              aria-expanded={showPerspectives}
-              className="w-full px-3.5 py-2 flex items-center justify-between text-xs font-medium text-stone-700 dark:text-stone-200 hover:bg-stone-200/50 dark:hover:bg-white/[0.04] transition-colors"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <Layers className="w-3.5 h-3.5 text-[#FF6719] shrink-0" />
+            <div className="w-full px-3.5 py-2 flex items-center justify-between gap-2 text-xs font-medium text-stone-700 dark:text-stone-200">
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHapticSelection();
+                  if (onOpenPerspective) {
+                    onOpenPerspective(article);
+                  } else {
+                    setShowPerspectives((v) => !v);
+                  }
+                }}
+                className="flex items-center gap-2 min-w-0 flex-1 text-left hover:opacity-85 transition-opacity"
+              >
+                <PerspectiveLogo className="w-4 h-4 text-[#FF6719] shrink-0" />
                 <span className="font-semibold text-stone-900 dark:text-stone-100">
-                  Developing Story
+                  Perspective
                 </span>
                 <span aria-hidden="true" className="text-stone-400">·</span>
                 <span className="text-stone-500 dark:text-stone-400 truncate tabular-nums">
-                  +{perspectives.length} {perspectives.length === 1 ? 'perspective' : 'perspectives'} from other sources
+                  +{perspectives.length} {perspectives.length === 1 ? 'source' : 'sources'} covering this story
                 </span>
-              </div>
-              {showPerspectives ? (
-                <ChevronUp className="w-3.5 h-3.5 text-stone-400 shrink-0" />
-              ) : (
-                <ChevronDown className="w-3.5 h-3.5 text-stone-400 shrink-0" />
-              )}
-            </button>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHapticSelection();
+                  setShowPerspectives((v) => !v);
+                }}
+                aria-expanded={showPerspectives}
+                aria-label="Toggle inline perspective list"
+                className="p-1 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-white transition-colors shrink-0"
+              >
+                {showPerspectives ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </div>
 
             {showPerspectives && (
               <div className="divide-y divide-stone-200/60 dark:divide-white/[0.06] border-t border-stone-200/60 dark:border-white/[0.06]">
@@ -664,18 +700,31 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                     </span>
                   </div>
                 ))}
+                {onOpenPerspective && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHapticSelection();
+                      onOpenPerspective(article);
+                    }}
+                    className="w-full px-3.5 py-2 text-[11px] font-semibold text-[#FF6719] hover:bg-stone-200/40 dark:hover:bg-white/[0.05] flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <PerspectiveLogo className="w-3.5 h-3.5" />
+                    <span>Search All App Sources in Perspective →</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
         )}
 
-        {/* 5. Minimal Social & Utility Action Ribbon (Like, Restack, TL;DR Quick Peek, Share & Bookmark) */}
+        {/* 5. Minimal Social & Utility Action Ribbon (Like, Restack, Perspective, TL;DR Quick Peek, Share & Bookmark) */}
         <div
           className="flex items-center justify-between text-xs text-stone-500 dark:text-stone-400 pt-1 border-t border-stone-100 dark:border-white/[0.05]"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Left: Like, Restack, Quick TL;DR Peek */}
-          <div className="flex items-center gap-4 sm:gap-5">
+          {/* Left: Like, Restack, Perspective, Quick TL;DR Peek */}
+          <div className="flex items-center gap-3.5 sm:gap-4">
             <button
               type="button"
               onClick={handleLike}
@@ -711,6 +760,27 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
               />
               <span className="text-[12px]">{restacksCount}</span>
             </button>
+
+            {onOpenPerspective && (
+              <button
+                type="button"
+                onClick={() => {
+                  triggerHapticSelection();
+                  onOpenPerspective(article);
+                }}
+                aria-label={`Perspective for ${article.title}`}
+                title="Perspective — Search all matching news across app sources"
+                className="flex items-center gap-1.5 py-1 px-1.5 rounded-lg text-stone-600 dark:text-stone-300 hover:text-[#FF6719] dark:hover:text-[#FF6719] transition-colors whitespace-nowrap active:scale-95"
+              >
+                <PerspectiveLogo className="w-3.5 h-3.5 text-[#FF6719]" />
+                <span className="text-[12px] font-medium">Perspective</span>
+                {perspectives.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-[#FF6719]/15 text-[#FF6719] text-[10px] font-bold tabular-nums">
+                    +{perspectives.length}
+                  </span>
+                )}
+              </button>
+            )}
 
             {onQuickPeek && (
               <button

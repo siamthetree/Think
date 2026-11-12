@@ -26,6 +26,7 @@ import { PullToRefresh } from './components/PullToRefresh';
 import { DailyBriefingCard } from './components/DailyBriefingCard';
 import { QuickPeekModal } from './components/QuickPeekModal';
 import { ReadingHabitSheet } from './components/ReadingHabitSheet';
+import { PerspectiveModal } from './components/PerspectiveModal';
 import { triggerHapticSelection, triggerHapticComplete } from './utils/haptics';
 import type { Feed, FeedItem, Tag, ReaderPreferences } from './types';
 import {
@@ -61,7 +62,7 @@ import {
   fetchFeedWithFallback,
   extractArticleWithFallback,
 } from './utils/apiClient';
-import { blocksToHtml, escapeHtml } from './utils/sanitize';
+import { blocksToHtml, escapeHtml, isJavaScriptWarningText } from './utils/sanitize';
 
 export default function App() {
   // Core Persistent State
@@ -165,6 +166,9 @@ export default function App() {
   const [isIosModalOpen, setIsIosModalOpen] = useState(false);
   const [isHabitSheetOpen, setIsHabitSheetOpen] = useState(false);
   const [quickPeekArticle, setQuickPeekArticle] = useState<FeedItem | null>(null);
+  const [perspectiveArticle, setPerspectiveArticle] = useState<FeedItem | null>(null);
+  const [isScanningPerspectiveSources, setIsScanningPerspectiveSources] = useState(false);
+  const [isOpeningFullArticle, setIsOpeningFullArticle] = useState(false);
   const [pendingNewArticles, setPendingNewArticles] = useState<FeedItem[]>([]);
   const [readerInitialScrollTop, setReaderInitialScrollTop] = useState(0);
 
@@ -369,7 +373,7 @@ export default function App() {
     };
   }, []);
 
-  // Smart Background Pre-Extraction for Top 3 Unread Stories (0ms instant Reader open)
+  // Smart Background Pre-Extraction for Top 6 Unread Stories (0ms instant fully-loaded Reader open)
   const preExtractedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (isOffline || articles.length === 0) return;
@@ -383,7 +387,7 @@ export default function App() {
           !/\/video\//i.test(a.link) &&
           !preExtractedIdsRef.current.has(a.id)
       )
-      .slice(0, 2);
+      .slice(0, 6);
 
     if (candidates.length === 0) return;
     let cancelled = false;
@@ -394,18 +398,21 @@ export default function App() {
         try {
           const data = await extractArticleWithFallback(candidate.link);
           if (!cancelled && data.success && data.blocks && data.blocks.length > 0) {
-            const contentClean = data.blocks
+            const validBlocks = data.blocks.filter(
+              (b) => !b.text || !isJavaScriptWarningText(b.text)
+            );
+            const contentClean = validBlocks
               .map((b) => b.text || '')
               .filter(Boolean)
               .join('\n\n');
-            if (contentClean.length >= 200) {
+            if (validBlocks.length > 0 && contentClean.length >= 120) {
               handleCacheExtractedArticle(candidate.id, {
                 title: data.title,
                 author: data.author,
                 leadImage: data.leadImage,
                 readTimeMin: data.readTimeMin,
                 contentClean,
-                contentHtml: blocksToHtml(data.blocks),
+                contentHtml: blocksToHtml(validBlocks),
               });
             }
           }
@@ -413,7 +420,7 @@ export default function App() {
           // silent background pre-fetch
         }
       }
-    }, 3200);
+    }, 900);
 
     return () => {
       cancelled = true;
@@ -707,7 +714,7 @@ export default function App() {
     await processDirectUrl(directUrlInput);
   };
 
-  // Cache extracted article content back into articles state for offline reading
+  // Cache extracted article content back into articles state and activeArticle for offline/instant reading
   const handleCacheExtractedArticle = (
     articleId: string,
     extracted: {
@@ -736,17 +743,33 @@ export default function App() {
           : a
       )
     );
+    setActiveArticle((curr) =>
+      curr && curr.id === articleId
+        ? {
+            ...curr,
+            title: extracted.title || curr.title,
+            author: extracted.author || curr.author,
+            imageUrl: extracted.leadImage || curr.imageUrl,
+            readTimeMin: extracted.readTimeMin || curr.readTimeMin,
+            contentClean: extracted.contentClean || curr.contentClean,
+            contentHtml: extracted.contentHtml || curr.contentHtml,
+            isOfflineCached: true,
+            cachedAt: Date.now(),
+          }
+        : curr
+    );
   };
 
-  // Open article in ReaderView and record mindful reading habit progress
-  const handleOpenArticle = (article: FeedItem, resumeScrollTop = 0) => {
+  // Open article fully loaded in ReaderView and record mindful reading habit progress
+  const handleOpenArticle = async (article: FeedItem, resumeScrollTop = 0) => {
+    const latest = articles.find((a) => a.id === article.id) || article;
     setReaderInitialScrollTop(resumeScrollTop);
-    setActiveArticle(article);
+
     setReadingHabit((prev) => {
       const { nextState, justHitDailyGoal } = recordArticleReadInHabit(
         prev,
-        article.id,
-        article.readTimeMin || 3
+        latest.id,
+        latest.readTimeMin || 3
       );
       if (justHitDailyGoal) {
         setTimeout(() => {
@@ -756,6 +779,93 @@ export default function App() {
       }
       return nextState;
     });
+
+    // Ensure the article opens fully loaded in reading view
+    if (
+      !hasFullBody(latest) &&
+      !isOffline &&
+      latest.link &&
+      latest.link.startsWith('http') &&
+      !/\/video\//i.test(latest.link) &&
+      !/news\.google\.com\/rss\/articles\//i.test(latest.link)
+    ) {
+      setIsOpeningFullArticle(true);
+      try {
+        const extractionPromise = extractArticleWithFallback(latest.link);
+        const timeoutPromise = new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), 2400)
+        );
+        const data = await Promise.race([extractionPromise, timeoutPromise]);
+        if (data && data.success && data.blocks && data.blocks.length > 0) {
+          const validBlocks = data.blocks.filter(
+            (b) => !b.text || !isJavaScriptWarningText(b.text)
+          );
+          const contentClean = validBlocks
+            .map((b) => b.text || '')
+            .filter(Boolean)
+            .join('\n\n');
+          if (validBlocks.length > 0 && contentClean.length >= 80) {
+            const contentHtml = blocksToHtml(validBlocks);
+            const fullyLoadedArticle: FeedItem = {
+              ...latest,
+              title: data.title || latest.title,
+              author: data.author || latest.author,
+              imageUrl: data.leadImage || latest.imageUrl,
+              readTimeMin: data.readTimeMin || latest.readTimeMin,
+              contentClean,
+              contentHtml,
+              isOfflineCached: true,
+              cachedAt: Date.now(),
+            };
+            handleCacheExtractedArticle(latest.id, {
+              title: fullyLoadedArticle.title,
+              author: fullyLoadedArticle.author,
+              leadImage: fullyLoadedArticle.imageUrl,
+              readTimeMin: fullyLoadedArticle.readTimeMin,
+              contentClean: fullyLoadedArticle.contentClean,
+              contentHtml: fullyLoadedArticle.contentHtml,
+            });
+            setIsOpeningFullArticle(false);
+            setActiveArticle(fullyLoadedArticle);
+            return;
+          }
+        }
+      } catch {
+        // Fallback to existing content
+      }
+      setIsOpeningFullArticle(false);
+    }
+
+    setActiveArticle(latest);
+  };
+
+  // Scan all app sources for Perspective coverage of a story
+  const hasScannedPerspectiveOnceRef = useRef(false);
+  const handleScanAllSourcesForPerspective = async (_target: FeedItem) => {
+    if (isOffline || isScanningPerspectiveSources) return;
+    setIsScanningPerspectiveSources(true);
+    try {
+      const incomingItems: FeedItem[] = [];
+      await runPool(feeds.slice(0, 12), 4, async (f) => {
+        const result = await syncFeed(f);
+        if (result && result.length > 0) {
+          incomingItems.push(...result);
+        }
+      });
+      if (incomingItems.length > 0) {
+        setArticles((prev) => mergeFeedItems(prev, incomingItems));
+      }
+    } finally {
+      setIsScanningPerspectiveSources(false);
+    }
+  };
+
+  const handleOpenPerspective = (article: FeedItem) => {
+    setPerspectiveArticle(article);
+    if (!hasScannedPerspectiveOnceRef.current && !isOffline) {
+      hasScannedPerspectiveOnceRef.current = true;
+      handleScanAllSourcesForPerspective(article);
+    }
   };
 
   // Track reading progress for the Floating "Continue Reading" Resume Bar
@@ -1385,6 +1495,7 @@ export default function App() {
                       onToggleBookmark={handleToggleBookmark}
                       onToggleRead={handleToggleRead}
                       onQuickPeek={(art) => setQuickPeekArticle(art)}
+                      onOpenPerspective={(art) => handleOpenPerspective(art)}
                       onOpenTagManager={(art, e) => {
                         e.stopPropagation();
                         setTagModalArticle(art);
@@ -1614,6 +1725,7 @@ export default function App() {
                     onToggleBookmark={handleToggleBookmark}
                     onToggleRead={handleToggleRead}
                     onQuickPeek={(art) => setQuickPeekArticle(art)}
+                    onOpenPerspective={(art) => handleOpenPerspective(art)}
                     onOpenTagManager={(art, e) => {
                       e.stopPropagation();
                       setTagModalArticle(art);
@@ -1689,6 +1801,16 @@ export default function App() {
             isDark={preferences.theme === 'slate' || preferences.theme === 'oled'}
           />
 
+          {/* Sleek Full-Story Pre-load Overlay when opening an uncached article */}
+          {isOpeningFullArticle && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/35 backdrop-blur-xs animate-in fade-in duration-100">
+              <div className="liquid-glass-pill px-4 py-2.5 rounded-full flex items-center gap-2.5 text-xs font-semibold text-stone-900 dark:text-white shadow-2xl">
+                <div className="w-3.5 h-3.5 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin shrink-0" />
+                <span>Loading full story for Reader View…</span>
+              </div>
+            </div>
+          )}
+
           {/* Reader View — iOS push navigation slide-in */}
           {activeArticle && (
             <div className="absolute inset-0 z-50 overflow-hidden" style={{ background: 'inherit' }}>
@@ -1710,12 +1832,24 @@ export default function App() {
                 initialScrollTop={readerInitialScrollTop}
                 onReadingProgressChange={handleReadingProgressChange}
                 onCacheExtractedArticle={handleCacheExtractedArticle}
+                onOpenPerspective={(art) => handleOpenPerspective(art)}
               />
             </div>
           )}
         </div>
 
       {/* Modals */}
+      <PerspectiveModal
+        targetArticle={perspectiveArticle}
+        allArticles={articles}
+        feeds={feeds}
+        isScanningSources={isScanningPerspectiveSources}
+        onScanAllSources={handleScanAllSourcesForPerspective}
+        onClose={() => setPerspectiveArticle(null)}
+        onSelectArticle={(art) => handleOpenArticle(art, 0)}
+        onCacheExtractedArticle={handleCacheExtractedArticle}
+      />
+
       <QuickPeekModal
         article={quickPeekArticle}
         onClose={() => setQuickPeekArticle(null)}

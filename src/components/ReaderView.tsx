@@ -34,6 +34,8 @@ import {
   type VelocitySample,
 } from '../utils/touchGestures';
 import { QuoteShareModal } from './QuoteShareModal';
+import { PerspectiveLogo } from './PerspectiveLogo';
+import { generateQuickTldrBullets } from '../utils/feedIntelligence';
 
 interface ReaderViewProps {
   article: FeedItem;
@@ -60,6 +62,7 @@ interface ReaderViewProps {
       contentHtml?: string;
     }
   ) => void;
+  onOpenPerspective?: (article: FeedItem) => void;
 }
 
 /** Formats date into "NOV 7, 2026 AT 5:11 AM" */
@@ -109,6 +112,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   initialScrollTop = 0,
   onReadingProgressChange,
   onCacheExtractedArticle,
+  onOpenPerspective,
 }) => {
   const [showTypographyMenu, setShowTypographyMenu] = useState(false);
   const [showQuoteModal, setShowQuoteModal] = useState(false);
@@ -426,18 +430,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   }, [article.id]);
 
-  // Fetch rich article extractor from URL for clean distraction-free reading
+  // Fetch rich article extractor from URL for clean distraction-free reading if not already pre-loaded
   useEffect(() => {
     let cancelled = false;
     setExtractedMeta({});
     setExtractedBlocks(null);
     const contentText = (article.contentClean || '').trim();
-    const contentParagraphs = contentText
-      .split(/\n{2,}|(?<=[.!?])\s{2,}/)
-      .map((paragraph) => paragraph.trim())
-      .filter(Boolean);
-    const hasFullContent = contentText.length >= 800 && contentParagraphs.length >= 3;
-    if (!hasFullContent && article.link && article.link.startsWith('http')) {
+    const isGoogleRedirect = /news\.google\.com\/rss\/articles\//i.test(article.link || '');
+    const alreadyExtracted =
+      Boolean(article.isOfflineCached && contentText.length >= 160) ||
+      contentText.length >= 450 ||
+      isGoogleRedirect;
+
+    if (!alreadyExtracted && article.link && article.link.startsWith('http')) {
       setIsLoadingExtraction(true);
       extractArticleWithFallback(article.link)
         .then((data) => {
@@ -861,26 +866,43 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               </div>
             </div>
 
-            {/* Right: Reader Brand Mark / Quick Summary Trigger */}
-            <button
-              onClick={handleGenerateSummary}
-              title="Toggle AI Editorial Summary"
-              className="flex items-center gap-1.5 text-[#ECECEC] hover:opacity-80 transition-opacity active:scale-95"
-            >
-              <svg
-                width="13"
-                height="15"
-                viewBox="0 0 14 16"
-                fill="#FF6719"
-                aria-hidden="true"
-                className="shrink-0"
+            {/* Right: Perspective & Reader Brand Mark / Quick Summary Trigger */}
+            <div className="flex items-center gap-3">
+              {onOpenPerspective && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHapticSelection();
+                    onOpenPerspective(article);
+                  }}
+                  title="Perspective — View all sources covering this story"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.07] hover:bg-white/[0.12] border border-white/10 text-xs font-medium text-[#ECECEC] transition-all active:scale-95"
+                >
+                  <PerspectiveLogo className="w-3.5 h-3.5 text-[#FF6719]" />
+                  <span>Perspective</span>
+                </button>
+              )}
+
+              <button
+                onClick={handleGenerateSummary}
+                title="Toggle AI Editorial Summary"
+                className="flex items-center gap-1.5 text-[#ECECEC] hover:opacity-80 transition-opacity active:scale-95"
               >
-                <path d="M0 0h14v2.2H0V0zm0 4.2h14v2.2H0V4.2zm0 4.2h14V16l-7-3.8L0 16V8.4z" />
-              </svg>
-              <span className="font-sans font-semibold text-[15px] tracking-[-0.02em] text-[#F2F2F2]">
-                reader
-              </span>
-            </button>
+                <svg
+                  width="13"
+                  height="15"
+                  viewBox="0 0 14 16"
+                  fill="#FF6719"
+                  aria-hidden="true"
+                  className="shrink-0"
+                >
+                  <path d="M0 0h14v2.2H0V0zm0 4.2h14v2.2H0V4.2zm0 4.2h14V16l-7-3.8L0 16V8.4z" />
+                </svg>
+                <span className="font-sans font-semibold text-[15px] tracking-[-0.02em] text-[#F2F2F2]">
+                  reader
+                </span>
+              </button>
+            </div>
           </div>
 
           {/* 5. Uppercase Author Byline & Date-Time */}
@@ -1041,9 +1063,33 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               </div>
             ) : (
               <p className="text-[#E6E6E6]">
-                {isJavaScriptWarningText(article.summary || '') ? '' : article.summary}
+                {isJavaScriptWarningText(article.summary || '') ? article.title : article.summary}
               </p>
             )}
+
+            {(!extractedBlocks || extractedBlocks.length < 2) &&
+              (article.contentClean || '').trim().length < 500 && (
+                <div className="pt-2 space-y-5">
+                  <p className="text-[#D8D8D8]">
+                    {`This report was published by ${article.feedTitle}${
+                      rawAuthor ? ` (${rawAuthor})` : ''
+                    }. Below are the key highlights and verified takeaways from this dispatch:`}
+                  </p>
+                  <div className="p-4 rounded-2xl bg-white/[0.04] border border-white/10 space-y-2.5 font-sans text-[14px]">
+                    <div className="text-xs font-bold uppercase tracking-wider text-[#FF6719]">
+                      Key Story Highlights
+                    </div>
+                    <ul className="space-y-2 text-[#D8D8D8]">
+                      {generateQuickTldrBullets(article).map((b, i) => (
+                        <li key={i} className="flex items-start gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#FF6719] shrink-0 mt-2" />
+                          <span>{b}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
 
             {isLoadingExtraction && (
               <div className="pt-2 pb-1 flex items-center gap-2 text-[11px] text-[#8E8E8E] font-sans">

@@ -58,15 +58,30 @@ export function extractSignificantTokens(text: string): string[] {
   return Array.from(new Set(cleaned));
 }
 
+export interface PerspectiveMatch {
+  article: FeedItem;
+  score: number;
+  sharedKeywords: string[];
+  isDifferentSource: boolean;
+  matchType: 'same-story' | 'related-perspective';
+}
+
+export interface PerspectiveSearchResult {
+  target: FeedItem;
+  queryKeywords: string[];
+  matches: PerspectiveMatch[];
+  sourceCount: number;
+}
+
 /**
- * Computes token similarity between two headlines/summaries
+ * Computes token similarity between two headlines/summaries/bodies
  */
 export function computeStorySimilarity(a: FeedItem, b: FeedItem): {
   score: number;
   sharedKeywords: string[];
 } {
-  const tokensA = extractSignificantTokens(`${a.title} ${a.summary?.slice(0, 120) || ''}`);
-  const tokensB = extractSignificantTokens(`${b.title} ${b.summary?.slice(0, 120) || ''}`);
+  const tokensA = extractSignificantTokens(`${a.title} ${a.summary?.slice(0, 160) || ''}`);
+  const tokensB = extractSignificantTokens(`${b.title} ${b.summary?.slice(0, 160) || ''}`);
   if (tokensA.length === 0 || tokensB.length === 0) {
     return { score: 0, sharedKeywords: [] };
   }
@@ -81,12 +96,129 @@ export function computeStorySimilarity(a: FeedItem, b: FeedItem): {
   const overlapScore = shared.length / Math.max(1, minLen);
   return {
     score: overlapScore,
-    sharedKeywords: shared.slice(0, 3),
+    sharedKeywords: shared.slice(0, 4),
   };
 }
 
 /**
- * Groups related articles into Developing Story Clusters while keeping chronological feed order.
+ * Searches across all articles from all app sources to find every available perspective
+ * on the target story, ranking exact/same-event coverage first followed by related perspectives.
+ */
+export function searchPerspectivesAcrossSources(
+  target: FeedItem,
+  allArticles: FeedItem[]
+): PerspectiveSearchResult {
+  const titleTokens = extractSignificantTokens(target.title);
+  const summaryTokens = extractSignificantTokens(
+    `${target.summary?.slice(0, 240) || ''} ${target.contentClean?.slice(0, 300) || ''}`
+  );
+  const queryKeywords = Array.from(new Set([...titleTokens, ...summaryTokens.slice(0, 8)])).slice(
+    0,
+    8
+  );
+
+  const titleTokenSet = new Set(titleTokens);
+  const allTargetTokenSet = new Set([...titleTokens, ...summaryTokens]);
+
+  const matches: PerspectiveMatch[] = [];
+  const seenLinks = new Set<string>();
+  if (target.link) seenLinks.add(target.link.trim().toLowerCase());
+
+  for (const candidate of allArticles) {
+    if (candidate.id === target.id) continue;
+    const normLink = (candidate.link || '').trim().toLowerCase();
+    if (normLink && seenLinks.has(normLink)) continue;
+
+    // Exact normalized headline match across sources
+    const normTargetTitle = target.title.trim().toLowerCase();
+    const normCandidateTitle = candidate.title.trim().toLowerCase();
+
+    const candTitleTokens = extractSignificantTokens(candidate.title);
+    const candBodyTokens = extractSignificantTokens(
+      `${candidate.summary?.slice(0, 240) || ''} ${candidate.contentClean?.slice(0, 300) || ''}`
+    );
+    const candAllTokens = Array.from(new Set([...candTitleTokens, ...candBodyTokens]));
+
+    const sharedHeadlineTokens = candTitleTokens.filter((t) => titleTokenSet.has(t));
+    const sharedAllTokens = candAllTokens.filter((t) => allTargetTokenSet.has(t));
+
+    if (sharedAllTokens.length === 0 && normTargetTitle !== normCandidateTitle) {
+      continue;
+    }
+
+    const isDifferentSource =
+      candidate.feedId !== target.feedId &&
+      candidate.feedTitle.trim().toLowerCase() !== target.feedTitle.trim().toLowerCase();
+
+    const minTitleLen = Math.max(1, Math.min(titleTokens.length, candTitleTokens.length));
+    const headlineOverlap = sharedHeadlineTokens.length / minTitleLen;
+    const bodyOverlap =
+      sharedAllTokens.length / Math.max(1, Math.min(allTargetTokenSet.size, candAllTokens.length));
+
+    let score =
+      headlineOverlap * 0.65 +
+      bodyOverlap * 0.35 +
+      sharedHeadlineTokens.length * 0.14 +
+      sharedAllTokens.length * 0.06 +
+      (isDifferentSource ? 0.12 : 0);
+
+    if (normTargetTitle === normCandidateTitle) {
+      score += 1.0;
+    }
+
+    const isSameStory =
+      normTargetTitle === normCandidateTitle ||
+      sharedHeadlineTokens.length >= 2 ||
+      headlineOverlap >= 0.34 ||
+      (sharedHeadlineTokens.length >= 1 && sharedAllTokens.length >= 3);
+
+    const isRelatedPerspective =
+      !isSameStory &&
+      (sharedHeadlineTokens.length >= 1 || sharedAllTokens.length >= 2 || score >= 0.24);
+
+    if (isSameStory || isRelatedPerspective) {
+      if (normLink) seenLinks.add(normLink);
+      const keywords = Array.from(
+        new Set([...sharedHeadlineTokens, ...sharedAllTokens])
+      ).slice(0, 4);
+      matches.push({
+        article: candidate,
+        score: Number(score.toFixed(4)),
+        sharedKeywords: keywords,
+        isDifferentSource,
+        matchType: isSameStory ? 'same-story' : 'related-perspective',
+      });
+    }
+  }
+
+  matches.sort((a, b) => {
+    if (a.matchType !== b.matchType) {
+      return a.matchType === 'same-story' ? -1 : 1;
+    }
+    if (Math.abs(b.score - a.score) > 0.08) {
+      return b.score - a.score;
+    }
+    if (a.isDifferentSource !== b.isDifferentSource) {
+      return a.isDifferentSource ? -1 : 1;
+    }
+    return b.article.timestamp - a.article.timestamp;
+  });
+
+  const uniqueSourceNames = new Set<string>([
+    target.feedTitle.trim().toLowerCase(),
+    ...matches.map((m) => m.article.feedTitle.trim().toLowerCase()),
+  ]);
+
+  return {
+    target,
+    queryKeywords: queryKeywords.slice(0, 5),
+    matches,
+    sourceCount: uniqueSourceNames.size,
+  };
+}
+
+/**
+ * Groups related articles into Perspective Clusters while keeping chronological feed order.
  * Requires at least 2 shared significant tokens or >= 0.34 overlap score within a 36-hour window.
  */
 export function clusterStoriesByTopic(articles: FeedItem[]): StoryCluster[] {

@@ -4,6 +4,7 @@ import type { FeedItem } from '../types';
 import {
   extractSignificantTokens,
   clusterStoriesByTopic,
+  searchPerspectivesAcrossSources,
   buildDailyBriefing,
   generateQuickTldrBullets,
   recordArticleReadInHabit,
@@ -80,6 +81,56 @@ test('clusterStoriesByTopic groups multi-source coverage of the same developing 
   assert.ok(clusters[0].topicKeywords.includes('monetary') || clusters[0].topicKeywords.includes('bangladesh'));
   assert.equal(clusters[1].primary.id, 'a3');
   assert.equal(clusters[1].perspectives.length, 0);
+});
+
+test('searchPerspectivesAcrossSources searches all app sources and ranks same-story coverage first', () => {
+  const target = makeArticle({
+    id: 'target_1',
+    feedId: 'f1',
+    feedTitle: 'The Daily Star',
+    title: 'Bangladesh Bank raises policy rate to control rising inflation',
+    summary: 'Central bank governor announced monetary tightening to stabilize prices.',
+  });
+
+  const allArticles: FeedItem[] = [
+    target,
+    makeArticle({
+      id: 'match_same_1',
+      feedId: 'f2',
+      feedTitle: 'Prothom Alo',
+      title: 'Bangladesh Bank hikes policy rate to curb inflation pressure',
+      summary: 'Monetary tightening announced by Bangladesh Bank governor.',
+    }),
+    makeArticle({
+      id: 'match_same_2',
+      feedId: 'f3',
+      feedTitle: 'BBC News',
+      title: 'Inflation control: Bangladesh Bank raises key policy rate again',
+      summary: 'Interest rates increased across commercial banks.',
+    }),
+    makeArticle({
+      id: 'match_related_1',
+      feedId: 'f4',
+      feedTitle: 'Dhaka Tribune',
+      title: 'Export earnings grow as Bangladesh Bank updates forex rules',
+      summary: 'Remittance and reserve outlook improves.',
+    }),
+    makeArticle({
+      id: 'unrelated_1',
+      feedId: 'f5',
+      feedTitle: 'The Verge',
+      title: 'SpaceX launches Starship orbital test flight from Boca Chica',
+      summary: 'Super Heavy booster completed hot-staging maneuver.',
+    }),
+  ];
+
+  const result = searchPerspectivesAcrossSources(target, allArticles);
+  assert.equal(result.matches.length, 3);
+  assert.equal(result.matches[0].matchType, 'same-story');
+  assert.equal(result.matches[1].matchType, 'same-story');
+  assert.equal(result.matches[2].article.id, 'match_related_1');
+  assert.equal(result.sourceCount, 4);
+  assert.ok(result.queryKeywords.includes('bangladesh'));
 });
 
 test('buildDailyBriefing selects up to 5 diverse stories and adapts edition title to time of day', () => {
