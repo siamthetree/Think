@@ -13,12 +13,8 @@ import {
   Globe,
   Loader2,
   Search,
-  Cloud,
-  LogOut,
-  CheckCircle2,
 } from 'lucide-react';
 import type { Feed, FeedItem } from '../types';
-import { useFirebase } from '../contexts/FirebaseContext';
 import { SourceAvatar } from './SourceAvatar';
 import {
   triggerHapticSelection,
@@ -56,7 +52,6 @@ interface SourcesSectionProps {
   onLoadDirectUrl: (url: string, folderName?: string, customTitle?: string) => void;
   isLoadingDirectUrl: boolean;
   onOpenIosModal: () => void;
-  onSyncNow?: () => Promise<void>;
 }
 
 interface QuickAddSourcePreset {
@@ -181,17 +176,7 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
   onOpenFeedModal,
   onLoadDirectUrl,
   isLoadingDirectUrl,
-  onSyncNow,
 }) => {
-  const {
-    user,
-    authReady,
-    isSigningIn,
-    cloudSyncStatus,
-    cloudError,
-    signInWithGoogle,
-    signOutUser,
-  } = useFirebase();
   const [omnibarInput, setOmnibarInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFolderPill, setActiveFolderPill] = useState<string | null>(null);
@@ -867,99 +852,6 @@ export const SourcesSection: React.FC<SourcesSectionProps> = ({
                 );
               })}
             </div>
-          )}
-        </section>
-
-        {/* Cloud Backup & Sync Card (Google Sign-In via Firebase) */}
-        <section className="rounded-2xl liquid-glass overflow-hidden border border-stone-200/60 dark:border-white/[0.08] p-4 space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 min-w-0">
-              {user?.photoURL ? (
-                <img
-                  src={user.photoURL}
-                  alt={user.displayName || 'Reader avatar'}
-                  className="w-9 h-9 rounded-full object-cover border border-white/30 shrink-0"
-                />
-              ) : (
-                <div className="w-9 h-9 rounded-full bg-[#FF6719]/15 text-[#FF6719] flex items-center justify-center shrink-0">
-                  <Cloud className="w-4 h-4" />
-                </div>
-              )}
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-stone-900 dark:text-stone-100 truncate">
-                  {user ? user.displayName || 'Chinta Cloud Reader' : 'Cloud Sync & Backup'}
-                </div>
-                <div className="text-[11px] text-stone-500 dark:text-stone-400 truncate">
-                  {user
-                    ? cloudSyncStatus === 'syncing'
-                      ? 'Syncing sources & bookmarks…'
-                      : cloudSyncStatus === 'synced'
-                        ? 'Synced with Firebase Cloud'
-                        : user.email || 'Signed in with Google'
-                    : 'Sync sources, bookmarks, and reading speed across devices'}
-                </div>
-              </div>
-            </div>
-
-            {user ? (
-              <div className="flex items-center gap-1.5 shrink-0">
-                {onSyncNow && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      triggerHapticSelection();
-                      void onSyncNow();
-                    }}
-                    disabled={cloudSyncStatus === 'syncing'}
-                    aria-label="Sync Cloud Now"
-                    className="px-3 py-1.5 rounded-full text-xs font-semibold liquid-glass-pill text-stone-800 dark:text-stone-100 flex items-center gap-1 active:scale-95 transition-transform disabled:opacity-50"
-                  >
-                    {cloudSyncStatus === 'syncing' ? (
-                      <Loader2 className="w-3 h-3 animate-spin text-[#FF6719]" />
-                    ) : (
-                      <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                    )}
-                    <span>Sync</span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHapticSelection();
-                    void signOutUser();
-                  }}
-                  aria-label="Sign out of Google"
-                  className="p-1.5 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                  title="Sign out"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                disabled={!authReady || isSigningIn || isOffline}
-                onClick={() => {
-                  triggerHapticSelection();
-                  void signInWithGoogle();
-                }}
-                data-testid="firebase-google-signin-btn"
-                className="px-3.5 py-2 rounded-full text-xs font-semibold bg-[#FF6719] text-white shadow-md shadow-[#FF6719]/25 flex items-center gap-1.5 shrink-0 active:scale-95 transition-transform disabled:opacity-50"
-              >
-                {isSigningIn ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Cloud className="w-3.5 h-3.5" />
-                )}
-                <span>Sign in with Google</span>
-              </button>
-            )}
-          </div>
-
-          {cloudError && (
-            <p className="text-[11px] text-rose-500 dark:text-rose-400 leading-snug">
-              {cloudError}
-            </p>
           )}
         </section>
       </div>

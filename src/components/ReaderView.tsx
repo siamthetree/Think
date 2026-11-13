@@ -1744,7 +1744,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
       {/* Floating Apple Liquid Glass Share Selected Line Pill */}
       {activeSelectionText && !showQuoteModal && !showTypographyMenu && (
-        <div className="fixed bottom-[calc(max(env(safe-area-inset-bottom,8px),8px)+4.35rem)] left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-2 duration-150">
+        <div className="fixed bottom-[calc(max(env(safe-area-inset-bottom,0px),1rem)+3.75rem)] left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-2 duration-150">
           <button
             type="button"
             onPointerDown={(e) => e.preventDefault()}
@@ -1769,181 +1769,148 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       )}
 
-      {/* Bottom Floating iOS 26 Liquid Glass Capsule Dock (Aligned with Newsfeed TabBar) */}
+      {/* Compact Apple Liquid Glass Floating Bottom Pill (Auto-hides on scroll down, tap screen to toggle) */}
       <footer
-        className={`fixed left-0 right-0 bottom-0 px-3 pb-[max(env(safe-area-inset-bottom,8px),8px)] pt-1 select-none z-30 pointer-events-none transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+        className={`fixed bottom-[max(env(safe-area-inset-bottom,0px),1rem)] left-1/2 -translate-x-1/2 z-30 transition-all duration-300 ${
           controlsVisible
-            ? 'translate-y-0 opacity-100'
-            : 'translate-y-20 opacity-0'
+            ? 'translate-y-0 opacity-100 pointer-events-auto'
+            : 'translate-y-20 opacity-0 pointer-events-none'
         }`}
       >
-        {(() => {
-          const isDarkDock = preferences.theme === 'slate' || preferences.theme === 'oled';
-          const getInkColor = (active: boolean, accentHex?: string) => {
-            if (accentHex && active) return accentHex;
-            if (isDarkDock) {
-              return active ? '#FFFFFF' : 'rgba(255, 255, 255, 0.85)';
-            }
-            return active ? '#111827' : 'rgba(28, 25, 23, 0.78)';
-          };
+        <div className="liquid-glass-dock px-2.5 py-1.5 rounded-full flex items-center gap-1 shadow-2xl border border-white/20">
+          {/* Back to Feed */}
+          <button
+            onClick={() => {
+              triggerHapticSelection();
+              onBack();
+            }}
+            aria-label="Back to Feed"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium text-stone-200 hover:text-white hover:bg-white/10 transition-all active:scale-95"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span className="pr-0.5">Feed</span>
+          </button>
 
-          const actions = [
-            {
-              id: 'feed',
-              label: 'Feed',
-              ariaLabel: 'Back to Feed',
-              icon: ArrowLeft,
-              isActive: false,
-              onClick: () => {
-                triggerHapticSelection();
-                onBack();
-              },
-            },
-            {
-              id: 'summary',
-              label: 'Summary',
-              ariaLabel: 'AI Summary',
-              icon: Sparkles,
-              isActive: showSummary,
-              accentHex: '#FF6719',
-              spinning: isLoadingSummary,
-              onClick: handleGenerateSummary,
-            },
-            {
-              id: 'style',
-              label: 'Style',
-              ariaLabel: 'Reader Appearance',
-              icon: Type,
-              isActive: showTypographyMenu,
-              onClick: () => {
-                triggerHapticSelection();
-                setShowTypographyMenu(!showTypographyMenu);
-              },
-            },
-            {
-              id: 'save',
-              label: 'Save',
-              ariaLabel: 'Bookmark',
-              icon: Bookmark,
-              isActive: article.isBookmarked,
-              accentHex: '#FF6719',
-              filled: article.isBookmarked,
-              onClick: () => {
-                triggerHapticSelection();
-                onToggleBookmark(article.id);
-                showToast(article.isBookmarked ? 'Removed bookmark' : 'Saved to bookmarks');
-              },
-            },
-            {
-              id: 'quote',
-              label: 'Quote',
-              ariaLabel: 'Create Quote Card',
-              icon: Quote,
-              isActive: showQuoteModal,
-              accentHex: '#FF6719',
-              preventSelectionClear: true,
-              onClick: () => {
-                triggerHapticSelection();
-                const sel =
-                  activeSelectionText ||
-                  sanitizeTextSelection(window.getSelection()?.toString() || '');
-                setSelectedQuoteText(sel);
-                setShowQuoteModal(true);
-                if (sel) {
-                  setActiveSelectionText('');
-                  window.getSelection()?.removeAllRanges();
-                }
-              },
-            },
-            {
-              id: 'share',
-              label: 'Share',
-              ariaLabel: 'Share',
-              icon: Share2,
-              isActive: false,
-              onClick: handleShare,
-            },
-            ...(onNextArticle
-              ? [
-                  {
-                    id: 'next',
-                    label: 'Next',
-                    ariaLabel: 'Next Story',
-                    icon: ChevronRight,
-                    isActive: false,
-                    onClick: () => {
-                      triggerHapticSelection();
-                      onNextArticle();
-                    },
-                  },
-                ]
-              : []),
-          ];
+          <div className="w-px h-4 bg-white/15 mx-0.5" />
 
-          return (
-            <div className="relative mx-auto max-w-[372px]">
-              <nav
-                aria-label="Reader Controls"
-                className="pointer-events-auto liquid-glass-dock rounded-full p-1 px-1.5 flex items-center justify-between gap-0.5"
-              >
-                {actions.map((item) => {
-                  const Icon = item.icon;
-                  const ink = getInkColor(item.isActive, item.accentHex);
+          {/* AI Summary */}
+          <button
+            onClick={handleGenerateSummary}
+            aria-label="AI Summary"
+            title="Editorial Summary"
+            className={`p-2 rounded-full transition-all active:scale-90 ${
+              showSummary
+                ? 'bg-white/20 text-[#FF6719]'
+                : 'text-stone-300 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <Sparkles
+              className={`w-4 h-4 ${isLoadingSummary ? 'animate-spin text-[#FF6719]' : ''}`}
+            />
+          </button>
 
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onPointerDown={item.preventSelectionClear ? (e) => e.preventDefault() : undefined}
-                      onMouseDown={item.preventSelectionClear ? (e) => e.preventDefault() : undefined}
-                      onClick={item.onClick}
-                      aria-label={item.ariaLabel}
-                      aria-pressed={item.isActive}
-                      className="flex-1 min-h-[44px] flex flex-col items-center justify-center gap-0.5 relative rounded-full transition-transform duration-200 active:scale-90"
-                    >
-                      {item.isActive && (
-                        <span
-                          className="liquid-glass-active-bubble absolute inset-0.5 rounded-full pointer-events-none"
-                          style={{
-                            animation: 'tabIndicatorIn 260ms cubic-bezier(0.175,0.885,0.32,1.275) both',
-                          }}
-                          aria-hidden="true"
-                        />
-                      )}
+          {/* Typography Settings (Aa) */}
+          <button
+            onClick={() => {
+              triggerHapticSelection();
+              setShowTypographyMenu(!showTypographyMenu);
+            }}
+            aria-label="Reader Appearance"
+            className={`p-2 rounded-full transition-all active:scale-90 ${
+              showTypographyMenu
+                ? 'bg-white/20 text-white'
+                : 'text-stone-300 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <Type className="w-4 h-4" />
+          </button>
 
-                      <span className="relative flex items-center justify-center w-5 h-5 z-10">
-                        <Icon
-                          className={item.spinning ? 'animate-spin' : ''}
-                          style={{
-                            width: 18,
-                            height: 18,
-                            strokeWidth: item.isActive ? 2.2 : 1.85,
-                            color: ink,
-                            fill: item.filled ? '#FF6719' : 'none',
-                            filter: isDarkDock
-                              ? 'drop-shadow(0 1px 2px rgba(0,0,0,0.45))'
-                              : 'none',
-                            transition: 'color 200ms ease, stroke-width 200ms ease',
-                          }}
-                        />
-                      </span>
+          {/* Bookmark */}
+          <button
+            onClick={() => {
+              triggerHapticSelection();
+              onToggleBookmark(article.id);
+              showToast(article.isBookmarked ? 'Removed bookmark' : 'Saved to bookmarks');
+            }}
+            aria-label="Bookmark"
+            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+          >
+            <Bookmark
+              className={`w-4 h-4 ${
+                article.isBookmarked ? 'fill-[#FF6719] text-[#FF6719]' : ''
+              }`}
+            />
+          </button>
 
-                      <span
-                        className="text-[10px] tracking-tight font-medium whitespace-nowrap z-10 transition-colors duration-200"
-                        style={{
-                          color: ink,
-                          textShadow: isDarkDock ? '0 1px 2px rgba(0,0,0,0.5)' : 'none',
-                        }}
-                      >
-                        {item.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </nav>
-            </div>
-          );
-        })()}
+          {/* Editorial Quote Card */}
+          <button
+            type="button"
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              triggerHapticSelection();
+              const sel =
+                activeSelectionText ||
+                sanitizeTextSelection(window.getSelection()?.toString() || '');
+              setSelectedQuoteText(sel);
+              setShowQuoteModal(true);
+              if (sel) {
+                setActiveSelectionText('');
+                window.getSelection()?.removeAllRanges();
+              }
+            }}
+            aria-label="Create Quote Card"
+            title="Pick or highlight any line to share"
+            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+          >
+            <Quote className="w-4 h-4" />
+          </button>
+
+          {/* Share */}
+          <button
+            type="button"
+            onClick={handleShare}
+            aria-label="Share"
+            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+          >
+            <Share2 className="w-4 h-4" />
+          </button>
+
+          {/* Previous / Next Story Navigation */}
+          {(onPrevArticle || onNextArticle) && (
+            <>
+              <div className="w-px h-4 bg-white/15 mx-0.5" />
+              {onPrevArticle && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHapticSelection();
+                    onPrevArticle();
+                  }}
+                  aria-label="Previous Story"
+                  title="Previous Story"
+                  className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              )}
+              {onNextArticle && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHapticSelection();
+                    onNextArticle();
+                  }}
+                  aria-label="Next Story"
+                  className="flex items-center gap-0.5 px-2.5 py-1.5 rounded-full text-xs font-medium text-stone-200 hover:text-white hover:bg-white/10 transition-all active:scale-95"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </footer>
 
       {/* Editorial Quote Card Share Modal */}

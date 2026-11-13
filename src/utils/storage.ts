@@ -34,9 +34,9 @@ export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
 };
 
 // Storage limits (keep payload compact while preserving full offline bodies without mid-tag truncation)
-const MAX_UNSAVED_ARTICLES = 450;
+const MAX_UNSAVED_ARTICLES = 120;
 const MAX_SAVED_HTML_CHARS = 50000;
-const MAX_HTML_CHARS = 18000;
+const MAX_HTML_CHARS = 20000;
 const FULL_BODY_MIN_CHARS = 800;
 
 // Demo stories shipped by older versions. They were invented, so they are removed on load.
@@ -224,7 +224,7 @@ export function saveArticlesToStorage(articles: FeedItem[]): void {
     // Fallback if localStorage is near its 5MB quota (full bodies remain safe in IndexedDB)
   }
   try {
-    const slim = pruneArticles(articles, 180).map((a) =>
+    const slim = pruneArticles(articles, 50).map((a) =>
       a.isBookmarked ? a : { ...a, contentHtml: undefined, contentClean: undefined }
     );
     localStorage.setItem(STORAGE_KEYS.ARTICLES, JSON.stringify(slim));
@@ -269,8 +269,8 @@ export function loadReadArticleKeysFromStorage(): string[] {
 
 export function saveReadArticleKeysToStorage(keys: string[]): void {
   try {
-    // Keep up to the 4000 most recent read keys/signatures so old read articles never return on refresh
-    const bounded = keys.length > 4000 ? keys.slice(-4000) : keys;
+    // Keep up to the 2000 most recent read keys so old read articles never return on refresh
+    const bounded = keys.length > 2000 ? keys.slice(-2000) : keys;
     localStorage.setItem(STORAGE_KEYS.READ_KEYS, JSON.stringify(bounded));
   } catch (e) {
     console.error('Failed to save read article keys to localStorage', e);

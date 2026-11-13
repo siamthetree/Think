@@ -61,9 +61,7 @@ import {
   recordArticleReadInHabit,
   computeSpotifyReadingStats,
   findNewIncomingArticles,
-  getArticleReadSignatures,
-  deduplicateFeedItems,
-  rankAndInterleaveFeedItems,
+  canonicalizeArticleLink,
   filterOutAlreadyReadIncoming,
   clearReadArticlesForRefresh,
   toDateKey,
@@ -82,21 +80,8 @@ import {
   extractArticleWithFallback,
 } from './utils/apiClient';
 import { blocksToHtml, escapeHtml, isJavaScriptWarningText } from './utils/sanitize';
-import { useFirebase } from './contexts/FirebaseContext';
-import {
-  saveCloudStateToFirestore,
-  syncSourceToFirestore,
-  deleteSourceFromFirestore,
-  syncBookmarkToFirestore,
-  deleteBookmarkFromFirestore,
-  recordReadEntryToFirestore,
-  loadAllCloudUserData,
-  subscribeToCloudMetaState,
-} from './utils/firebaseSync';
 
 export default function App() {
-  const { user, authReady, setCloudSyncStatus, setCloudError } = useFirebase();
-
   // Core Persistent State
   const [feeds, setFeeds] = useState<Feed[]>(loadFeedsFromStorage);
   const [articles, setArticles] = useState<FeedItem[]>(loadArticlesFromStorage);
@@ -178,18 +163,17 @@ export default function App() {
       }, 700);
     }
 
-    // Near top: always reveal header & flush any buffered background stories cleanly to top
+    // Near top: always reveal header & flush any buffered background stories silently
     if (currentScrollY <= 20) {
       if (feedScrollIdleTimerRef.current) clearTimeout(feedScrollIdleTimerRef.current);
       setIsFeedActivelyScrolling(false);
       if (!isHeaderVisible) setIsHeaderVisible(true);
       if (pendingNewArticlesRef.current.length > 0) {
         const toMerge = pendingNewArticlesRef.current;
-        pendingNewArticlesRef.current = [];
         setPendingNewArticles([]);
         setShowNewStoriesPill(false);
-        const batchTs = Date.now();
-        setArticles((prev) => mergeFeedItems(prev, toMerge, true, batchTs));
+        if (newStoriesBannerTimerRef.current) clearTimeout(newStoriesBannerTimerRef.current);
+        setArticles((prev) => mergeFeedItems(prev, toMerge, true));
       }
       lastScrollYRef.current = currentScrollY;
       scrollDeltaRef.current = 0;
@@ -252,7 +236,7 @@ export default function App() {
     )
   );
 
-  // Persistent set of article IDs, canonical links, & normalized headline keys the user has already read
+  // Persistent set of article IDs & canonical links the user has already read
   const readKeysRef = useRef<Set<string> | null>(null);
   if (readKeysRef.current === null) {
     const initSet = new Set<string>(loadReadArticleKeysFromStorage());
@@ -260,8 +244,11 @@ export default function App() {
     for (const h of readingHabit.readHistory || []) initSet.add(h.id);
     for (const a of articles) {
       if (a.isRead) {
-        for (const sig of getArticleReadSignatures(a)) {
-          initSet.add(sig);
+        initSet.add(a.id);
+        if (a.link) {
+          initSet.add(a.link);
+          const canon = canonicalizeArticleLink(a.link);
+          if (canon) initSet.add(canon);
         }
       }
     }
@@ -273,13 +260,22 @@ export default function App() {
     saveReadArticleKeysToStorage(Array.from(readKeysRef.current));
   };
 
-  const recordReadKeys = (items: Array<Pick<FeedItem, 'id' | 'link' | 'title'>>) => {
+  const recordReadKeys = (items: Array<Pick<FeedItem, 'id' | 'link'>>) => {
     if (!readKeysRef.current) readKeysRef.current = new Set();
     let changed = false;
     for (const item of items) {
-      for (const sig of getArticleReadSignatures(item)) {
-        if (!readKeysRef.current.has(sig)) {
-          readKeysRef.current.add(sig);
+      if (item.id && !readKeysRef.current.has(item.id)) {
+        readKeysRef.current.add(item.id);
+        changed = true;
+      }
+      if (item.link) {
+        if (!readKeysRef.current.has(item.link)) {
+          readKeysRef.current.add(item.link);
+          changed = true;
+        }
+        const canon = canonicalizeArticleLink(item.link);
+        if (canon && !readKeysRef.current.has(canon)) {
+          readKeysRef.current.add(canon);
           changed = true;
         }
       }
@@ -287,13 +283,14 @@ export default function App() {
     if (changed) persistReadKeys();
   };
 
-  const removeReadKeys = (item: Pick<FeedItem, 'id' | 'link' | 'title'>) => {
+  const removeReadKeys = (item: Pick<FeedItem, 'id' | 'link'>) => {
     if (!readKeysRef.current) return;
     let changed = false;
-    for (const sig of getArticleReadSignatures(item)) {
-      if (readKeysRef.current.delete(sig)) {
-        changed = true;
-      }
+    if (item.id && readKeysRef.current.delete(item.id)) changed = true;
+    if (item.link) {
+      if (readKeysRef.current.delete(item.link)) changed = true;
+      const canon = canonicalizeArticleLink(item.link);
+      if (canon && readKeysRef.current.delete(canon)) changed = true;
     }
     if (changed) persistReadKeys();
   };
@@ -322,11 +319,21 @@ export default function App() {
   pendingNewArticlesRef.current = pendingNewArticles;
   const readingSpeedProfileRef = useRef(readingSpeedProfile);
   readingSpeedProfileRef.current = readingSpeedProfile;
+  const newStoriesBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Persist "New Stories Available" popup until tapped by user or scrolled to top
-  const revealNewStoriesPill = () => {
+  const showAndAutoDismissNewStoriesPill = () => {
     setShowNewStoriesPill(true);
+    if (newStoriesBannerTimerRef.current) clearTimeout(newStoriesBannerTimerRef.current);
+    newStoriesBannerTimerRef.current = setTimeout(() => {
+      setShowNewStoriesPill(false);
+    }, 4500);
   };
+
+  useEffect(() => {
+    return () => {
+      if (newStoriesBannerTimerRef.current) clearTimeout(newStoriesBannerTimerRef.current);
+    };
+  }, []);
 
   // Synchronize state changes to localStorage (debounced to keep iOS UI thread 100% fluid)
   useEffect(() => {
@@ -367,201 +374,6 @@ export default function App() {
     saveReadingSpeedProfileToStorage(readingSpeedProfile);
   }, [readingSpeedProfile]);
 
-  // ------------------------------------------------------------------
-  // Firebase Cloud Sync (Hydrate on login + Debounced meta persistence)
-  // ------------------------------------------------------------------
-  const cloudHydratedUidRef = useRef<string | null>(null);
-  const isApplyingCloudRef = useRef(false);
-
-  const performFullCloudSync = async () => {
-    if (!user || isOffline) return;
-    setCloudSyncStatus('syncing');
-    setCloudError(null);
-    try {
-      const cloud = await loadAllCloudUserData(user);
-      isApplyingCloudRef.current = true;
-
-      if (cloud.metaState) {
-        if (Array.isArray(cloud.metaState.folders) && cloud.metaState.folders.length > 0) {
-          setFolders((prev) => Array.from(new Set([...prev, ...cloud.metaState!.folders!])));
-        }
-        if (cloud.metaState.preferences) {
-          setPreferences((prev) => ({ ...prev, ...cloud.metaState!.preferences }));
-        }
-        if (cloud.metaState.readingHabit) {
-          setReadingHabit((prev) =>
-            normalizeReadingHabitState({
-              ...prev,
-              ...cloud.metaState!.readingHabit,
-              todayReadIds: Array.from(
-                new Set([
-                  ...(prev.todayReadIds || []),
-                  ...(cloud.metaState!.readingHabit?.todayReadIds || []),
-                ])
-              ),
-              totalReadIds: Array.from(
-                new Set([
-                  ...(prev.totalReadIds || []),
-                  ...(cloud.metaState!.readingHabit?.totalReadIds || []),
-                ])
-              ),
-              streakDays: Math.max(
-                prev.streakDays || 0,
-                Number(cloud.metaState!.readingHabit?.streakDays) || 0
-              ),
-              todayMinutes: Math.max(
-                prev.todayMinutes || 0,
-                Number(cloud.metaState!.readingHabit?.todayMinutes) || 0
-              ),
-            })
-          );
-        }
-        if (cloud.metaState.readingSpeedProfile) {
-          const cp = cloud.metaState.readingSpeedProfile;
-          const mergeLangObservations = (
-            localObs: typeof readingSpeedProfile.en.observations,
-            cloudObs: typeof readingSpeedProfile.en.observations | undefined
-          ) => {
-            const byId = new Map(localObs.map((o) => [o.articleId, o]));
-            for (const o of cloudObs || []) {
-              if (o && o.articleId && !byId.has(o.articleId)) {
-                byId.set(o.articleId, o);
-              }
-            }
-            return Array.from(byId.values()).slice(-50);
-          };
-          setReadingSpeedProfile((prev) =>
-            normalizeReadingSpeedProfile({
-              en: {
-                ...prev.en,
-                observedCount: Math.max(prev.en.observedCount, cp.en?.observedCount || 0),
-                observations: mergeLangObservations(prev.en.observations, cp.en?.observations),
-              },
-              bn: {
-                ...prev.bn,
-                observedCount: Math.max(prev.bn.observedCount, cp.bn?.observedCount || 0),
-                observations: mergeLangObservations(prev.bn.observations, cp.bn?.observations),
-              },
-            })
-          );
-        }
-      }
-
-      if (cloud.sources.length > 0) {
-        setFeeds((prev) => {
-          const seenUrls = new Set(prev.map((f) => f.url.toLowerCase()));
-          const extra = cloud.sources.filter((s) => !seenUrls.has(s.url.toLowerCase()));
-          return extra.length > 0 ? [...prev, ...extra] : prev;
-        });
-      }
-
-      if (cloud.readSignatures.length > 0) {
-        if (!readKeysRef.current) readKeysRef.current = new Set();
-        let addedSig = false;
-        for (const sig of cloud.readSignatures) {
-          if (!readKeysRef.current.has(sig)) {
-            readKeysRef.current.add(sig);
-            addedSig = true;
-          }
-        }
-        if (addedSig) persistReadKeys();
-      }
-
-      if (cloud.bookmarks.length > 0) {
-        setArticles((prev) => {
-          const next = mergeFeedItems(prev, cloud.bookmarks, false);
-          const bookmarkedIds = new Set(cloud.bookmarks.map((b) => b.id));
-          const bookmarkedLinks = new Set(cloud.bookmarks.map((b) => b.link));
-          return next.map((a) =>
-            bookmarkedIds.has(a.id) || bookmarkedLinks.has(a.link)
-              ? { ...a, isBookmarked: true }
-              : a
-          );
-        });
-      }
-
-      // Push current local sources, bookmarks, & meta state up to Firestore
-      await saveCloudStateToFirestore({
-        user,
-        folders,
-        preferences,
-        readingHabit,
-        readingSpeedProfile,
-      });
-
-      const localOnlyFeeds = feedsRef.current.slice(0, 40);
-      for (const f of localOnlyFeeds) {
-        await syncSourceToFirestore(user, f);
-      }
-
-      const localBookmarks = articlesRef.current.filter((a) => a.isBookmarked).slice(0, 40);
-      for (const b of localBookmarks) {
-        await syncBookmarkToFirestore(user, b);
-      }
-
-      cloudHydratedUidRef.current = user.uid;
-      setCloudSyncStatus('synced', Date.now());
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setCloudSyncStatus('error');
-      setCloudError(
-        msg.includes('Quota exceeded')
-          ? 'Firestore daily quota exceeded. Cloud sync will resume after quota reset.'
-          : 'Could not complete cloud sync.'
-      );
-    } finally {
-      setTimeout(() => {
-        isApplyingCloudRef.current = false;
-      }, 250);
-    }
-  };
-
-  useEffect(() => {
-    if (!authReady || !user || isOffline) {
-      if (!user) cloudHydratedUidRef.current = null;
-      return;
-    }
-    if (cloudHydratedUidRef.current !== user.uid) {
-      void performFullCloudSync();
-    }
-    const unsub = subscribeToCloudMetaState(user, (meta) => {
-      if (!meta || isApplyingCloudRef.current) return;
-      isApplyingCloudRef.current = true;
-      try {
-        if (meta.preferences) {
-          setPreferences((prev) => ({ ...prev, ...meta.preferences }));
-        }
-        if (Array.isArray(meta.folders)) {
-          setFolders((prev) => Array.from(new Set([...prev, ...meta.folders!])));
-        }
-      } finally {
-        setTimeout(() => {
-          isApplyingCloudRef.current = false;
-        }, 200);
-      }
-    });
-    return () => unsub();
-  }, [authReady, user?.uid, isOffline]);
-
-  useEffect(() => {
-    if (!authReady || !user || isOffline || isApplyingCloudRef.current) return;
-    if (cloudHydratedUidRef.current !== user.uid) return;
-    const timer = setTimeout(() => {
-      void saveCloudStateToFirestore({
-        user,
-        folders,
-        preferences,
-        readingHabit,
-        readingSpeedProfile,
-      })
-        .then(() => setCloudSyncStatus('synced', Date.now()))
-        .catch(() => {
-          setCloudSyncStatus('error');
-        });
-    }, 1200);
-    return () => clearTimeout(timer);
-  }, [authReady, user?.uid, isOffline, folders, preferences, readingHabit, readingSpeedProfile]);
-
   // Temporary status notification
   const notifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notify = (msg: string) => {
@@ -588,19 +400,14 @@ export default function App() {
     await Promise.all(workers);
   };
 
-  // Sync a single feed (>=50 items, server-side read exclusion)
+  // Sync a single feed (searches for RSS feed link first; if available saves RSS link, otherwise website link)
   const syncFeed = async (feed: Feed): Promise<FeedItem[] | null> => {
     try {
-      const excludeKeys = readKeysRef.current
-        ? Array.from(readKeysRef.current).slice(-1500)
-        : [];
       const data = await fetchFeedWithFallback({
         url: feed.url,
         feedId: feed.id,
         title: feed.title,
         tags: feed.defaultTags || [],
-        minItems: 50,
-        excludeKeys,
       });
       if (data && Array.isArray(data.items)) {
         const discoveredUrl = data.resolvedFeedUrl || feed.url;
@@ -622,13 +429,11 @@ export default function App() {
             };
           })
         );
-        return deduplicateFeedItems(
-          data.items.map((item) => ({
-            ...item,
-            feedId: feed.id,
-            feedTitle: data.feedTitle || feed.title,
-          }))
-        );
+        return data.items.map((item) => ({
+          ...item,
+          feedId: feed.id,
+          feedTitle: data.feedTitle || feed.title,
+        }));
       }
     } catch (e) {
       console.warn(`Sync failed for ${feed.title}:`, e);
@@ -638,89 +443,51 @@ export default function App() {
   };
 
   // Merge a fresh snapshot from a source without losing local read/bookmark/cache state.
-  // Stamps newly discovered/refreshed stories with refreshBatchTs so FB/IG-style fresh items surface at top.
+  // When excludeAlreadyRead=true, any incoming item whose ID or link was already read is skipped.
   const mergeFeedItems = (
     previous: FeedItem[],
     incomingRaw: FeedItem[],
-    excludeAlreadyRead = false,
-    refreshBatchTs?: number
+    excludeAlreadyRead = false
   ) => {
     const filteredRaw =
       excludeAlreadyRead && readKeysRef.current
         ? filterOutAlreadyReadIncoming(incomingRaw, readKeysRef.current)
         : incomingRaw;
-
-    const dedupIncoming = deduplicateFeedItems(filteredRaw);
-    const incoming = dedupIncoming.map((item) => ({
-      ...item,
-      isOfflineCached: hasFullBody(item),
-      fetchedBatchTs: refreshBatchTs ?? item.fetchedBatchTs,
-    }));
-
-    const existingSigs = new Set<string>();
-    for (const prevItem of previous) {
-      for (const sig of getArticleReadSignatures(prevItem)) {
-        existingSigs.add(sig);
-      }
-    }
-
-    const incomingById = new Map<string, FeedItem>();
-    const incomingBySig = new Map<string, FeedItem>();
-    for (const inc of incoming) {
-      incomingById.set(inc.id, inc);
-      for (const sig of getArticleReadSignatures(inc)) {
-        if (!incomingBySig.has(sig)) incomingBySig.set(sig, inc);
-      }
-    }
-
-    const matchedIncomingIds = new Set<string>();
+    // A story counts as cached only when it carries a real body, not just a teaser
+    const incoming = filteredRaw.map((item) => ({ ...item, isOfflineCached: hasFullBody(item) }));
+    const incomingById = new Map(incoming.map((item) => [item.id, item]));
+    const incomingByLink = new Map(incoming.map((item) => [item.link, item]));
+    const seen = new Set<string>();
 
     const refreshed = previous.map((article) => {
-      let latest = incomingById.get(article.id);
-      if (!latest) {
-        for (const sig of getArticleReadSignatures(article)) {
-          const hit = incomingBySig.get(sig);
-          if (hit) {
-            latest = hit;
-            break;
-          }
-        }
-      }
+      const latest = incomingById.get(article.id) || incomingByLink.get(article.link);
       if (!latest) return article;
-      matchedIncomingIds.add(latest.id);
+      seen.add(latest.id);
       const keepExistingDate =
         latest.timestamp <= UNDATED_FALLBACK_EPOCH && article.timestamp > UNDATED_FALLBACK_EPOCH;
       return {
         ...latest,
-        id: article.id,
         timestamp: keepExistingDate ? article.timestamp : latest.timestamp,
         pubDate: keepExistingDate ? article.pubDate : latest.pubDate,
         isRead: article.isRead,
         isBookmarked: article.isBookmarked,
         hiddenFromFeed: article.hiddenFromFeed,
+        // Keep the stored body if the fresh copy only has a teaser
         isOfflineCached: article.isOfflineCached || latest.isOfflineCached,
         contentHtml: hasFullBody(article) && !hasFullBody(latest) ? article.contentHtml : latest.contentHtml,
         contentClean: hasFullBody(article) && !hasFullBody(latest) ? article.contentClean : latest.contentClean,
         cachedAt: article.cachedAt,
-        fetchedBatchTs: article.fetchedBatchTs ?? latest.fetchedBatchTs,
         tags: article.tags.length > 0 ? article.tags : latest.tags,
       };
     });
 
-    const additions = incoming.filter((item) => {
-      if (matchedIncomingIds.has(item.id)) return false;
-      for (const sig of getArticleReadSignatures(item)) {
-        if (existingSigs.has(sig)) return false;
-      }
-      if (excludeAlreadyRead && readKeysRef.current) {
-        for (const sig of getArticleReadSignatures(item)) {
-          if (readKeysRef.current.has(sig)) return false;
-        }
-      }
-      return true;
-    });
-
-    return rankAndInterleaveFeedItems(deduplicateFeedItems([...additions, ...refreshed]));
+    const additions = incoming.filter(
+      (item) =>
+        !seen.has(item.id) &&
+        !previous.some((a) => a.link === item.link) &&
+        (!excludeAlreadyRead || !readKeysRef.current || !readKeysRef.current.has(item.id))
+    );
+    return [...additions, ...refreshed].sort((a, b) => b.timestamp - a.timestamp);
   };
 
   // Helper to clear read stories in a refreshed scope and persist their keys
@@ -758,24 +525,26 @@ export default function App() {
           : incomingItemsRaw;
 
         if (unreadIncoming.length > 0) {
-          const batchTs = Date.now();
-          // Decide synchronously outside state updater to avoid side-effects inside updater
-          if (
-            (lastScrollYRef.current > 180 || activeArticleRef.current !== null) &&
-            articlesRef.current.length > 0
-          ) {
-            const brandNew = findNewIncomingArticles(
-              articlesRef.current,
-              unreadIncoming,
-              readKeysRef.current || undefined
-            );
-            if (brandNew.length > 0) {
-              setPendingNewArticles((curr) => deduplicateFeedItems([...brandNew, ...curr]));
-              revealNewStoriesPill();
+          setArticles((prev) => {
+            // If the user is actively scrolled down or inside ReaderView, buffer brand-new stories for the auto-dismissing pill
+            if ((lastScrollYRef.current > 180 || activeArticleRef.current !== null) && prev.length > 0) {
+              const brandNew = findNewIncomingArticles(
+                prev,
+                unreadIncoming,
+                readKeysRef.current || undefined
+              );
+              if (brandNew.length > 0) {
+                setPendingNewArticles((curr) => {
+                  const existingIds = new Set(curr.map((c) => c.id));
+                  const additions = brandNew.filter((b) => !existingIds.has(b.id));
+                  return additions.length > 0 ? [...additions, ...curr] : curr;
+                });
+                showAndAutoDismissNewStoriesPill();
+                return prev;
+              }
             }
-          } else {
-            setArticles((prev) => mergeFeedItems(prev, unreadIncoming, true, batchTs));
-          }
+            return mergeFeedItems(prev, unreadIncoming, true);
+          });
         }
       }
       if (resolvedFeeds && resolvedFeeds.length > 0) {
@@ -807,7 +576,6 @@ export default function App() {
       return;
     }
     isBackgroundPollingRef.current = true;
-    const pollBatchTs = Date.now();
     try {
       const currentFeeds = feedsRef.current;
       await runPool(currentFeeds, 2, async (feed) => {
@@ -831,10 +599,14 @@ export default function App() {
           (lastScrollYRef.current > 180 || activeArticleRef.current !== null) &&
           articlesRef.current.length > 0
         ) {
-          setPendingNewArticles((curr) => deduplicateFeedItems([...brandNew, ...curr]));
-          revealNewStoriesPill();
+          setPendingNewArticles((curr) => {
+            const existingIds = new Set(curr.map((c) => c.id));
+            const additions = brandNew.filter((b) => !existingIds.has(b.id));
+            return additions.length > 0 ? [...additions, ...curr] : curr;
+          });
+          showAndAutoDismissNewStoriesPill();
         } else {
-          setArticles((prev) => mergeFeedItems(prev, unreadOnly, true, pollBatchTs));
+          setArticles((prev) => mergeFeedItems(prev, unreadOnly, true));
         }
       });
     } finally {
@@ -943,7 +715,6 @@ export default function App() {
     setSearchQuery('');
     setCurrentTab('stories');
     setIsHeaderVisible(true);
-    setVisibleCount(25);
 
     if (isOffline) {
       notify(`Offline mode: Showing cached stories for ${feed.title}`);
@@ -951,11 +722,9 @@ export default function App() {
     }
 
     clearScopeReadArticles((item) => item.feedId === feed.id);
-    pendingNewArticlesRef.current = pendingNewArticlesRef.current.filter((a) => a.feedId !== feed.id);
-    setPendingNewArticles(pendingNewArticlesRef.current);
+    setPendingNewArticles((curr) => curr.filter((a) => a.feedId !== feed.id));
     setRefreshFailed(false);
     setIsRefreshing(true);
-    const refreshBatchTs = Date.now();
     try {
       const incomingItems = await syncFeed(feed);
       if (incomingItems === null) {
@@ -966,9 +735,7 @@ export default function App() {
           ? filterOutAlreadyReadIncoming(incomingItems, readKeysRef.current)
           : incomingItems;
         if (unreadOnly.length > 0) {
-          setArticles((prev) => mergeFeedItems(prev, unreadOnly, true, refreshBatchTs));
-          const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
-          scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
+          setArticles((prev) => mergeFeedItems(prev, unreadOnly, true));
         }
       }
     } finally {
@@ -986,7 +753,6 @@ export default function App() {
     setSearchQuery('');
     setCurrentTab('stories');
     setIsHeaderVisible(true);
-    setVisibleCount(25);
 
     const folderFeeds = feeds.filter((f) => (f.category?.trim() || '') === folderName);
     if (isOffline || folderFeeds.length === 0) {
@@ -996,12 +762,10 @@ export default function App() {
 
     const folderFeedIdSet = new Set(folderFeeds.map((f) => f.id));
     clearScopeReadArticles((item) => folderFeedIdSet.has(item.feedId));
-    pendingNewArticlesRef.current = pendingNewArticlesRef.current.filter((a) => !folderFeedIdSet.has(a.feedId));
-    setPendingNewArticles(pendingNewArticlesRef.current);
+    setPendingNewArticles((curr) => curr.filter((a) => !folderFeedIdSet.has(a.feedId)));
 
     setRefreshFailed(false);
     setIsRefreshing(true);
-    const refreshBatchTs = Date.now();
     try {
       let failedCount = 0;
       await runPool(folderFeeds, 4, async (f) => {
@@ -1013,15 +777,12 @@ export default function App() {
             ? filterOutAlreadyReadIncoming(result, readKeysRef.current)
             : result;
           if (unreadOnly.length > 0) {
-            setArticles((prev) => mergeFeedItems(prev, unreadOnly, true, refreshBatchTs));
+            setArticles((prev) => mergeFeedItems(prev, unreadOnly, true));
           }
         }
       });
       if (failedCount === folderFeeds.length) {
         setRefreshFailed(true);
-      } else {
-        const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
-        scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
       }
     } finally {
       setIsRefreshing(false);
@@ -1050,7 +811,7 @@ export default function App() {
     );
   };
 
-  // Refresh active source, active folder, or all sources — brings only new unread content at the top, never already-read items
+  // Refresh active source, active folder, or all sources — brings only new unread content, never already-read items
   const handleRefreshActive = async () => {
     if (isOffline) {
       notify('Offline mode active. Using locally cached articles.');
@@ -1074,16 +835,11 @@ export default function App() {
     }
 
     clearScopeReadArticles();
-    pendingNewArticlesRef.current = [];
     setPendingNewArticles([]);
     setShowNewStoriesPill(false);
-    setVisibleCount(25);
 
     setRefreshFailed(false);
     setIsRefreshing(true);
-    const refreshBatchTs = Date.now();
-    const countedNewIds = new Set<string>();
-    const baselineArticles = articlesRef.current;
     let addedNewCount = 0;
     try {
       let failedCount = 0;
@@ -1097,24 +853,15 @@ export default function App() {
             : result;
           if (unreadOnly.length > 0) {
             const genuinelyNew = findNewIncomingArticles(
-              baselineArticles,
+              articlesRef.current,
               unreadOnly,
               readKeysRef.current || undefined
             );
-            for (const item of genuinelyNew) {
-              if (!countedNewIds.has(item.id)) {
-                countedNewIds.add(item.id);
-                addedNewCount += 1;
-              }
-            }
-            setArticles((prev) => mergeFeedItems(prev, unreadOnly, true, refreshBatchTs));
+            addedNewCount += genuinelyNew.length;
+            setArticles((prev) => mergeFeedItems(prev, unreadOnly, true));
           }
         }
       });
-
-      const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
-      scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
-      setIsHeaderVisible(true);
 
       // Error feedback only when nothing could be refreshed; a partial refresh still counts as done
       if (failedCount === feeds.length) setRefreshFailed(true);
@@ -1423,9 +1170,6 @@ export default function App() {
 
     // Mark as read immediately and persist key so refreshing never brings this read story back
     recordReadKeys([latest]);
-    if (user && !isOffline) {
-      void recordReadEntryToFirestore(user, latest).catch(() => {});
-    }
     setArticles((prev) =>
       prev.map((a) => (a.id === latest.id ? { ...a, isRead: true } : a))
     );
@@ -1578,8 +1322,6 @@ export default function App() {
   // Article Actions
   const handleToggleBookmark = (id: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    const target = articles.find((a) => a.id === id) || activeArticle || quickPeekArticle;
-    const nextBookmarked = target ? !target.isBookmarked : true;
     setArticles((prev) =>
       prev.map((a) => (a.id === id ? { ...a, isBookmarked: !a.isBookmarked } : a))
     );
@@ -1588,13 +1330,6 @@ export default function App() {
     }
     if (quickPeekArticle && quickPeekArticle.id === id) {
       setQuickPeekArticle((curr) => (curr ? { ...curr, isBookmarked: !curr.isBookmarked } : null));
-    }
-    if (user && !isOffline && target && target.id === id) {
-      if (nextBookmarked) {
-        void syncBookmarkToFirestore(user, { ...target, isBookmarked: true }).catch(() => {});
-      } else {
-        void deleteBookmarkFromFirestore(user, target).catch(() => {});
-      }
     }
   };
 
@@ -1621,9 +1356,6 @@ export default function App() {
     if (target) {
       if (markingAsRead) {
         recordReadKeys([target]);
-        if (user && !isOffline) {
-          void recordReadEntryToFirestore(user, target).catch(() => {});
-        }
       } else {
         removeReadKeys(target);
       }
@@ -1781,22 +1513,15 @@ export default function App() {
     };
     setFeeds((prev) => [newFeed, ...prev]);
     notify(`Added ${newFeed.title}`);
-    if (user && !isOffline) {
-      void syncSourceToFirestore(user, newFeed).catch(() => {});
-    }
 
     // Select and sync the newly added source immediately
     await handleSelectSource(newFeed);
   };
 
   const handleDeleteFeed = (feedId: string) => {
-    const removedFeed = feeds.find((f) => f.id === feedId);
     setFeeds((prev) => prev.filter((f) => f.id !== feedId));
     if (selectedFeedId === feedId) {
       setSelectedFeedId(null);
-    }
-    if (user && !isOffline && removedFeed) {
-      void deleteSourceFromFirestore(user, removedFeed).catch(() => {});
     }
     notify('Source removed');
   };
@@ -1880,16 +1605,14 @@ export default function App() {
 
   // Filtered Articles calculation:
   // When in Stories tab and a source or folder is clicked, only show that specific source's or folder's feed
-  const displayedArticles = deduplicateFeedItems(
-    filterArticles(articles, {
-      selectedFeedId: currentTab === 'stories' && !selectedTagId ? selectedFeedId : null,
-      selectedFeedIds:
-        currentTab === 'stories' && !selectedTagId && !selectedFeedId ? selectedFolderFeedIds : null,
-      selectedTagId,
-      searchQuery,
-      filterMode: currentTab === 'saved' ? 'bookmarked' : filterMode,
-    })
-  );
+  const displayedArticles = filterArticles(articles, {
+    selectedFeedId: currentTab === 'stories' && !selectedTagId ? selectedFeedId : null,
+    selectedFeedIds:
+      currentTab === 'stories' && !selectedTagId && !selectedFeedId ? selectedFolderFeedIds : null,
+    selectedTagId,
+    searchQuery,
+    filterMode: currentTab === 'saved' ? 'bookmarked' : filterMode,
+  });
 
   // Group related coverage into Developing Story Clusters
   const storyClusters = useMemo(() => {
@@ -1928,17 +1651,12 @@ export default function App() {
   // Apply buffered new stories when user taps the "↑ X New Stories Available" pill
   const handleApplyPendingNewStories = () => {
     triggerHapticSelection();
+    if (newStoriesBannerTimerRef.current) clearTimeout(newStoriesBannerTimerRef.current);
     setShowNewStoriesPill(false);
-    const toApply = pendingNewArticlesRef.current.length > 0
-      ? pendingNewArticlesRef.current
-      : pendingNewArticles;
-    pendingNewArticlesRef.current = [];
-    setPendingNewArticles([]);
-    if (toApply.length > 0) {
-      const batchTs = Date.now();
-      setArticles((prev) => mergeFeedItems(prev, toApply, true, batchTs));
+    if (pendingNewArticles.length > 0) {
+      setArticles((prev) => mergeFeedItems(prev, pendingNewArticles, true));
+      setPendingNewArticles([]);
     }
-    setVisibleCount((v) => Math.max(25, v));
     const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
     scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
     setIsHeaderVisible(true);
@@ -2191,12 +1909,11 @@ export default function App() {
                 )}
               </header>
 
-              {/* Floating "↑ New Stories Available" Liquid Glass Pill (persists until tapped or scrolled to top) */}
+              {/* Floating "↑ New Stories Available" Liquid Glass Pill (auto-dismisses after 4.5s) */}
               {showNewStoriesPill && pendingNewArticles.length > 0 && (
                 <div className="absolute top-[calc(max(env(safe-area-inset-top,0px),0.75rem)+3.75rem)] left-1/2 -translate-x-1/2 z-30 pointer-events-auto animate-in fade-in slide-in-from-top-2 duration-200">
                   <button
                     type="button"
-                    data-testid="new-stories-pill"
                     onClick={handleApplyPendingNewStories}
                     className="liquid-glass-pill px-4 py-2 rounded-full flex items-center gap-2 text-xs font-semibold text-white bg-[#FF6719]/90 shadow-xl active:scale-95 transition-transform"
                   >
@@ -2551,7 +2268,6 @@ export default function App() {
               onLoadDirectUrl={(url) => processDirectUrl(url)}
               isLoadingDirectUrl={isLoadingDirectUrl}
               onOpenIosModal={() => setIsIosModalOpen(true)}
-              onSyncNow={performFullCloudSync}
             />
           )}
 

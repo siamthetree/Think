@@ -369,18 +369,3 @@ test('parseFeedDate does not fall back to Date.now() for unparseable dates and b
   }
 });
 
-test('parseHtmlPortalToFeed extracts at least 50 unique articles from a rich newspaper homepage', () => {
-  const anchors = Array.from({ length: 65 }, (_, i) => {
-    const idx = i + 1;
-    return `<article><a href="/bangladesh/story-report-update-${idx}"><h3>Major Economic and Infrastructure Update Headline Number ${idx}</h3></a></article>`;
-  }).join('\n');
-  const portalHtml = `<!DOCTYPE html><html><head><title>Large Portal</title></head><body><main>${anchors}</main></body></html>`;
-
-  const parsed = parseHtmlPortalToFeed(portalHtml, {
-    id: 'large_portal',
-    title: 'Large Portal',
-    url: 'https://largeportal.example.com',
-  });
-  assert.ok(parsed.items.length >= 50, `Expected >= 50 items, got ${parsed.items.length}`);
-});
-

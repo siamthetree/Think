@@ -370,7 +370,7 @@ export function parseHtmlPortalToFeed(
   const items: FeedItem[] = [];
 
   // Bound HTML size and strip script/style/svg blocks so regex matching never lags on mobile Safari/WKWebView
-  const cleanPortalHtml = (htmlString.length > 700000 ? htmlString.slice(0, 700000) : htmlString)
+  const cleanPortalHtml = (htmlString.length > 350000 ? htmlString.slice(0, 350000) : htmlString)
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, ' ');
@@ -379,7 +379,7 @@ export function parseHtmlPortalToFeed(
   const anchorMatches = [...cleanPortalHtml.matchAll(/<a\s+([^>]{1,600})>([\s\S]{1,1800}?)<\/a>/gi)];
 
   for (const match of anchorMatches) {
-    if (items.length >= 80) break;
+    if (items.length >= 30) break;
 
     const attrs = match[1];
     const innerHtml = match[2];
@@ -416,7 +416,7 @@ export function parseHtmlPortalToFeed(
     const segments = pathname.split('/').filter(Boolean);
 
     // Filter out non-article navigation/category/utility paths
-    if (pathname.length < 10 || segments.length === 0) continue;
+    if (pathname.length < 14 || segments.length === 0) continue;
     if (
       /\/(login|signin|signup|register|privacy|terms|contact|about|advertise|archive|search|author|tag|topic|category|collection|section|video|videos|photo|photos|gallery|live|poll|weather|epaper|todays-paper)$/i.test(
         pathname
@@ -451,19 +451,17 @@ export function parseHtmlPortalToFeed(
       title = stripHtml(innerHtml);
     }
 
-    // Clean up common prefixes/suffixes and validate title length (at least 3 words / 18 chars)
+    // Clean up common prefixes/suffixes and validate title length (at least 4 words / 22 chars)
     title = title.replace(/\s+/g, ' ').trim();
     const wordCount = title.split(/\s+/).length;
-    if (!title || title.length < 18 || title.length > 240 || wordCount < 3) continue;
+    if (!title || title.length < 22 || title.length > 240 || wordCount < 4) continue;
     if (title.includes('@') || /^(read more|view more|click here|subscribe|follow us)/i.test(title)) {
       continue;
     }
 
-    const canonUrl = `${parsedUrl.hostname.toLowerCase().replace(/^www\./, '')}${pathname}`;
-    const normTitle = title.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
-    if (seenUrls.has(canonUrl) || seenTitles.has(normTitle)) continue;
-    seenUrls.add(canonUrl);
-    seenTitles.add(normTitle);
+    if (seenUrls.has(fullUrl) || seenTitles.has(title.toLowerCase())) continue;
+    seenUrls.add(fullUrl);
+    seenTitles.add(title.toLowerCase());
 
     // Look at surrounding sibling HTML around the anchor for image or summary paragraph
     const matchIndex = match.index ?? 0;

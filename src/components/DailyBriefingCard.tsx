@@ -25,7 +25,7 @@ export const DailyBriefingCard: React.FC<DailyBriefingCardProps> = ({
   onSelectStory,
   onQuickPeek,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
   const [activeIndex, setActiveIndex] = useState(0);
   const [dragOffsetX, setDragOffsetX] = useState(0);
 

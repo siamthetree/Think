@@ -37,7 +37,6 @@ export interface FeedItem {
   isOfflineCached: boolean;
   hiddenFromFeed?: boolean;
   cachedAt?: number;
-  fetchedBatchTs?: number;
   readTimeMin: number;
 }
 

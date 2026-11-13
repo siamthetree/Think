@@ -13,7 +13,6 @@ import {
 } from './feedParser';
 import { escapeHtml } from './sanitize';
 import { checkSafeExternalUrl } from './urlSecurity';
-import { deduplicateFeedItems, isArticleInReadKeys } from './feedIntelligence';
 
 const ENV_BACKEND =
   (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL?.trim() || '';
@@ -139,79 +138,33 @@ export async function fetchFeedWithFallback(params: {
   feedId: string;
   title: string;
   tags: string[];
-  excludeKeys?: string[];
-  minItems?: number;
 }): Promise<{ feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string }> {
   let normalizedUrl = params.url.trim();
   if (normalizedUrl && !/^https?:\/\//i.test(normalizedUrl) && !normalizedUrl.startsWith('/')) {
     normalizedUrl = `https://${normalizedUrl}`;
   }
-  const minItems = Math.max(50, Math.min(100, params.minItems ?? 50));
-  const excludeKeys = (params.excludeKeys || []).slice(-1500);
-  const excludeSet = excludeKeys.length > 0 ? new Set(excludeKeys) : null;
-  const normalizedParams = { ...params, url: normalizedUrl, minItems, excludeKeys };
+  const normalizedParams = { ...params, url: normalizedUrl };
 
   const query = `url=${encodeURIComponent(normalizedParams.url)}&feedId=${encodeURIComponent(
     normalizedParams.feedId
   )}&title=${encodeURIComponent(normalizedParams.title)}&tags=${encodeURIComponent(
     normalizedParams.tags.join(',')
-  )}&minItems=${minItems}`;
+  )}`;
 
-  const postEndpoints = getApiEndpoints('/api/rss');
-  const getEndpoints = getApiEndpoints(`/api/rss?${query}`);
+  const endpoints = getApiEndpoints(`/api/rss?${query}`);
 
   const viaBackend = async () => {
-    for (let i = 0; i < postEndpoints.length; i += 1) {
-      const postUrl = postEndpoints[i];
-      const getUrl = getEndpoints[i] || getEndpoints[0];
+    for (const endpoint of endpoints) {
       try {
-        const postRes = await fetch(postUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...CLIENT_HEADERS,
-          },
-          body: JSON.stringify({
-            url: normalizedParams.url,
-            feedId: normalizedParams.feedId,
-            title: normalizedParams.title,
-            tags: normalizedParams.tags,
-            minItems,
-            excludeKeys,
-          }),
-          signal: timeoutSignal(14000),
+        const response = await fetch(endpoint, {
+          headers: CLIENT_HEADERS,
+          signal: timeoutSignal(10000),
         });
-        const postCt = postRes.headers.get('content-type') || '';
-        if (postRes.ok && postCt.includes('application/json')) {
-          const data = await postRes.json();
+        const contentType = response.headers.get('content-type') || '';
+        if (response.ok && contentType.includes('application/json')) {
+          const data = await response.json();
           if (data && Array.isArray(data.items) && data.items.length > 0) {
-            const filtered = excludeSet
-              ? data.items.filter((item: FeedItem) => !isArticleInReadKeys(item, excludeSet))
-              : data.items;
-            return {
-              ...data,
-              items: deduplicateFeedItems(filtered),
-            } as { feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string };
-          }
-        }
-        // Fallback to GET if a remote endpoint only accepts GET
-        if (postRes.status === 404 || postRes.status === 405) {
-          const response = await fetch(getUrl, {
-            headers: CLIENT_HEADERS,
-            signal: timeoutSignal(12000),
-          });
-          const contentType = response.headers.get('content-type') || '';
-          if (response.ok && contentType.includes('application/json')) {
-            const data = await response.json();
-            if (data && Array.isArray(data.items) && data.items.length > 0) {
-              const filtered = excludeSet
-                ? data.items.filter((item: FeedItem) => !isArticleInReadKeys(item, excludeSet))
-                : data.items;
-              return {
-                ...data,
-                items: deduplicateFeedItems(filtered),
-              } as { feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string };
-            }
+            return data as { feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string };
           }
         }
       } catch {
@@ -236,8 +189,6 @@ async function fetchFeedOnDevice(params: {
   feedId: string;
   title: string;
   tags: string[];
-  excludeKeys?: string[];
-  minItems?: number;
 }): Promise<{ feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string }> {
   const isXmlString = (s: string) => {
     const t = s.trim();
@@ -249,32 +200,11 @@ async function fetchFeedOnDevice(params: {
     );
   };
 
-  const targetMin = Math.max(50, Math.min(100, params.minItems ?? 50));
-  const excludeSet = params.excludeKeys && params.excludeKeys.length > 0 ? new Set(params.excludeKeys) : null;
   const feedInfo = {
     id: params.feedId,
     title: params.title,
     url: params.url,
     defaultTags: params.tags,
-  };
-
-  let collectedItems: FeedItem[] = [];
-  let resolvedTitle = params.title;
-  let resolvedUrl = params.url;
-
-  const absorb = (items: FeedItem[], nextTitle?: string, nextResolvedUrl?: string) => {
-    const unread = excludeSet
-      ? items.filter((item) => !isArticleInReadKeys(item, excludeSet))
-      : items;
-    if (unread.length > 0) {
-      collectedItems = deduplicateFeedItems([...collectedItems, ...unread]);
-      if (nextTitle && nextTitle !== 'RSS Feed' && nextTitle !== 'Newspaper Feed') {
-        resolvedTitle = nextTitle;
-      }
-      if (nextResolvedUrl && resolvedUrl === params.url) {
-        resolvedUrl = nextResolvedUrl;
-      }
-    }
   };
 
   // Step 1: Try fetching the given URL directly
@@ -283,78 +213,64 @@ async function fetchFeedOnDevice(params: {
     rawText = await fetchRawUrlClientSide(params.url, 6500);
     if (isXmlString(rawText)) {
       const parsed = parseXmlFeed(rawText, feedInfo);
-      absorb(parsed.items, parsed.feedTitle, params.url);
-      if (collectedItems.length >= targetMin) {
-        return { feedTitle: resolvedTitle, items: collectedItems, resolvedFeedUrl: resolvedUrl };
+      if (parsed.items.length > 0) {
+        return { ...parsed, resolvedFeedUrl: params.url };
       }
     }
   } catch {
     // Will continue to RSS candidate discovery
   }
 
-  // If XML came back with fewer than targetMin items, also pull homepage HTML to find section feeds / stories
-  if (!rawText || isXmlString(rawText)) {
-    try {
-      const origin = new URL(params.url).origin;
-      const homeHtml = await fetchRawUrlClientSide(origin, 5000);
-      if (!isXmlString(homeHtml)) {
-        rawText = homeHtml;
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  // Step 2: Search for RSS feeds and accumulate across section feeds until targetMin unread items are reached
+  // Step 2: Search for an RSS feed link BEFORE falling back to the website link!
   const rssCandidates = buildRssDiscoveryCandidates(params.url, rawText);
-  for (const candidateUrl of rssCandidates.slice(0, 8)) {
-    if (collectedItems.length >= targetMin) break;
+
+  for (const candidateUrl of rssCandidates.slice(0, 6)) {
     try {
       const candidateText = await fetchRawUrlClientSide(candidateUrl, 3500);
       if (isXmlString(candidateText)) {
         const parsed = parseXmlFeed(candidateText, { ...feedInfo, url: candidateUrl });
-        absorb(parsed.items, parsed.feedTitle, candidateUrl);
+        if (parsed.items.length > 0) {
+          return { ...parsed, resolvedFeedUrl: candidateUrl };
+        }
       }
     } catch {
       // Try next RSS candidate
     }
   }
 
-  // Step 3: Supplement from website HTML portal anchors if still below targetMin
-  if (rawText && !isXmlString(rawText) && collectedItems.length < targetMin) {
+  // Step 3: If no RSS link is available, keep the website link and parse articles directly from the website HTML!
+  if (rawText) {
     const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
-    absorb(scraped.items, scraped.feedTitle, params.url);
+    if (scraped.items.length > 0) {
+      return { ...scraped, resolvedFeedUrl: params.url };
+    }
   }
 
-  // Step 4: Website domain news index fallback (Bing News RSS + Google News RSS) if still below targetMin
-  if (collectedItems.length < targetMin) {
-    try {
-      const parsed = new URL(params.url);
-      const domain = parsed.hostname.replace(/^www\./, '');
-      const indexUrls = [
-        `https://www.bing.com/news/search?q=${encodeURIComponent('site:' + domain)}&format=rss`,
-        `https://news.google.com/rss/search?q=${encodeURIComponent('site:' + domain)}&hl=en-BD&gl=BD&ceid=BD:en`,
-      ];
-      for (const indexUrl of indexUrls) {
-        if (collectedItems.length >= targetMin) break;
-        try {
-          const indexXml = await fetchRawUrlClientSide(indexUrl, 6000);
-          if (isXmlString(indexXml)) {
-            const parsedIndex = parseXmlFeed(indexXml, {
-              ...feedInfo,
-              title: params.title && params.title !== 'Newspaper Feed' ? params.title : domain,
-              url: params.url,
-            });
-            absorb(parsedIndex.items, parsedIndex.feedTitle, params.url);
+  // Step 4: Website domain news index fallback (Bing News RSS with unwrapped direct links, then Google News RSS)
+  try {
+    const parsed = new URL(params.url);
+    const domain = parsed.hostname.replace(/^www\./, '');
+    const indexUrls = [
+      `https://www.bing.com/news/search?q=${encodeURIComponent('site:' + domain)}&format=rss`,
+      `https://news.google.com/rss/search?q=${encodeURIComponent('site:' + domain)}&hl=en-BD&gl=BD&ceid=BD:en`,
+    ];
+    for (const indexUrl of indexUrls) {
+      try {
+        const indexXml = await fetchRawUrlClientSide(indexUrl, 6000);
+        if (isXmlString(indexXml)) {
+          const parsedIndex = parseXmlFeed(indexXml, {
+            ...feedInfo,
+            title:
+              params.title && params.title !== 'Newspaper Feed' ? params.title : domain,
+            url: params.url,
+          });
+          if (parsedIndex.items.length > 0) {
+            return { ...parsedIndex, resolvedFeedUrl: params.url };
           }
-        } catch {}
-      }
-    } catch {}
-  }
-
-  if (collectedItems.length > 0) {
-    return { feedTitle: resolvedTitle, items: collectedItems, resolvedFeedUrl: resolvedUrl };
-  }
+        }
+      } catch {}
+    }
+  } catch {}
 
   throw new Error(`No articles found for ${params.url}`);
 }
