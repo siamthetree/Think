@@ -14,6 +14,22 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "shareImageSheet", returnType: CAPPluginReturnPromise)
     ]
 
+    private static let safariUserAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+
+    private static let ephemeralSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        config.httpCookieStorage = nil
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.httpAdditionalHeaders = [
+            "User-Agent": safariUserAgent
+        ]
+        return URLSession(configuration: config)
+    }()
+
     private func decodeImageData(from base64: String?) -> Data? {
         guard let raw = base64, !raw.isEmpty else { return nil }
         let cleaned: String
@@ -87,14 +103,14 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                                 call.resolve([
                                     "ok": true,
                                     "method": "ios-instagram-music-ready",
-                                    "message": "Saved to Photos — pick it in Instagram Stories to add any song."
+                                    "message": "Saved to Photos - pick it in Instagram Stories to add any song."
                                 ])
                             } else {
                                 self.presentActivitySheet(
                                     image: fallbackImage,
                                     title: nil,
                                     call: call,
-                                    message: "Saved to Photos — open Instagram Stories & add music."
+                                    message: "Saved to Photos - open Instagram Stories & add music."
                                 )
                             }
                         }
@@ -103,7 +119,7 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                             call.resolve([
                                 "ok": true,
                                 "method": "ios-instagram-music-ready",
-                                "message": "Saved to Photos — create a Story in Instagram to add any song."
+                                "message": "Saved to Photos - create a Story in Instagram to add any song."
                             ])
                         }
                     } else {
@@ -111,7 +127,7 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                             image: fallbackImage,
                             title: nil,
                             call: call,
-                            message: "Saved to Photos — share to Instagram to add music."
+                            message: "Saved to Photos - share to Instagram to add music."
                         )
                     }
                 }
@@ -179,7 +195,7 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                     image: fallbackImage,
                     title: nil,
                     call: call,
-                    message: "Instagram not detected — choose an app or Save Image."
+                    message: "Instagram not detected - choose an app or Save Image."
                 )
                 return
             }
@@ -250,7 +266,7 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
                     image: fallbackImage,
                     title: nil,
                     call: call,
-                    message: "Facebook not detected — choose an app or Save Image."
+                    message: "Facebook not detected - choose an app or Save Image."
                 )
                 return
             }
@@ -313,7 +329,11 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
         if let urlStr = call.getString("imageUrl"),
            let url = URL(string: urlStr),
            (url.scheme == "https" || url.scheme == "http") {
-            URLSession.shared.dataTask(with: url) { data, _, error in
+            var request = URLRequest(url: url)
+            request.httpShouldHandleCookies = false
+            request.setValue(Self.safariUserAgent, forHTTPHeaderField: "User-Agent")
+
+            Self.ephemeralSession.dataTask(with: request) { data, _, error in
                 if let error = error {
                     call.reject("Could not download photo: \(error.localizedDescription)")
                     return
@@ -371,6 +391,8 @@ public class ChintaMediaPlugin: CAPPlugin, CAPBridgedPlugin {
 public class ChintaViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         super.capacitorDidLoad()
+        HTTPCookieStorage.shared.cookieAcceptPolicy = .never
+        HTTPCookieStorage.shared.removeCookies(since: .distantPast)
         bridge?.registerPluginInstance(ChintaMediaPlugin())
     }
 }

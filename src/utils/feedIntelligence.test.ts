@@ -27,7 +27,7 @@ function makeArticle(overrides: Partial<FeedItem> & { id: string; title: string 
     feedTitle: overrides.feedTitle || 'The Daily Star',
     feedUrl: overrides.feedUrl || 'https://thedailystar.net/rss.xml',
     title: overrides.title,
-    link: overrides.link || `https://example.com/${overrides.id}`,
+    link: overrides.link || `https://www.thedailystar.net/${overrides.id}`,
     pubDate: overrides.pubDate || new Date(1762940000000).toISOString(),
     timestamp: overrides.timestamp ?? 1762940000000,
     author: overrides.author,
@@ -271,12 +271,12 @@ test('normalizeReadingHabitState resets streak if a full day was missed while ke
 
 test('findNewIncomingArticles returns only articles not already present by id or link', () => {
   const existing = [
-    makeArticle({ id: '1', title: 'Existing 1', link: 'https://example.com/1' }),
-    makeArticle({ id: '2', title: 'Existing 2', link: 'https://example.com/2' }),
+    makeArticle({ id: '1', title: 'Existing 1', link: 'https://www.thedailystar.net/1' }),
+    makeArticle({ id: '2', title: 'Existing 2', link: 'https://www.thedailystar.net/2' }),
   ];
   const incoming = [
-    makeArticle({ id: '2', title: 'Existing 2', link: 'https://example.com/2' }),
-    makeArticle({ id: '3', title: 'Brand New 3', link: 'https://example.com/3' }),
+    makeArticle({ id: '2', title: 'Existing 2', link: 'https://www.thedailystar.net/2' }),
+    makeArticle({ id: '3', title: 'Brand New 3', link: 'https://www.thedailystar.net/3' }),
   ];
 
   const diff = findNewIncomingArticles(existing, incoming);
@@ -289,7 +289,7 @@ test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read 
     id: 'art_read_1',
     feedId: 'f1',
     title: 'Already read story',
-    link: 'https://example.com/news/story-1/?utm_source=rss',
+    link: 'https://www.thedailystar.net/news/story-1/?utm_source=rss',
     isRead: true,
     isBookmarked: false,
   });
@@ -297,7 +297,7 @@ test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read 
     id: 'art_saved_read',
     feedId: 'f1',
     title: 'Bookmarked read story',
-    link: 'https://example.com/news/story-2',
+    link: 'https://www.thedailystar.net/news/story-2',
     isRead: true,
     isBookmarked: true,
   });
@@ -305,7 +305,7 @@ test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read 
     id: 'art_unread_1',
     feedId: 'f1',
     title: 'Unread story still in feed',
-    link: 'https://example.com/news/story-3',
+    link: 'https://www.thedailystar.net/news/story-3',
     isRead: false,
   });
 
@@ -327,14 +327,14 @@ test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read 
       id: 'art_read_1_new_guid',
       feedId: 'f1',
       title: 'Already read story',
-      link: 'https://example.com/news/story-1',
+      link: 'https://www.thedailystar.net/news/story-1',
       isRead: false,
     }),
     makeArticle({
       id: 'art_brand_new',
       feedId: 'f1',
       title: 'Fresh breaking report',
-      link: 'https://example.com/news/story-4',
+      link: 'https://www.thedailystar.net/news/story-4',
       isRead: false,
     }),
   ];
@@ -343,7 +343,7 @@ test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read 
   assert.equal(filteredIncoming.length, 1);
   assert.equal(filteredIncoming[0].id, 'art_brand_new');
   assert.equal(
-    canonicalizeArticleLink('https://example.com/news/story-1/?utm_source=rss'),
-    'https://example.com/news/story-1'
+    canonicalizeArticleLink('https://www.thedailystar.net/news/story-1/?utm_source=rss'),
+    'https://www.thedailystar.net/news/story-1'
   );
 });

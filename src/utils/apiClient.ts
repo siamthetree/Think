@@ -1,5 +1,6 @@
 import { CapacitorHttp } from '@capacitor/core';
 import type { FeedItem, TravelBlog } from '../types';
+import bundledBlogs from '../../data/blogs.json';
 import {
   parseXmlFeed,
   parseHtmlPortalToFeed,
@@ -14,22 +15,8 @@ import {
 import { escapeHtml } from './sanitize';
 import { checkSafeExternalUrl } from './urlSecurity';
 
-const ENV_BACKEND =
-  (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL?.trim() || '';
-
-const FALLBACK_CLOUD_BACKENDS = Array.from(
-  new Set(
-    [
-      ENV_BACKEND,
-      'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app',
-      'https://ais-dev-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app',
-    ].filter(Boolean)
-  )
-);
-
-const CLIENT_HEADERS: Record<string, string> = {
-  'X-Chinta-Client': 'chinta-ios-2.0',
-};
+export const SAFARI_IOS_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
 
 // AbortSignal.timeout throws on older iOS WebViews, so use a manual timer.
 function timeoutSignal(ms: number): AbortSignal {
@@ -38,32 +25,9 @@ function timeoutSignal(ms: number): AbortSignal {
   return controller.signal;
 }
 
-function isNativeCapacitor(): boolean {
-  if (typeof window === 'undefined') return false;
-  return (
-    window.location.protocol === 'capacitor:' ||
-    window.location.protocol === 'ionic:' ||
-    window.location.protocol === 'file:' ||
-    Boolean(
-      (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.()
-    )
-  );
-}
-
-function getApiEndpoints(pathAndQuery: string): string[] {
-  const cloud = FALLBACK_CLOUD_BACKENDS.map((base) => `${base.replace(/\/+$/, '')}${pathAndQuery}`);
-  if (isNativeCapacitor()) {
-    // Native iOS app: use configured/cloud backends
-    return cloud;
-  }
-  // Web: use same-origin Express backend (avoids cross-origin preflight failures)
-  return ENV_BACKEND ? [pathAndQuery, `${ENV_BACKEND.replace(/\/+$/, '')}${pathAndQuery}`] : [pathAndQuery];
-}
-
 function isValidFetchedDocument(text: string): boolean {
   if (!text || text.trim().length <= 50) return false;
   const sample = text.slice(0, 1200);
-  if (sample.includes('"A valid API key is required"')) return false;
   if (
     sample.includes('<title>Just a moment...</title>') ||
     sample.includes('Enable JavaScript and cookies to continue')
@@ -80,41 +44,43 @@ async function fetchRawUrlClientSide(targetUrl: string, timeoutMs = 7500): Promi
   }
   const safeUrl = check.url.href;
 
-  // 1. On native iOS Capacitor, use CapacitorHttp.get (NSURLSession, no WebView CORS restrictions)
-  if (isNativeCapacitor()) {
-    const userAgents = [
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
-      'ChintaReader/2.0 (iOS; +https://chinta.app)',
-    ];
-    for (const ua of userAgents) {
-      try {
-        const res = await CapacitorHttp.get({
-          url: safeUrl,
-          responseType: 'text',
-          connectTimeout: timeoutMs,
-          readTimeout: timeoutMs,
-          headers: {
-            'User-Agent': ua,
-            Accept:
-              'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
-            'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
-          },
-        });
-        const body = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
-        if (res.status >= 200 && res.status < 300 && isValidFetchedDocument(body)) {
-          return body;
-        }
-        if (res.status === 404 || res.status === 410) break;
-      } catch {
-        // Fall through to next User-Agent or standard fetch
-      }
+  // 1. Primary path: CapacitorHttp.get (uses native URLSession on iOS and fetch on web, with no cookies or referrer)
+  try {
+    const res = await CapacitorHttp.get({
+      url: safeUrl,
+      responseType: 'text',
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs,
+      webFetchExtra: {
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+      },
+      headers: {
+        'User-Agent': SAFARI_IOS_USER_AGENT,
+        Accept:
+          'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
+        'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
+      },
+    });
+    const body = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
+    if (res.status >= 200 && res.status < 300 && isValidFetchedDocument(body)) {
+      return body;
     }
+    if (res.status === 404 || res.status === 410) {
+      throw new Error(`HTTP ${res.status} for ${safeUrl}`);
+    }
+  } catch {
+    // Fall through to standard credential-free fetch
   }
 
-  // 2. Standard fetch (works directly when CapacitorHttp plugin is enabled or when target allows CORS)
+  // 2. Credential-free standard fetch fallback
   try {
     const directRes = await fetch(safeUrl, {
       signal: timeoutSignal(timeoutMs),
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      cache: 'no-store',
       headers: {
         Accept:
           'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
@@ -144,44 +110,7 @@ export async function fetchFeedWithFallback(params: {
     normalizedUrl = `https://${normalizedUrl}`;
   }
   const normalizedParams = { ...params, url: normalizedUrl };
-
-  const query = `url=${encodeURIComponent(normalizedParams.url)}&feedId=${encodeURIComponent(
-    normalizedParams.feedId
-  )}&title=${encodeURIComponent(normalizedParams.title)}&tags=${encodeURIComponent(
-    normalizedParams.tags.join(',')
-  )}`;
-
-  const endpoints = getApiEndpoints(`/api/rss?${query}`);
-
-  const viaBackend = async () => {
-    for (const endpoint of endpoints) {
-      try {
-        const response = await fetch(endpoint, {
-          headers: CLIENT_HEADERS,
-          signal: timeoutSignal(10000),
-        });
-        const contentType = response.headers.get('content-type') || '';
-        if (response.ok && contentType.includes('application/json')) {
-          const data = await response.json();
-          if (data && Array.isArray(data.items) && data.items.length > 0) {
-            return data as { feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string };
-          }
-        }
-      } catch {
-        // try next endpoint
-      }
-    }
-    return null;
-  };
-
-  // Try backend first (works on Web and on iPhone via Cloud Run URL), then on-device fallback on native iOS Capacitor
-  const backendData = await viaBackend();
-  if (backendData) return backendData;
-
-  if (isNativeCapacitor()) {
-    return fetchFeedOnDevice(normalizedParams);
-  }
-  return { feedTitle: normalizedParams.title, items: [], resolvedFeedUrl: normalizedParams.url };
+  return fetchFeedOnDevice(normalizedParams);
 }
 
 async function fetchFeedOnDevice(params: {
@@ -221,7 +150,7 @@ async function fetchFeedOnDevice(params: {
     // Will continue to RSS candidate discovery
   }
 
-  // Step 2: Search for an RSS feed link BEFORE falling back to the website link!
+  // Step 2: Search for an RSS feed link on the same publisher domain before falling back to HTML scraping
   const rssCandidates = buildRssDiscoveryCandidates(params.url, rawText);
 
   for (const candidateUrl of rssCandidates.slice(0, 6)) {
@@ -238,39 +167,13 @@ async function fetchFeedOnDevice(params: {
     }
   }
 
-  // Step 3: If no RSS link is available, keep the website link and parse articles directly from the website HTML!
+  // Step 3: If no RSS link is available, keep the website link and parse articles directly from the website HTML
   if (rawText) {
     const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
     if (scraped.items.length > 0) {
       return { ...scraped, resolvedFeedUrl: params.url };
     }
   }
-
-  // Step 4: Website domain news index fallback (Bing News RSS with unwrapped direct links, then Google News RSS)
-  try {
-    const parsed = new URL(params.url);
-    const domain = parsed.hostname.replace(/^www\./, '');
-    const indexUrls = [
-      `https://www.bing.com/news/search?q=${encodeURIComponent('site:' + domain)}&format=rss`,
-      `https://news.google.com/rss/search?q=${encodeURIComponent('site:' + domain)}&hl=en-BD&gl=BD&ceid=BD:en`,
-    ];
-    for (const indexUrl of indexUrls) {
-      try {
-        const indexXml = await fetchRawUrlClientSide(indexUrl, 6000);
-        if (isXmlString(indexXml)) {
-          const parsedIndex = parseXmlFeed(indexXml, {
-            ...feedInfo,
-            title:
-              params.title && params.title !== 'Newspaper Feed' ? params.title : domain,
-            url: params.url,
-          });
-          if (parsedIndex.items.length > 0) {
-            return { ...parsedIndex, resolvedFeedUrl: params.url };
-          }
-        }
-      } catch {}
-    }
-  } catch {}
 
   throw new Error(`No articles found for ${params.url}`);
 }
@@ -294,48 +197,206 @@ export interface ExtractedArticleData {
 
 export async function extractArticleWithFallback(url: string): Promise<ExtractedArticleData> {
   const cleanUrl = resolveUrl(url);
-  const query = `url=${encodeURIComponent(cleanUrl)}`;
-  const endpoints = getApiEndpoints(`/api/extract?${query}`);
-
-  const viaBackend = async (): Promise<ExtractedArticleData | null> => {
-    for (const endpoint of endpoints) {
-      try {
-        const response = await fetch(endpoint, {
-          headers: CLIENT_HEADERS,
-          signal: timeoutSignal(10000),
-        });
-        const contentType = response.headers.get('content-type') || '';
-        if (response.ok && contentType.includes('application/json')) {
-          const data = await response.json();
-          if (data && data.success && Array.isArray(data.blocks)) {
-            const validBlocks = data.blocks.filter(
-              (b: ExtractedArticleBlock) => !b.text || !isBoilerplateOrJsWarning(b.text)
-            );
-            if (validBlocks.some((block: ExtractedArticleBlock) => (block.text || '').trim().length > 60)) {
-              return { ...data, blocks: validBlocks } as ExtractedArticleData;
-            }
-          }
-        }
-      } catch {
-        // try next endpoint
+  try {
+    const extracted = await extractArticleOnDevice(cleanUrl);
+    if (extracted.success && Array.isArray(extracted.blocks)) {
+      const validBlocks = extracted.blocks.filter(
+        (b: ExtractedArticleBlock) => !b.text || !isBoilerplateOrJsWarning(b.text)
+      );
+      if (validBlocks.some((block: ExtractedArticleBlock) => (block.text || '').trim().length > 40)) {
+        return { ...extracted, blocks: validBlocks };
       }
     }
-    return null;
-  };
-
-  // Try backend first, then on-device extraction on native iOS Capacitor
-  const remote = await viaBackend();
-  if (remote) return remote;
-
-  if (isNativeCapacitor()) {
-    return extractArticleOnDevice(cleanUrl);
+    return extracted;
+  } catch {
+    return { success: false, blocks: [] };
   }
-  return { success: false, blocks: [] };
 }
 
 async function extractArticleOnDevice(url: string): Promise<ExtractedArticleData> {
   const html = await fetchRawUrlClientSide(url, 8000);
   return extractReadableArticleFromHtml(html, url);
+}
+
+// Local On-Device Image Cache (via CapacitorHttp with no cookies or referrer)
+const MEMORY_IMAGE_CACHE = new Map<string, string>();
+const MAX_MEMORY_IMAGES = 80;
+const IMAGE_IDB_NAME = 'chinta_image_cache_db';
+const IMAGE_IDB_STORE = 'images';
+
+function openImageCacheIdb(): Promise<IDBDatabase | null> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(IMAGE_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IMAGE_IDB_STORE)) {
+          db.createObjectStore(IMAGE_IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function readImageFromIdb(url: string): Promise<string | null> {
+  const db = await openImageCacheIdb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IMAGE_IDB_STORE, 'readonly');
+      const req = tx.objectStore(IMAGE_IDB_STORE).get(url);
+      req.onsuccess = () => {
+        resolve(typeof req.result === 'string' ? req.result : null);
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function writeImageToIdb(url: string, dataUrl: string): void {
+  if (!dataUrl || dataUrl.length > 2_500_000) return;
+  openImageCacheIdb()
+    .then((db) => {
+      if (!db) return;
+      const tx = db.transaction(IMAGE_IDB_STORE, 'readwrite');
+      tx.objectStore(IMAGE_IDB_STORE).put(dataUrl, url);
+    })
+    .catch(() => {});
+}
+
+function rememberImageInMemory(url: string, dataUrl: string): void {
+  if (MEMORY_IMAGE_CACHE.size >= MAX_MEMORY_IMAGES) {
+    const oldestKey = MEMORY_IMAGE_CACHE.keys().next().value;
+    if (oldestKey) MEMORY_IMAGE_CACHE.delete(oldestKey);
+  }
+  MEMORY_IMAGE_CACHE.set(url, dataUrl);
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to convert blob to data URL'));
+      }
+    };
+    reader.onerror = () => reject(new Error('FileReader error'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function inferImageMimeType(url: string, headerType?: string): string {
+  if (headerType && headerType.toLowerCase().startsWith('image/')) {
+    return headerType.split(';')[0].trim();
+  }
+  const clean = url.split('?')[0].toLowerCase();
+  if (clean.endsWith('.png')) return 'image/png';
+  if (clean.endsWith('.webp')) return 'image/webp';
+  if (clean.endsWith('.gif')) return 'image/gif';
+  return 'image/jpeg';
+}
+
+export function getCachedImageSync(imageUrl?: string | null): string | null {
+  if (!imageUrl) return null;
+  if (imageUrl.startsWith('data:') || imageUrl.startsWith('blob:')) return imageUrl;
+  return MEMORY_IMAGE_CACHE.get(imageUrl) ?? null;
+}
+
+/**
+ * Loads an article image through CapacitorHttp with no cookies and no referrer,
+ * caches the resulting data URL in memory and IndexedDB, and returns the cached data URL.
+ */
+export async function fetchImageWithCache(imageUrl: string, timeoutMs = 8000): Promise<string> {
+  const trimmed = (imageUrl || '').trim();
+  if (!trimmed) throw new Error('Empty image URL');
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+    return trimmed;
+  }
+
+  const memCached = MEMORY_IMAGE_CACHE.get(trimmed);
+  if (memCached) return memCached;
+
+  const idbCached = await readImageFromIdb(trimmed);
+  if (idbCached) {
+    rememberImageInMemory(trimmed, idbCached);
+    return idbCached;
+  }
+
+  const check = checkSafeExternalUrl(trimmed);
+  if (!check.ok || !check.url) {
+    throw new Error(check.reason || 'Blocked unsafe image URL');
+  }
+  const safeUrl = check.url.href;
+
+  // 1. Fetch via CapacitorHttp with no cookies and generic Safari iOS User-Agent
+  try {
+    const res = await CapacitorHttp.get({
+      url: safeUrl,
+      responseType: 'blob',
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs,
+      webFetchExtra: {
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+      },
+      headers: {
+        'User-Agent': SAFARI_IOS_USER_AGENT,
+        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      },
+    });
+
+    if (res.status >= 200 && res.status < 300 && res.data) {
+      const rawContentType =
+        (res.headers && (res.headers['content-type'] || res.headers['Content-Type'])) || '';
+      const mimeType = inferImageMimeType(safeUrl, rawContentType);
+      let dataUrl = '';
+
+      if (typeof res.data === 'string') {
+        dataUrl = res.data.startsWith('data:image/')
+          ? res.data
+          : `data:${mimeType};base64,${res.data}`;
+      } else if (typeof Blob !== 'undefined' && res.data instanceof Blob) {
+        dataUrl = await blobToDataUrl(res.data);
+      }
+
+      if (dataUrl) {
+        rememberImageInMemory(trimmed, dataUrl);
+        writeImageToIdb(trimmed, dataUrl);
+        return dataUrl;
+      }
+    }
+  } catch {
+    // Fall through to credential-free fetch
+  }
+
+  // 2. Credential-free standard fetch fallback
+  const directRes = await fetch(safeUrl, {
+    signal: timeoutSignal(timeoutMs),
+    credentials: 'omit',
+    referrerPolicy: 'no-referrer',
+    cache: 'no-store',
+    headers: {
+      Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    },
+  });
+  if (!directRes.ok) {
+    throw new Error(`Image HTTP ${directRes.status}`);
+  }
+  const blob = await directRes.blob();
+  const dataUrl = await blobToDataUrl(blob);
+  rememberImageInMemory(trimmed, dataUrl);
+  writeImageToIdb(trimmed, dataUrl);
+  return dataUrl;
 }
 
 export interface ArticleSummaryResult {
@@ -351,35 +412,7 @@ export async function summarizeArticleWithFallback(params: {
   title: string;
   text: string;
 }): Promise<ArticleSummaryResult> {
-  const endpoints = getApiEndpoints('/api/summarize');
-
-  for (const endpoint of endpoints) {
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...CLIENT_HEADERS,
-        },
-        body: JSON.stringify({
-          title: params.title,
-          text: params.text,
-        }),
-        signal: timeoutSignal(15000),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.success && data.executiveSummary) {
-          return data as ArticleSummaryResult;
-        }
-      }
-    } catch {
-      // try next endpoint or client fallback
-    }
-  }
-
-  // Client-side extractive fallback
+  // Pure on-device extractive summary (no cloud or third-party AI calls)
   const clean = stripHtml(params.text).slice(0, 10000);
   const sentences = clean
     .replace(/([.?!])\s*(?=[A-Z0-9\u0980-\u09FF])/g, '$1|')
@@ -395,7 +428,7 @@ export async function summarizeArticleWithFallback(params: {
     provider: 'on-device-extractive',
     executiveSummary: executive || clean.slice(0, 240),
     keyTakeaways: takeaways.length > 0 ? takeaways : [clean.slice(0, 180)],
-    context: `Key takeaways distilled directly from the news report.`,
+    context: 'Key takeaways distilled on-device directly from the news report.',
   };
 }
 
@@ -406,7 +439,7 @@ export function blogToFeedItem(blog: TravelBlog): FeedItem {
     id: blog.id,
     feedId: 'travel_blogs_bd',
     feedTitle: blog.groupName ? `${blog.groupName} (${blog.author})` : `Traveler: ${blog.author}`,
-    feedUrl: '/api/blogs',
+    feedUrl: 'local://blogs',
     title: blog.title,
     link: `/blog/${blog.id}`,
     pubDate: blog.publishedAt,
@@ -433,28 +466,10 @@ export function blogToFeedItem(blog: TravelBlog): FeedItem {
 }
 
 export async function fetchTravelBlogsFromDatabase(): Promise<TravelBlog[]> {
-  const endpoints = getApiEndpoints('/api/blogs');
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        headers: CLIENT_HEADERS,
-        signal: timeoutSignal(10000),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.success && Array.isArray(data.blogs)) {
-          return data.blogs as TravelBlog[];
-        }
-      }
-    } catch {
-      // try next endpoint
-    }
-  }
-  return [];
+  return (bundledBlogs as TravelBlog[]).map((b) => ({ ...b }));
 }
 
-export async function publishBlogToDatabase(params: {
+export async function publishBlogToDatabase(_params: {
   author: string;
   groupName: string;
   groupContact?: string;
@@ -464,46 +479,5 @@ export async function publishBlogToDatabase(params: {
   content: string;
   coverImage?: string;
 }): Promise<TravelBlog> {
-  const endpoints = getApiEndpoints('/api/blogs');
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...CLIENT_HEADERS,
-        },
-        body: JSON.stringify(params),
-        signal: timeoutSignal(12000),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.success && data.blog) {
-          return data.blog as TravelBlog;
-        }
-      }
-    } catch {
-      // try next endpoint
-    }
-  }
-
-  // Client-side fallback if server is unreachable
-  const now = Date.now();
-  return {
-    id: 'tb_' + now + '_' + Math.random().toString(36).substring(2, 6),
-    title: params.title,
-    author: params.author,
-    groupName: params.groupName,
-    groupContact: params.groupContact,
-    location: params.location,
-    summary: params.summary,
-    content: params.content,
-    coverImage: params.coverImage,
-    publishedAt: new Date(now).toISOString(),
-    timestamp: now,
-    readTimeMin: calculateReadTime(params.content),
-    likesCount: 0,
-  };
+  throw new Error('Travel blog publishing is disabled in read-only local mode.');
 }

@@ -1,3 +1,5 @@
+import { checkSafeExternalUrl } from './urlSecurity';
+
 export type WebClientPlatform = 'ios-web' | 'android-web' | 'desktop-web';
 
 /**
@@ -91,14 +93,18 @@ export function sanitizePhotoFilename(
 }
 
 /**
- * Builds the SSRF-checked backend image proxy URL for safe untainted canvas & gallery saving.
+ * Validates an external HTTP(S) image URL via checkSafeExternalUrl for direct on-device fetching.
  */
 export function buildImageProxyUrl(targetUrl: string): string {
   const clean = (targetUrl || '').trim();
   if (!clean || (!clean.startsWith('http://') && !clean.startsWith('https://'))) {
     return '';
   }
-  return `/api/image-proxy?url=${encodeURIComponent(clean)}`;
+  const safety = checkSafeExternalUrl(clean);
+  if (!safety.ok || !safety.url) {
+    return '';
+  }
+  return safety.url.href;
 }
 
 export interface StoryCardTransform {

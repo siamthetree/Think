@@ -19,10 +19,6 @@ on:
         description: 'Output IPA file name'
         required: false
         default: 'Chinta-iOS'
-      apiBaseUrl:
-        description: 'Backend API Base URL for iOS app'
-        required: false
-        default: 'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app'
       createRelease:
         description: 'Create a GitHub Release with this IPA'
         required: false
@@ -61,7 +57,6 @@ jobs:
       - name: Build Web Application
         env:
           NODE_ENV: production
-          VITE_API_BASE_URL: \${{ inputs.apiBaseUrl || vars.VITE_API_BASE_URL || 'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app' }}
         run: npm run build
 
       - name: Setup Capacitor iOS Project

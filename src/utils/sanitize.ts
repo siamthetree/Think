@@ -1,59 +1,185 @@
-import DOMPurify from 'dompurify';
+import createDOMPurify from 'dompurify';
+import { isTrackerUrl, isTrackingPixel, stripTrackingParams } from './trackerRules';
+import { isFirstPartyMedia } from './mediaPolicy';
+import { buildImageProxyUrl } from './mediaShare';
 
-/** Escape plain text so it is safe to place inside HTML markup. */
-export function escapeHtml(text: string): string {
-  return String(text ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+type DOMPurifyInstance = ReturnType<typeof createDOMPurify>;
+
+let purifyInstance: DOMPurifyInstance | null = null;
+
+function getDOMPurify(): DOMPurifyInstance | null {
+  if (purifyInstance) return purifyInstance;
+  if (typeof window !== 'undefined' && window.document) {
+    purifyInstance = createDOMPurify(window as unknown as Window & typeof globalThis);
+    return purifyInstance;
+  }
+  return null;
 }
 
-const JS_WARNING_BOILERPLATE_RE =
-  /(?:please\s+)?(?:turn\s+on|enable|activate)\s+javascript|javascript\s+is\s+(?:required|disabled|turned\s+off)|you\s+need\s+to\s+enable\s+javascript|enable\s+javascript\s+and\s+cookies\s+to\s+continue|browser\s+does\s+not\s+support\s+javascript|জাভাস্ক্রিপ্ট\s+চালু/i;
-
-export function isJavaScriptWarningText(text: string): boolean {
-  if (!text) return false;
-  return JS_WARNING_BOILERPLATE_RE.test(text.trim());
+export interface SanitizeArticleOptions {
+  articleUrl?: string;
+  blockThirdPartyMedia?: boolean;
+  tapToLoadMedia?: boolean;
 }
+
+const TRANSPARENT_PLACEHOLDER =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 /**
- * Sanitize untrusted article HTML (RSS content, scraped pages) before it is
- * rendered with dangerouslySetInnerHTML. Scripts, noscript warnings, event handlers,
- * iframes, forms and javascript: URLs are removed.
+ * Sanitizes untrusted RSS/Atom or extracted article HTML before rendering.
+ * Strips scripts, event handlers, tracking pixels, tracker URLs, tracking parameters,
+ * unproxied srcset attributes, and optionally third-party or auto-loaded images.
  */
-export function sanitizeArticleHtml(html: string): string {
-  if (!html) return '';
-  const withoutNoscript = html.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
-  const clean = DOMPurify.sanitize(withoutNoscript, {
+export function sanitizeArticleHtml(
+  dirtyHtml: string,
+  options?: SanitizeArticleOptions
+): string {
+  if (!dirtyHtml) return '';
+
+  const purify = getDOMPurify();
+  if (!purify) {
+    return dirtyHtml
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+      .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  }
+
+  const articleUrl = options?.articleUrl || '';
+  const blockThirdPartyMedia = options?.blockThirdPartyMedia ?? true;
+  const tapToLoadMedia = options?.tapToLoadMedia ?? false;
+
+  purify.removeAllHooks();
+
+  purify.addHook('uponSanitizeElement', (node, data) => {
+    const el = node as Element;
+    if (!el || typeof el.getAttribute !== 'function') return;
+
+    const tag = data.tagName?.toLowerCase();
+
+    if (tag === 'img') {
+      // Always remove srcset and lazy-load attributes so browsers never fetch unproxied publisher URLs directly
+      el.removeAttribute('srcset');
+      el.removeAttribute('sizes');
+      el.removeAttribute('data-srcset');
+      el.removeAttribute('data-src');
+      el.removeAttribute('data-original');
+      el.removeAttribute('data-lazy-src');
+
+      if (isTrackingPixel(el)) {
+        el.parentNode?.removeChild(el);
+        return;
+      }
+
+      const rawSrc = el.getAttribute('src') || '';
+      if (!rawSrc) {
+        el.parentNode?.removeChild(el);
+        return;
+      }
+
+      const src = stripTrackingParams(rawSrc);
+      if (isTrackerUrl(src)) {
+        el.parentNode?.removeChild(el);
+        return;
+      }
+
+      if (tapToLoadMedia) {
+        el.setAttribute('data-chinta-src', src);
+        el.setAttribute('data-chinta-blocked', 'tap-to-load');
+        el.setAttribute('src', TRANSPARENT_PLACEHOLDER);
+        return;
+      }
+
+      if (blockThirdPartyMedia && articleUrl && /^https?:\/\//i.test(src)) {
+        if (!isFirstPartyMedia(src, articleUrl)) {
+          el.setAttribute('data-chinta-src', src);
+          el.setAttribute('data-chinta-blocked', 'third-party');
+          el.setAttribute('src', TRANSPARENT_PLACEHOLDER);
+          return;
+        }
+      }
+
+      // Route all surviving HTTP(S) images through the local image proxy to prevent publisher IP & Referer leaks
+      if (/^https?:\/\//i.test(src)) {
+        const proxied = buildImageProxyUrl(src);
+        if (proxied) {
+          el.setAttribute('src', proxied);
+          el.setAttribute('referrerpolicy', 'no-referrer');
+        } else {
+          el.parentNode?.removeChild(el);
+        }
+      }
+    } else if (tag === 'iframe' || tag === 'script') {
+      const src = el.getAttribute('src') || '';
+      if (src && isTrackerUrl(src)) {
+        el.parentNode?.removeChild(el);
+      }
+    }
+  });
+
+  purify.addHook('afterSanitizeAttributes', (node) => {
+    const el = node as Element;
+    if (!el || typeof el.getAttribute !== 'function') return;
+
+    if (el.tagName === 'A') {
+      // Remove ping attribute so clicks never fire tracking beacons
+      el.removeAttribute('ping');
+      const href = el.getAttribute('href') || '';
+      if (href && isTrackerUrl(href)) {
+        const parent = el.parentNode;
+        if (parent) {
+          while (el.firstChild) {
+            parent.insertBefore(el.firstChild, el);
+          }
+          parent.removeChild(el);
+        }
+        return;
+      }
+      if (href) {
+        const cleanHref = stripTrackingParams(href);
+        el.setAttribute('href', cleanHref);
+      }
+      el.setAttribute('target', '_blank');
+      el.setAttribute('rel', 'noopener noreferrer');
+      el.setAttribute('referrerpolicy', 'no-referrer');
+    } else if (el.tagName === 'IMG') {
+      el.removeAttribute('srcset');
+      el.removeAttribute('sizes');
+      el.setAttribute('referrerpolicy', 'no-referrer');
+    }
+  });
+
+  const clean = purify.sanitize(dirtyHtml, {
     USE_PROFILES: { html: true },
-    FORBID_TAGS: ['style', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'script', 'noscript'],
-    FORBID_ATTR: ['style', 'onerror', 'onload', 'onclick'],
+    FORBID_TAGS: [
+      'script',
+      'style',
+      'iframe',
+      'object',
+      'embed',
+      'form',
+      'input',
+      'button',
+      'textarea',
+      'select',
+      'meta',
+      'link',
+      'base',
+      'source',
+      'picture',
+    ],
+    FORBID_ATTR: [
+      'onerror',
+      'onload',
+      'onclick',
+      'onmouseover',
+      'onfocus',
+      'onblur',
+      'srcset',
+      'ping',
+    ],
+    ADD_ATTR: ['target', 'rel', 'referrerpolicy', 'data-chinta-src', 'data-chinta-blocked'],
   });
-  return clean.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (full, inner) => {
-    const plain = String(inner).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    return isJavaScriptWarningText(plain) ? '' : full;
-  });
-}
 
-export interface HtmlBlock {
-  type: string;
-  text?: string;
-  src?: string;
-  caption?: string;
-}
-
-/** Convert extracted plain-text blocks into safe HTML (text is escaped). */
-export function blocksToHtml(blocks: HtmlBlock[]): string {
-  return blocks
-    .map((b) => {
-      const text = escapeHtml(b.text || '');
-      if (b.type === 'h2' || b.type === 'h3') return `<h2>${text}</h2>`;
-      if (b.type === 'blockquote') return `<blockquote>${text}</blockquote>`;
-      if (b.type === 'p') return `<p>${text}</p>`;
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
+  purify.removeAllHooks();
+  return clean;
 }

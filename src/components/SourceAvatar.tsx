@@ -39,22 +39,14 @@ function getGradientForName(name: string): string {
   return fallbacks[charCode % fallbacks.length];
 }
 
-export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, url, iconUrl, size = 'sm' }) => {
+export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, iconUrl, size = 'sm' }) => {
   const [imgError, setImgError] = useState(false);
   const initials = name.trim().slice(0, 1).toUpperCase() || '?';
 
-  let faviconUrl = iconUrl;
-  if (!faviconUrl && url) {
-    try {
-      const rawHost = new URL(url.startsWith('http') ? url : `https://${url}`).hostname;
-      const hostname = rawHost
-        .replace(/^(www|feeds|rss|feed|xml)\./i, '')
-        .replace(/^bbci\.co\.uk$/i, 'bbc.co.uk');
-      if (hostname && !hostname.includes('localhost') && !hostname.startsWith('api')) {
-        faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`;
-      }
-    } catch {}
-  }
+  const localIconUrl =
+    iconUrl && (iconUrl.startsWith('data:') || iconUrl.startsWith('blob:') || iconUrl.startsWith('/'))
+      ? iconUrl
+      : undefined;
 
   const sizeClass =
     size === 'lg'
@@ -70,9 +62,9 @@ export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, url, iconUrl, 
       className={`source-avatar relative inline-flex shrink-0 items-center justify-center overflow-hidden bg-gradient-to-br ${gradient} font-bold font-serif select-none ring-1 ring-white/20 ${sizeClass}`}
       aria-hidden="true"
     >
-      {faviconUrl && !imgError ? (
+      {localIconUrl && !imgError ? (
         <img
-          src={faviconUrl}
+          src={localIconUrl}
           alt=""
           onError={() => setImgError(true)}
           className="h-full w-full object-cover p-1 bg-white dark:bg-stone-900 rounded-[inherit]"

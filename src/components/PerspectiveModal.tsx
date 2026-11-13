@@ -225,8 +225,7 @@ export const PerspectiveModal: React.FC<PerspectiveModalProps> = ({
     if (
       !hasFullBody(latestItem) &&
       latestItem.link &&
-      latestItem.link.startsWith('http') &&
-      !/news\.google\.com\/rss\/articles\//i.test(latestItem.link)
+      latestItem.link.startsWith('http')
     ) {
       setOpeningId(latestItem.id);
       try {

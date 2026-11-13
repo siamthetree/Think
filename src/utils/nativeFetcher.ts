@@ -7,6 +7,7 @@ import {
   stripHtml,
 } from './feedParser';
 import { validateSafeExternalUrl } from './urlSecurity';
+import { SAFARI_IOS_USER_AGENT } from './apiClient';
 
 export interface ExtractedArticleResult {
   title?: string;
@@ -37,33 +38,40 @@ export function isRunningInNativeIos(): boolean {
 
 /**
  * Fetches raw text/HTML from a validated target URL directly via native CapacitorHttp
- * or standard browser fetch without routing user URLs to untrusted third-party CORS proxies.
+ * or standard browser fetch without cookies, referrer, or third-party proxies.
  */
 async function fetchRawUrlText(targetUrl: string): Promise<{ text: string; finalUrl: string }> {
   const safeUrl = validateSafeExternalUrl(targetUrl).href;
 
-  if (isRunningInNativeIos()) {
-    try {
-      const res = await CapacitorHttp.get({
-        url: safeUrl,
-        responseType: 'text',
-        connectTimeout: 8000,
-        readTimeout: 8000,
-        headers: {
-          'User-Agent': 'ChintaReader/2.0 (iOS; +https://chinta.app)',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      });
-      const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
-      if (res.status >= 200 && res.status < 300 && text.trim().length > 40) {
-        return { text, finalUrl: res.url || safeUrl };
-      }
-    } catch {
-      // Fall through to standard fetch
+  try {
+    const res = await CapacitorHttp.get({
+      url: safeUrl,
+      responseType: 'text',
+      connectTimeout: 8000,
+      readTimeout: 8000,
+      webFetchExtra: {
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+      },
+      headers: {
+        'User-Agent': SAFARI_IOS_USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
+      },
+    });
+    const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
+    if (res.status >= 200 && res.status < 300 && text.trim().length > 40) {
+      return { text, finalUrl: res.url || safeUrl };
     }
+  } catch {
+    // Fall through to standard credential-free fetch
   }
 
   const res = await fetch(safeUrl, {
+    credentials: 'omit',
+    referrerPolicy: 'no-referrer',
+    cache: 'no-store',
     headers: {
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     },
@@ -76,7 +84,7 @@ async function fetchRawUrlText(targetUrl: string): Promise<{ text: string; final
 }
 
 /**
- * Pure client-side HTML article extractor (used in the iOS .ipa when offline from Node backend).
+ * Pure client-side HTML article extractor.
  * Extracts JSON-LD articleBody and clean paragraph/heading blocks for Distraction-Free Reader View.
  */
 export function extractReadableArticleFromHtml(
@@ -242,9 +250,8 @@ export function extractReadableArticleFromHtml(
 }
 
 /**
- * Universal Feed Loader:
- * Uses `/api/rss` when connected to the Node server, and seamlessly falls back
- * to on-device native fetching + parsing inside the iOS .ipa build.
+ * On-Device Feed Loader:
+ * Fetches and parses feeds directly on-device via CapacitorHttp without any intermediate server.
  */
 export async function fetchFeedUniversal(feed: {
   id: string;
@@ -252,32 +259,6 @@ export async function fetchFeedUniversal(feed: {
   url: string;
   defaultTags?: string[];
 }): Promise<{ feedTitle: string; items: FeedItem[] }> {
-  // 1. Try backend API first (unless running inside capacitor:// local protocol without backend)
-  if (!isRunningInNativeIos()) {
-    try {
-      const params = new URLSearchParams({
-        url: feed.url,
-        feedId: feed.id,
-        feedTitle: feed.title,
-        defaultTags: (feed.defaultTags || []).join(','),
-      });
-      const res = await fetch(`/api/rss?${params.toString()}`);
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const data = await res.json();
-        if (data && Array.isArray(data.items)) {
-          return {
-            feedTitle: data.feedTitle || feed.title,
-            items: data.items,
-          };
-        }
-      }
-    } catch {
-      // Fall through to native on-device fetcher
-    }
-  }
-
-  // 2. Native iOS / Client-Side Direct Fetcher
   const { text, finalUrl } = await fetchRawUrlText(feed.url);
   const trimmed = text.trim();
 
@@ -298,28 +279,12 @@ export async function fetchFeedUniversal(feed: {
 }
 
 /**
- * Universal Article Reader Extractor:
- * Uses `/api/extract` when connected to the Node server, and seamlessly falls back
- * to on-device HTML/JSON-LD extraction inside the iOS .ipa build.
+ * On-Device Article Reader Extractor:
+ * Fetches and extracts clean reader content directly on-device via CapacitorHttp.
  */
 export async function extractArticleUniversal(
   articleUrl: string
 ): Promise<ExtractedArticleResult> {
-  if (!isRunningInNativeIos()) {
-    try {
-      const res = await fetch(`/api/extract?url=${encodeURIComponent(articleUrl)}`);
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const data = await res.json();
-        if (data && data.contentHtml) {
-          return data;
-        }
-      }
-    } catch {
-      // Fall through to native on-device extractor
-    }
-  }
-
   const { text, finalUrl } = await fetchRawUrlText(articleUrl);
   return extractReadableArticleFromHtml(text, finalUrl);
 }

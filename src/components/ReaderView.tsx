@@ -18,7 +18,13 @@ import {
 } from 'lucide-react';
 import type { FeedItem, Tag, ReaderPreferences, ReaderTheme, ReaderFont, ReaderLineHeight } from '../types';
 import { sanitizeArticleHtml, blocksToHtml, isJavaScriptWarningText } from '../utils/sanitize';
-import { extractArticleWithFallback, summarizeArticleWithFallback, type ArticleSummaryResult } from '../utils/apiClient';
+import {
+  extractArticleWithFallback,
+  summarizeArticleWithFallback,
+  fetchImageWithCache,
+  getCachedImageSync,
+  type ArticleSummaryResult,
+} from '../utils/apiClient';
 import {
   triggerHapticSelection,
   triggerHapticPull,
@@ -46,6 +52,59 @@ import {
   estimateArticleReadTime,
   type ReadingSpeedProfile,
 } from '../utils/readingSpeed';
+
+const CachedArticleImage: React.FC<{
+  src?: string;
+  alt: string;
+  loading?: 'eager' | 'lazy';
+  className?: string;
+}> = ({ src, alt, loading = 'lazy', className = 'w-full h-auto object-cover block' }) => {
+  const [cachedSrc, setCachedSrc] = useState<string | null>(() => getCachedImageSync(src));
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFailed(false);
+    if (!src) {
+      setCachedSrc(null);
+      return;
+    }
+    const syncHit = getCachedImageSync(src);
+    if (syncHit) {
+      setCachedSrc(syncHit);
+      return;
+    }
+    fetchImageWithCache(src)
+      .then((dataUrl) => {
+        if (cancelled) return;
+        if (dataUrl) {
+          setCachedSrc(dataUrl);
+        } else {
+          setFailed(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  if (!cachedSrc || failed) return null;
+
+  return (
+    <img
+      src={cachedSrc}
+      alt={alt}
+      referrerPolicy="no-referrer"
+      draggable={false}
+      loading={loading}
+      className={className}
+      onError={() => setFailed(true)}
+    />
+  );
+};
 
 interface ReaderViewProps {
   article: FeedItem;
@@ -236,7 +295,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [scrollProgress, setScrollProgress] = useState(0);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [faviconError, setFaviconError] = useState(false);
   const [edgeBackOffset, setEdgeBackOffset] = useState(0);
   const [storySwipeOffset, setStorySwipeOffset] = useState(0);
   const [extractedBlocks, setExtractedBlocks] = useState<
@@ -704,7 +762,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     triggerHapticSelection();
     const shareData = {
       title: extractedMeta.title || article.title,
-      text: `${extractedMeta.title || article.title} – ${article.feedTitle}`,
+      text: `${extractedMeta.title || article.title} - ${article.feedTitle}`,
       url: article.link || window.location.href,
     };
 
@@ -745,7 +803,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setActiveSelectionText('');
     setScrollProgress(0);
     setControlsVisible(true);
-    setFaviconError(false);
     lastScrollTopRef.current = initialScrollTop || 0;
     requestAnimationFrame(() => {
       containerRef.current?.scrollTo({ top: initialScrollTop || 0 });
@@ -806,11 +863,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setExtractedMeta({});
     setExtractedBlocks(null);
     const contentText = (article.contentClean || '').trim();
-    const isGoogleRedirect = /news\.google\.com\/rss\/articles\//i.test(article.link || '');
     const alreadyExtracted =
       Boolean(article.isOfflineCached && contentText.length >= 160) ||
-      contentText.length >= 450 ||
-      isGoogleRedirect;
+      contentText.length >= 450;
 
     if (!alreadyExtracted && article.link && article.link.startsWith('http')) {
       setIsLoadingExtraction(true);
@@ -892,12 +947,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const getBodyFontFamilyStyle = (font: ReaderFont) => {
     switch (font) {
       case 'sans':
-        return { fontFamily: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif" };
+        return { fontFamily: "'Plus Jakarta Sans', 'Noto Serif Bengali', -apple-system, BlinkMacSystemFont, sans-serif" };
       case 'mono':
         return { fontFamily: "'Space Mono', monospace, Courier" };
       case 'serif':
       default:
-        return { fontFamily: "'Lora', Georgia, Cambria, serif" };
+        return { fontFamily: "'Lora', 'Noto Serif Bengali', Georgia, Cambria, serif" };
     }
   };
 
@@ -923,21 +978,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const subtitle = getEditorialSubtitle(article.summary, extractedMeta.title || article.title);
   const sourceInitial = (article.feedTitle || 'N').trim().charAt(0).toUpperCase();
   const authorInitial = rawAuthor ? rawAuthor.charAt(0).toUpperCase() : null;
-
-  let faviconUrl: string | undefined;
-  if (article.link && article.link.startsWith('http')) {
-    try {
-      const rawHost = new URL(article.link).hostname;
-      const hostname = rawHost
-        .replace(/^(www|feeds|rss|feed|xml)\./i, '')
-        .replace(/^bbci\.co\.uk$/i, 'bbc.co.uk');
-      if (hostname && !hostname.includes('localhost')) {
-        faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`;
-      }
-    } catch {
-      // ignore
-    }
-  }
 
   // Body font size: default 19px for authentic editorial serif legibility
   const effectiveBodySize = Math.max(16, preferences.fontSize + 1);
@@ -1222,7 +1262,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       )}
 
-      {/* Main Scrollable Article Reading Canvas — Clean Top like Reference Screenshot */}
+      {/* Main Scrollable Article Reading Canvas - Clean Top like Reference Screenshot */}
       <main
         ref={containerRef}
         onScroll={handleScroll}
@@ -1298,22 +1338,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               className={`flex items-center justify-between ${subtitle ? 'mt-5' : 'mt-6'} mb-3.5`}
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Left: Overlapping circular avatar stack */}
+              {/* Left: Overlapping circular avatar stack (Local letter avatars only, zero external lookups) */}
               <div className="flex items-center -space-x-2">
                 <div
                   className="w-9 h-9 rounded-full bg-[#D92323] text-white flex items-center justify-center font-serif font-bold text-lg overflow-hidden shrink-0 shadow-xs"
                   style={{ boxShadow: '0 0 0 2px var(--reader-bg)' }}
                 >
-                  {faviconUrl && !faviconError ? (
-                    <img
-                      src={faviconUrl}
-                      alt={article.feedTitle}
-                      onError={() => setFaviconError(true)}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <span>{sourceInitial}</span>
-                  )}
+                  <span>{sourceInitial}</span>
                 </div>
 
                 {authorInitial && (
@@ -1342,7 +1373,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       triggerHapticSelection();
                       onOpenPerspective(article);
                     }}
-                    title="Perspective — View all sources covering this story"
+                    title="Perspective - View all sources covering this story"
                     style={{
                       backgroundColor: 'var(--reader-surface)',
                       borderColor: 'var(--reader-border)',
@@ -1357,7 +1388,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
                 <button
                   onClick={handleGenerateSummary}
-                  title="Toggle AI Editorial Summary"
+                  title="Toggle Editorial Summary"
                   style={{ color: 'var(--reader-heading)' }}
                   className="flex items-center gap-1.5 hover:opacity-80 transition-opacity active:scale-95"
                 >
@@ -1407,7 +1438,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           {/* 6. Thin Subtle Horizontal Divider */}
           <div className="border-b my-5" style={{ borderColor: 'var(--reader-border)' }} />
 
-          {/* Optional AI Editorial Summary Card */}
+          {/* Optional On-Device Editorial Summary Card */}
           {showSummary && (
             <aside
               onClick={(e) => e.stopPropagation()}
@@ -1479,22 +1510,16 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </aside>
           )}
 
-          {/* 7. Lead / Hero Image */}
+          {/* 7. Lead / Hero Image (Loaded via CapacitorHttp with no cookies & cached locally) */}
           {(extractedMeta.leadImage || article.imageUrl) && (
             <figure
               className="my-6 overflow-hidden rounded-[2px] relative group"
               style={{ backgroundColor: 'var(--reader-surface)' }}
             >
-              <img
+              <CachedArticleImage
                 src={extractedMeta.leadImage || article.imageUrl}
                 alt={extractedMeta.title || article.title}
-                referrerPolicy="no-referrer"
-                draggable={false}
                 loading="eager"
-                className="w-full h-auto object-cover block"
-                onError={(e) => {
-                  (e.target as HTMLElement).style.display = 'none';
-                }}
               />
               {!preferences.distractionFree && (
                 <button
@@ -1586,13 +1611,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       style={{ backgroundColor: 'var(--reader-surface)' }}
                     >
                       <div className="relative">
-                        <img
-                          src={imgSrc}
-                          alt=""
-                          referrerPolicy="no-referrer"
-                          draggable={false}
-                          className="w-full h-auto object-cover block"
-                        />
+                        <CachedArticleImage src={imgSrc} alt="" />
                         {!preferences.distractionFree && (
                           <button
                             type="button"
@@ -1793,10 +1812,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
           <div className="w-px h-4 bg-white/15 mx-0.5" />
 
-          {/* AI Summary */}
+          {/* On-Device Extractive Summary */}
           <button
             onClick={handleGenerateSummary}
-            aria-label="AI Summary"
+            aria-label="Editorial Summary"
             title="Editorial Summary"
             className={`p-2 rounded-full transition-all active:scale-90 ${
               showSummary

@@ -6,8 +6,34 @@ import path from 'node:path';
  * Configures the generated Capacitor iOS project (`ios/App/`) with:
  *   1. Native ChintaMediaPlugin & ChintaViewController injected into AppDelegate.swift
  *   2. Main.storyboard pointing initial ViewController to ChintaViewController
- *   3. Info.plist LSApplicationQueriesSchemes (Instagram/Facebook Stories) & Photos permissions
+ *   3. Info.plist LSApplicationQueriesSchemes (Instagram/Facebook Stories on explicit user tap) & Photos permissions
+ *   4. PrivacyInfo.xcprivacy declaring NSPrivacyTracking = false, no tracking domains, and no collected data types
  */
+
+export const PRIVACY_MANIFEST_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>NSPrivacyTracking</key>
+\t<false/>
+\t<key>NSPrivacyTrackingDomains</key>
+\t<array/>
+\t<key>NSPrivacyCollectedDataTypes</key>
+\t<array/>
+\t<key>NSPrivacyAccessedAPITypes</key>
+\t<array>
+\t\t<dict>
+\t\t\t<key>NSPrivacyAccessedAPIType</key>
+\t\t\t<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+\t\t\t<key>NSPrivacyAccessedAPITypeReasons</key>
+\t\t\t<array>
+\t\t\t\t<string>CA92.1</string>
+\t\t\t</array>
+\t\t</dict>
+\t</array>
+</dict>
+</plist>
+`;
 
 export function configureIosNativeProject(rootDir = process.cwd()) {
   const iosAppDir = path.join(rootDir, 'ios', 'App', 'App');
@@ -63,7 +89,7 @@ export function configureIosNativeProject(rootDir = process.cwd()) {
     fs.writeFileSync(storyboardPath, storyboard, 'utf8');
   }
 
-  // 3. Patch Info.plist with Instagram/Facebook URL schemes + Photo Library usage descriptions
+  // 3. Patch Info.plist with Instagram/Facebook URL schemes (explicit user tap only) + Photo Library usage descriptions
   const infoPlistPath = path.join(iosAppDir, 'Info.plist');
   if (!fs.existsSync(infoPlistPath)) {
     throw new Error(`Info.plist not found at ${infoPlistPath}`);
@@ -90,10 +116,16 @@ export function configureIosNativeProject(rootDir = process.cwd()) {
   ]);
 
   fs.writeFileSync(infoPlistPath, plist, 'utf8');
+
+  // 4. Write PrivacyInfo.xcprivacy declaring NSPrivacyTracking = false, no tracking domains, and no collected data types
+  const privacyManifestPath = path.join(iosAppDir, 'PrivacyInfo.xcprivacy');
+  fs.writeFileSync(privacyManifestPath, PRIVACY_MANIFEST_XML, 'utf8');
+
   return {
     appDelegatePath,
     storyboardPath,
     infoPlistPath,
+    privacyManifestPath,
   };
 }
 
@@ -144,5 +176,5 @@ const isCli =
 
 if (isCli) {
   const res = configureIosNativeProject(process.cwd());
-  console.log('Configured Capacitor iOS native Story & Photos bridge:', res);
+  console.log('Configured Capacitor iOS native Story, Photos & Privacy manifest bridge:', res);
 }

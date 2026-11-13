@@ -40,36 +40,36 @@ test('formatRelativeTime formats timestamps cleanly', () => {
 
 test('parseXmlFeed correctly parses RSS 2.0 XML with enclosures and categories', () => {
   const mockRss = `<?xml version="1.0" encoding="UTF-8"?>
-  <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <rss version="2.0">
     <channel>
-      <title>The Daily Chronicle</title>
-      <link>https://example.com</link>
+      <title>The Daily Star</title>
+      <link>https://www.thedailystar.net</link>
       <description>World News</description>
       <item>
         <title>Breakthrough in Global Climate Policy</title>
-        <link>https://example.com/climate-breakthrough</link>
+        <link>https://www.thedailystar.net/climate-breakthrough</link>
         <pubDate>Mon, 10 Nov 2026 12:00:00 GMT</pubDate>
         <author>Jane Reporter</author>
         <description>&lt;p&gt;Delegates reach a historic landmark accord today.&lt;/p&gt;</description>
         <content:encoded>&lt;p&gt;Delegates reached a historic landmark accord in Geneva today following weeks of deliberation.&lt;/p&gt;</content:encoded>
-        <enclosure url="https://example.com/photo.jpg" type="image/jpeg" length="12345" />
+        <enclosure url="https://www.thedailystar.net/photo.jpg" type="image/jpeg" length="12345" />
       </item>
     </channel>
   </rss>`;
 
   const result = parseXmlFeed(mockRss, {
     id: 'feed_daily',
-    title: 'The Daily Chronicle',
-    url: 'https://example.com/rss',
+    title: 'The Daily Star',
+    url: 'https://www.thedailystar.net/rss.xml',
     defaultTags: ['news', 'world'],
   });
 
-  assert.equal(result.feedTitle, 'The Daily Chronicle');
+  assert.equal(result.feedTitle, 'The Daily Star');
   assert.equal(result.items.length, 1);
   const item = result.items[0];
   assert.equal(item.title, 'Breakthrough in Global Climate Policy');
   assert.equal(item.author, 'Jane Reporter');
-  assert.equal(item.imageUrl, 'https://example.com/photo.jpg');
+  assert.equal(item.imageUrl, 'https://www.thedailystar.net/photo.jpg');
   assert.deepEqual(item.tags, ['news', 'world']);
   assert.equal(item.isOfflineCached, true);
 });
@@ -237,7 +237,6 @@ test('extractReadableArticleFromHtml extracts clean reader content on standalone
       <meta property="og:image" content="/images/padma-rail.jpg" />
       <script type="application/ld+json">
         {
-          "@context": "https://schema.org",
           "@type": "NewsArticle",
           "headline": "Padma Bridge Rail Link Boosts Regional Trade",
           "author": { "@type": "Person", "name": "Staff Correspondent" },
@@ -298,29 +297,29 @@ test('extractReadableArticleFromHtml strips "turn on JavaScript" warnings and ex
   assert.equal(res.blocks.some((b) => b.text?.includes('Senior economists noted')), true);
 });
 
-test('parseXmlFeed unwraps Bing News apiclick redirect URLs to direct newspaper links', () => {
-  const bingRss = `<?xml version="1.0" encoding="utf-8" ?>
-  <rss version="2.0" xmlns:News="https://www.bing.com:443/news/search?q=site:jugantor.com&amp;format=rss">
+test('parseXmlFeed unwraps apiclick redirect URLs to direct newspaper links', () => {
+  const wrappedRss = `<?xml version="1.0" encoding="utf-8" ?>
+  <rss version="2.0">
     <channel>
-      <title>site:jugantor.com - Bing News</title>
+      <title>Daily Jugantor</title>
       <item>
         <title>জাতীয় অর্থনীতিতে প্রবাসী আয়ের নতুন রেকর্ড</title>
-        <link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;aid=&amp;tid=123&amp;url=https%3a%2f%2fwww.jugantor.com%2fnational%2f998877&amp;c=456&amp;mkt=en-us</link>
+        <link>/news/apiclick.aspx?ref=FexRss&amp;aid=&amp;tid=123&amp;url=https%3a%2f%2fwww.jugantor.com%2fnational%2f998877&amp;c=456&amp;mkt=en-us</link>
         <description>চলতি মাসে প্রবাসী আয়ে নতুন গতি এসেছে বলে জানিয়েছে বাংলাদেশ ব্যাংক।</description>
         <pubDate>Mon, 10 Nov 2026 10:00:00 GMT</pubDate>
-        <News:Image>https://www.bing.com/th?id=OVFT.testimg</News:Image>
+        <News:Image>https://www.jugantor.com/images/remittance.jpg</News:Image>
       </item>
     </channel>
   </rss>`;
 
-  const parsed = parseXmlFeed(bingRss, {
+  const parsed = parseXmlFeed(wrappedRss, {
     id: 'jugantor',
     title: 'Daily Jugantor',
     url: 'https://www.jugantor.com',
   });
   assert.equal(parsed.items.length, 1);
   assert.equal(parsed.items[0].link, 'https://www.jugantor.com/national/998877');
-  assert.equal(parsed.items[0].imageUrl, 'https://www.bing.com/th?id=OVFT.testimg');
+  assert.equal(parsed.items[0].imageUrl, 'https://www.jugantor.com/images/remittance.jpg');
 });
 
 test('validateSafeExternalUrl and isPrivateOrReservedIp block SSRF private, loopback, link-local, and metadata addresses', async () => {
@@ -347,9 +346,9 @@ test('validateSafeExternalUrl and isPrivateOrReservedIp block SSRF private, loop
 test('truncateHtmlSafely truncates at block boundaries without cutting mid-tag', async () => {
   const { truncateHtmlSafely } = await import('./urlSecurity');
   const html =
-    '<article><p>First complete paragraph with important context.</p><p>Second paragraph with <a href="https://example.com/very/long/path">a link inside</a> and more text that exceeds the budget.</p></article>';
+    '<article><p>First complete paragraph with important context.</p><p>Second paragraph with <a href="https://www.thedailystar.net/very/long/path">a link inside</a> and more text that exceeds the budget.</p></article>';
   const truncated = truncateHtmlSafely(html, 75);
-  assert.equal(truncated.includes('<a href="https://example.com'), false);
+  assert.equal(truncated.includes('<a href="https://www.thedailystar.net'), false);
   assert.equal(truncated.endsWith('</article>'), true);
   assert.equal((truncated.match(/</g) || []).length, (truncated.match(/>/g) || []).length);
 });
@@ -368,4 +367,3 @@ test('parseFeedDate does not fall back to Date.now() for unparseable dates and b
     assert.equal(blog.timestamp, Date.parse(blog.publishedAt));
   }
 });
-

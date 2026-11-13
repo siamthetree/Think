@@ -12,6 +12,7 @@ import {
   DEFAULT_STORY_CARD_TRANSFORM,
   type StoryCardTransform,
 } from './mediaShare';
+import { fetchImageWithCache } from './apiClient';
 
 interface ChintaMediaNativePlugin {
   shareToInstagramStory(opts: {
@@ -185,6 +186,7 @@ function loadSingleImageUrl(src: string, timeoutMs = 2200): Promise<HTMLImageEle
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
+    img.referrerPolicy = 'no-referrer';
     const timer = setTimeout(() => resolve(null), timeoutMs);
     img.onload = () => {
       clearTimeout(timer);
@@ -203,15 +205,15 @@ async function loadCorsSafeImage(url?: string): Promise<HTMLImageElement | null>
   if (url.startsWith('data:image/')) {
     return loadSingleImageUrl(url, 1800);
   }
-  if (!url.startsWith('http')) return null;
-  if (!isNativePlatformSafe()) {
-    const proxied = buildImageProxyUrl(url);
-    if (proxied) {
-      const viaProxy = await loadSingleImageUrl(proxied, 2600);
-      if (viaProxy) return viaProxy;
-    }
+  const safeUrl = buildImageProxyUrl(url);
+  if (!safeUrl) return null;
+
+  const cachedDataUrl = await fetchImageWithCache(safeUrl);
+  if (cachedDataUrl) {
+    const img = await loadSingleImageUrl(cachedDataUrl, 2200);
+    if (img) return img;
   }
-  return loadSingleImageUrl(url, 1800);
+  return loadSingleImageUrl(safeUrl, 1800);
 }
 
 function drawFooterSignature(ctx: CanvasRenderingContext2D, accentColor: string, centerX: number, y: number) {
@@ -244,7 +246,7 @@ function drawBackdrop(ctx: CanvasRenderingContext2D, theme: StoryBackdropTheme) 
 }
 
 /**
- * Renders ONLY the transparent floating Story card sticker (1000×1500) with subtle shadow and signature.
+ * Renders ONLY the transparent floating Story card sticker (1000x1500) with subtle shadow and signature.
  * Used directly as `stickerImage` on Instagram/Facebook Stories so users can resize/rotate/drag
  * the card with two fingers independently of the gradient background color.
  */
@@ -506,7 +508,7 @@ export async function renderStoryStickerCanvas(
 }
 
 /**
- * Renders a full 1080×1920 (9:16 vertical Story) image by compositing the movable/scalable/rotatable
+ * Renders a full 1080x1920 (9:16 vertical Story) image by compositing the movable/scalable/rotatable
  * card sticker over a fixed, unchanged background gradient.
  */
 export async function renderStoryCardCanvas(
@@ -605,7 +607,7 @@ async function copyImageBlobToClipboard(blob: Blob | null): Promise<boolean> {
 /**
  * Shares a 9:16 Story card directly to Instagram Stories, Facebook Stories, or saves to Photos Gallery.
  * On Capacitor iOS, writes PNG + backdrop colors to UIPasteboard and opens instagram-stories:// or
- * facebook-stories:// directly (matching Spotify's iOS Story sharing flow), or writes to PHPhotoLibrary.
+ * facebook-stories:// directly (only on explicit user tap), or writes to PHPhotoLibrary.
  */
 export async function shareSpotifyStyleStory(
   platform: 'instagram' | 'facebook' | 'native' | 'download',
@@ -722,7 +724,7 @@ export async function shareSpotifyStyleStory(
             message:
               clientPlatform === 'ios-web'
                 ? 'Save Image, then pick from Recents in Instagram Stories to add any song.'
-                : 'Saved card — pick from Recents in Instagram Stories to add any song.',
+                : 'Saved card - pick from Recents in Instagram Stories to add any song.',
           };
         } catch (err: unknown) {
           if (err instanceof Error && err.name === 'AbortError') {
@@ -740,8 +742,8 @@ export async function shareSpotifyStyleStory(
       ok: true,
       method: 'download-ig-music-ready',
       message: copiedImage
-        ? 'Saved & copied — pick from Photos or paste in Instagram Stories to add any song.'
-        : 'Saved 9:16 card — pick from Photos in Instagram Stories to add any song.',
+        ? 'Saved & copied - pick from Photos or paste in Instagram Stories to add any song.'
+        : 'Saved 9:16 card - pick from Photos in Instagram Stories to add any song.',
     };
   }
 
@@ -750,7 +752,7 @@ export async function shareSpotifyStyleStory(
     const shareData: ShareData = {
       files: [file],
       title: `Chinta · ${payload.headline}`,
-      text: `${payload.headline} — Read on চিন্তা (Think)`,
+      text: `${payload.headline} - Read on চিন্তা (Think)`,
     };
 
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -790,12 +792,12 @@ export async function shareSpotifyStyleStory(
     message:
       platform === 'instagram'
         ? copiedImage
-          ? 'Saved & copied — paste or pick from Photos in Instagram Stories.'
-          : 'Saved — pick from Photos in Instagram Stories.'
+          ? 'Saved & copied - paste or pick from Photos in Instagram Stories.'
+          : 'Saved - pick from Photos in Instagram Stories.'
         : platform === 'facebook'
           ? copiedImage
-            ? 'Saved & copied — paste or pick from Photos in Facebook Stories.'
-            : 'Saved — pick from Photos in Facebook Stories.'
+            ? 'Saved & copied - paste or pick from Photos in Facebook Stories.'
+            : 'Saved - pick from Photos in Facebook Stories.'
           : 'Story image saved.',
   };
 }
@@ -807,13 +809,21 @@ export async function savePhotoToGallery(
   imageUrl: string,
   label = 'chinta-photo'
 ): Promise<{ ok: boolean; method: string; message: string }> {
-  if (!imageUrl || !imageUrl.startsWith('http')) {
+  const safeUrl = buildImageProxyUrl(imageUrl);
+  if (!safeUrl) {
     return { ok: false, method: 'invalid-url', message: 'Photo URL unavailable.' };
   }
 
+  const cachedDataUrl = await fetchImageWithCache(safeUrl);
+
   if (isNativePlatformSafe()) {
     try {
-      return await ChintaMedia.saveImageToGallery({ imageUrl });
+      if (cachedDataUrl) {
+        return await ChintaMedia.saveImageToGallery({
+          imageBase64: stripDataUrlPrefix(cachedDataUrl),
+        });
+      }
+      return await ChintaMedia.saveImageToGallery({ imageUrl: safeUrl });
     } catch (err: unknown) {
       return {
         ok: false,
@@ -823,13 +833,15 @@ export async function savePhotoToGallery(
     }
   }
 
-  const proxyUrl = buildImageProxyUrl(imageUrl);
   let blob: Blob | null = null;
   let mimeType = 'image/jpeg';
 
-  for (const candidate of [proxyUrl, imageUrl].filter(Boolean)) {
+  for (const candidate of [cachedDataUrl, safeUrl].filter(Boolean) as string[]) {
     try {
-      const res = await fetch(candidate);
+      const res = await fetch(candidate, {
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+      });
       if (!res.ok) continue;
       const contentType = res.headers.get('content-type') || '';
       if (contentType && !contentType.toLowerCase().startsWith('image/')) continue;
@@ -845,7 +857,7 @@ export async function savePhotoToGallery(
     return { ok: false, method: 'fetch-failed', message: 'Could not download this photo.' };
   }
 
-  const ext = guessImageExtensionFromMime(mimeType, imageUrl);
+  const ext = guessImageExtensionFromMime(mimeType, safeUrl);
   const filename = sanitizePhotoFilename(label, ext);
   const clientPlatform =
     typeof navigator !== 'undefined'

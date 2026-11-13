@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Bookmark,
   Share2,
@@ -34,6 +34,7 @@ import {
   estimateArticleReadTime,
   type ReadingSpeedProfile,
 } from '../utils/readingSpeed';
+import { fetchImageWithCache, getCachedImageSync } from '../utils/apiClient';
 
 interface ArticleCardProps {
   article: FeedItem;
@@ -93,6 +94,9 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const [cardPressed, setCardPressed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
   const [showPerspectives, setShowPerspectives] = useState(false);
+  const [cachedCoverSrc, setCachedCoverSrc] = useState<string | null>(() =>
+    getCachedImageSync(article.imageUrl)
+  );
 
   // Horizontal Swipe-Action State (Right swipe = Save/Bookmark, Left swipe = Mark Read/Unread)
   const [swipeState, setSwipeState] = useState<SwipeActionState>(INITIAL_SWIPE_STATE);
@@ -110,7 +114,36 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
 
   const extractedSummary =
     article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
-  const extractedImage = article.imageUrl;
+
+  useEffect(() => {
+    let cancelled = false;
+    setImageFailed(false);
+    const rawUrl = article.imageUrl;
+    if (!rawUrl) {
+      setCachedCoverSrc(null);
+      return;
+    }
+    const syncHit = getCachedImageSync(rawUrl);
+    if (syncHit) {
+      setCachedCoverSrc(syncHit);
+      return;
+    }
+    fetchImageWithCache(rawUrl)
+      .then((dataUrl) => {
+        if (cancelled) return;
+        if (dataUrl) {
+          setCachedCoverSrc(dataUrl);
+        } else {
+          setImageFailed(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setImageFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [article.imageUrl]);
 
   const clearLongPress = () => {
     if (longPressTimerRef.current) {
@@ -424,7 +457,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                   onOpenPerspective(article);
                 }}
                 aria-label={`Perspectives for ${article.title}`}
-                title="Perspectives — Search same news across all sources"
+                title="Perspectives - Search same news across all sources"
                 className="p-2 rounded-full text-stone-400 hover:text-[#FF6719] transition-colors active:scale-90 flex items-center gap-1"
               >
                 <Layers className="w-4 h-4 text-[#FF6719]" />
@@ -480,8 +513,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     );
   }
 
-  const coverUrl = article.imageUrl || extractedImage;
-  const hasCover = Boolean(coverUrl && !imageFailed);
+  const hasCover = Boolean(cachedCoverSrc && !imageFailed);
   const displaySummary =
     article.summary && !isPlaceholderSummary(article.summary)
       ? article.summary
@@ -582,14 +614,14 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           </p>
         )}
 
-        {/* 4. Large Featured Cover Image (16:9 Aspect Ratio — Double-tap to Like, Single-tap to Read) */}
-        {hasCover && (
+        {/* 4. Large Featured Cover Image (16:9 Aspect Ratio - Loaded via CapacitorHttp with no cookies & cached locally) */}
+        {hasCover && cachedCoverSrc && (
           <div
             onClick={handleCoverClick}
             className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 shadow-xs"
           >
             <img
-              src={coverUrl}
+              src={cachedCoverSrc}
               alt={article.title}
               referrerPolicy="no-referrer"
               loading="lazy"
@@ -727,7 +759,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                   onOpenPerspective(article);
                 }}
                 aria-label={`Perspectives for ${article.title}`}
-                title="Perspectives — Search all matching news across app sources"
+                title="Perspectives - Search all matching news across app sources"
                 className="flex items-center gap-1.5 py-1 px-1.5 rounded-lg text-stone-600 dark:text-stone-300 hover:text-[#FF6719] dark:hover:text-[#FF6719] transition-colors whitespace-nowrap active:scale-95"
               >
                 <Layers className="w-3.5 h-3.5 text-[#FF6719]" />

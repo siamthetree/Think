@@ -20,12 +20,12 @@ export function decodeHtmlEntities(text: string): string {
     .replace(/&#039;/g, "'")
     .replace(/&apos;/gi, "'")
     .replace(/&nbsp;/g, ' ')
-    .replace(/&ndash;/gi, '–')
-    .replace(/&mdash;/gi, '—')
-    .replace(/&lsquo;/gi, '‘')
-    .replace(/&rsquo;/gi, '’')
-    .replace(/&ldquo;/gi, '“')
-    .replace(/&rdquo;/gi, '”')
+    .replace(/&ndash;/gi, '\u2013')
+    .replace(/&mdash;/gi, '\u2014')
+    .replace(/&lsquo;/gi, '\u2018')
+    .replace(/&rsquo;/gi, '\u2019')
+    .replace(/&ldquo;/gi, '\u201c')
+    .replace(/&rdquo;/gi, '\u201d')
     .replace(/&#(\d+);/g, (_, dec) => {
       try {
         return String.fromCharCode(parseInt(dec, 10));
@@ -85,10 +85,10 @@ export function resolveUrl(relativeOrAbsolute: string, baseUrl?: string): string
   if (!relativeOrAbsolute) return '';
   let trimmed = decodeHtmlEntities(relativeOrAbsolute.trim());
 
-  // Unwrap Bing News RSS apiclick redirect URLs or generic ?url= wrappers
+  // Unwrap generic ?url= redirect wrappers if present
   if (trimmed.includes('apiclick.aspx') || trimmed.includes('url=http')) {
     try {
-      const parsedWrapper = new URL(trimmed, baseUrl || 'https://example.com');
+      const parsedWrapper = new URL(trimmed, baseUrl || 'https://www.thedailystar.net');
       const unwrapped = parsedWrapper.searchParams.get('url');
       if (unwrapped && /^https?:\/\//i.test(unwrapped)) {
         trimmed = unwrapped;
@@ -99,7 +99,7 @@ export function resolveUrl(relativeOrAbsolute: string, baseUrl?: string): string
   // Unwrap Next.js image proxy URLs if present (e.g. /_next/image?url=https%3A%2F%2F...)
   if (trimmed.includes('/_next/image?url=')) {
     try {
-      const urlParam = new URL(trimmed, baseUrl || 'https://example.com').searchParams.get('url');
+      const urlParam = new URL(trimmed, baseUrl || 'https://www.thedailystar.net').searchParams.get('url');
       if (urlParam) trimmed = urlParam;
     } catch {}
   }
@@ -356,7 +356,7 @@ export function parseHtmlPortalToFeed(
     if (ogSiteMatch?.[1]) {
       feedTitle = stripHtml(ogSiteMatch[1]);
     } else if (titleTagMatch?.[1]) {
-      feedTitle = stripHtml(titleTagMatch[1]).split(/[|\-–—]/)[0].trim() || feedInfo.title;
+      feedTitle = stripHtml(titleTagMatch[1]).split(/[|\-\u2013\u2014]/)[0].trim() || feedInfo.title;
     }
   }
 

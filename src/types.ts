@@ -44,12 +44,23 @@ export type ReaderFont = 'serif' | 'sans' | 'mono';
 export type ReaderTheme = 'paper' | 'sepia' | 'clean' | 'slate' | 'oled';
 export type ReaderLineHeight = 'normal' | 'relaxed' | 'loose';
 
+export interface PrivacyPreferences {
+  blockThirdPartyMedia: boolean;
+  strictTextOnlyMode: boolean;
+  privacyRelayUrl: string;
+  staticFeedMirrorUrl: string;
+}
+
 export interface ReaderPreferences {
   font: ReaderFont;
   fontSize: number; // 15 to 24px
   theme: ReaderTheme;
   lineHeight: ReaderLineHeight;
   distractionFree: boolean;
+  blockThirdPartyMedia?: boolean;
+  strictTextOnlyMode?: boolean;
+  privacyRelayUrl?: string;
+  staticFeedMirrorUrl?: string;
 }
 
 export interface CuratedFeedGroup {

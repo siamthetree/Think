@@ -17,22 +17,8 @@
     <meta property="og:description" content="Minimalist, distraction-free iPhone RSS feed reader with offline reading, customizable tags, and clean newspaper reader view." />
     <meta property="og:type" content="website" />
 
-    <!-- Critical font preconnects -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-
     <!--
-      Font strategy:
-      • display=optional → browser uses fallback if fonts not cached yet (zero layout shift)
-      • We only load what the UI actually uses
-    -->
-    <link
-      href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Noto+Serif+Bengali:wght@400;600;700&display=optional"
-      rel="stylesheet"
-    />
-
-    <!--
-      Instant dark background before React mounts — no white flash on iPhone.
+      Instant dark background before React mounts - no white flash on iPhone.
       This matches the splash-root background colour exactly.
     -->
     <style>
