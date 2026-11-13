@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 export interface SourceAvatarProps {
   name: string;
@@ -7,52 +7,32 @@ export interface SourceAvatarProps {
   size?: 'sm' | 'md' | 'lg';
 }
 
-const BRAND_GRADIENTS: Record<string, string> = {
-  daily: 'from-blue-600 to-indigo-800 text-white',
-  prothom: 'from-red-600 to-rose-800 text-white',
-  প্রথম: 'from-red-600 to-rose-800 text-white',
-  business: 'from-amber-600 to-orange-700 text-white',
-  tbs: 'from-amber-600 to-orange-700 text-white',
-  bdnews: 'from-emerald-600 to-teal-800 text-white',
-  tribune: 'from-teal-600 to-cyan-800 text-white',
-  financial: 'from-cyan-700 to-blue-900 text-white',
-  bbc: 'from-red-700 to-red-950 text-white',
-  guardian: 'from-blue-800 to-slate-900 text-white',
-  travel: 'from-emerald-600 to-green-800 text-white',
-  jugantor: 'from-orange-600 to-red-700 text-white',
-  যুগান্তর: 'from-orange-600 to-red-700 text-white',
-};
+const MUTED_PALETTES = [
+  'bg-[#2D3748] text-[#EDF2F7] border-[#4A5568]/40',
+  'bg-[#3B3A36] text-[#F5F5F0] border-[#57534E]/40',
+  'bg-[#284B63] text-[#DCE6ED] border-[#3C6E71]/40',
+  'bg-[#385144] text-[#E0EBE4] border-[#4E6B5B]/40',
+  'bg-[#5C3D2E] text-[#F3EBE6] border-[#785443]/40',
+  'bg-[#4A3E56] text-[#EBE7F0] border-[#655577]/40',
+];
 
-function getGradientForName(name: string): string {
-  const lower = name.toLowerCase();
-  for (const [key, gradient] of Object.entries(BRAND_GRADIENTS)) {
-    if (lower.includes(key)) return gradient;
+function hashString(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
   }
-  const charCode = name.charCodeAt(0) || 65;
-  const fallbacks = [
-    'from-indigo-600 to-violet-800 text-white',
-    'from-emerald-600 to-teal-800 text-white',
-    'from-orange-500 to-amber-700 text-white',
-    'from-rose-600 to-pink-800 text-white',
-    'from-sky-600 to-blue-800 text-white',
-  ];
-  return fallbacks[charCode % fallbacks.length];
-}
-
-function isLocalAvatarAsset(iconUrl?: string): boolean {
-  if (!iconUrl) return false;
-  const trimmed = iconUrl.trim();
-  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return true;
-  if (/^data:image\/(?:svg\+xml|png|jpeg|jpg|webp);/i.test(trimmed)) return true;
-  return false;
+  return Math.abs(hash);
 }
 
 export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, iconUrl, size = 'sm' }) => {
-  const [imgError, setImgError] = useState(false);
-  const initials = name.trim().slice(0, 1).toUpperCase() || '?';
+  const isLocalIcon = Boolean(
+    iconUrl && (iconUrl.startsWith('/') || iconUrl.startsWith('data:'))
+  );
 
-  // Never request icons from third-party favicon services or remote publisher domains
-  const safeLocalIcon = isLocalAvatarAsset(iconUrl) ? iconUrl!.trim() : undefined;
+  const initials = name.trim().slice(0, 1).toUpperCase() || '?';
+  const paletteIndex = hashString(name) % MUTED_PALETTES.length;
+  const palette = MUTED_PALETTES[paletteIndex];
 
   const sizeClass =
     size === 'lg'
@@ -61,19 +41,15 @@ export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, iconUrl, size 
       ? 'h-9 w-9 text-xs rounded-xl shadow-xs'
       : 'h-6 w-6 text-[10px] rounded-lg shadow-2xs';
 
-  const gradient = getGradientForName(name);
-
   return (
     <span
-      className={`source-avatar relative inline-flex shrink-0 items-center justify-center overflow-hidden bg-gradient-to-br ${gradient} font-bold font-serif select-none ring-1 ring-white/20 ${sizeClass}`}
+      className={`source-avatar relative inline-flex shrink-0 items-center justify-center overflow-hidden font-bold font-serif select-none border ${palette} ${sizeClass}`}
       aria-hidden="true"
     >
-      {safeLocalIcon && !imgError ? (
+      {isLocalIcon ? (
         <img
-          src={safeLocalIcon}
+          src={iconUrl}
           alt=""
-          referrerPolicy="no-referrer"
-          onError={() => setImgError(true)}
           className="h-full w-full object-cover p-1 bg-white dark:bg-stone-900 rounded-[inherit]"
           loading="lazy"
         />

@@ -1,7 +1,6 @@
 import { XMLParser } from 'fast-xml-parser';
 import type { FeedItem } from '../types';
-import { stripTrackingParams, isTrackerUrl } from './urlSecurity';
-import { sanitizeArticleHtml, isTrackingPixelImgTag } from './sanitize';
+import { stripTrackingParams } from './trackerRules';
 
 export function calculateReadTime(text: string): number {
   if (!text) return 1;
@@ -18,16 +17,16 @@ export function decodeHtmlEntities(text: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#x27;/gi, "'")
-    .replace(/&#39;/gi, "'")
-    .replace(/&#039;/gi, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&#039;/g, "'")
     .replace(/&apos;/gi, "'")
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&ndash;/gi, '\u2013')
-    .replace(/&mdash;/gi, '\u2014')
-    .replace(/&lsquo;/gi, '\u2018')
-    .replace(/&rsquo;/gi, '\u2019')
-    .replace(/&ldquo;/gi, '\u201C')
-    .replace(/&rdquo;/gi, '\u201D')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&ndash;/gi, '-')
+    .replace(/&mdash;/gi, '-')
+    .replace(/&lsquo;/gi, "'")
+    .replace(/&rsquo;/gi, "'")
+    .replace(/&ldquo;/gi, '"')
+    .replace(/&rdquo;/gi, '"')
     .replace(/&#(\d+);/g, (_, dec) => {
       try {
         return String.fromCharCode(parseInt(dec, 10));
@@ -83,6 +82,13 @@ export function cleanCdata(text: string): string {
   return decodeHtmlEntities(stripped);
 }
 
+export function stripTrackingFromHtml(html: string): string {
+  if (!html) return '';
+  return html.replace(/<a\b([^>]*?)href=["']([^"']+)["']([^>]*?)>/gi, (_match, before, href, after) => {
+    return `<a${before}href="${stripTrackingParams(href)}"${after}>`;
+  });
+}
+
 export function resolveUrl(relativeOrAbsolute: string, baseUrl?: string): string {
   if (!relativeOrAbsolute) return '';
   let trimmed = decodeHtmlEntities(relativeOrAbsolute.trim());
@@ -98,7 +104,7 @@ export function resolveUrl(relativeOrAbsolute: string, baseUrl?: string): string
     } catch {}
   }
 
-  // Unwrap Next.js image proxy URLs if present (e.g. /_next/image?url=https%3A%2F%2F...)
+  // Unwrap Next.js image proxy URLs if present
   if (trimmed.includes('/_next/image?url=')) {
     try {
       const urlParam = new URL(trimmed, baseUrl || 'https://example.com').searchParams.get('url');
@@ -107,60 +113,27 @@ export function resolveUrl(relativeOrAbsolute: string, baseUrl?: string): string
   }
 
   if (trimmed.startsWith('//')) {
-    return stripTrackingParams('https:' + trimmed);
+    return 'https:' + trimmed;
   }
 
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return stripTrackingParams(trimmed);
+    return trimmed;
   }
-  if (!baseUrl) return stripTrackingParams(trimmed);
+  if (!baseUrl) return trimmed;
   try {
-    return stripTrackingParams(new URL(trimmed, baseUrl).href);
+    return new URL(trimmed, baseUrl).href;
   } catch {
-    return stripTrackingParams(trimmed);
+    return trimmed;
   }
-}
-
-function sanitizeAndCleanInlineFeedHtml(rawHtml: string, baseUrl?: string): string {
-  if (!rawHtml) return '';
-  const withResolvedLinks = rawHtml
-    .replace(/<a\b([^>]*?)\bhref\s*=\s*(["'])([^"']+)\2([^>]*)>/gi, (full, before, quote, href, after) => {
-      const trimmedHref = String(href || '').trim();
-      if (!trimmedHref || trimmedHref.startsWith('#') || /^javascript:|^mailto:|^tel:/i.test(trimmedHref)) {
-        return full;
-      }
-      const cleanHref = stripTrackingParams(resolveUrl(trimmedHref, baseUrl));
-      return `<a${before}href=${quote}${cleanHref}${quote}${after}>`;
-    })
-    .replace(/<img\b([^>]*?)\bsrc\s*=\s*(["'])([^"']+)\2([^>]*)>/gi, (full, before, quote, src, after) => {
-      if (isTrackingPixelImgTag(full)) return '';
-      const trimmedSrc = String(src || '').trim();
-      if (!trimmedSrc || trimmedSrc.startsWith('data:')) return full;
-      const cleanSrc = stripTrackingParams(resolveUrl(trimmedSrc, baseUrl));
-      if (isTrackerUrl(cleanSrc)) return '';
-      return `<img${before}src=${quote}${cleanSrc}${quote}${after}>`;
-    });
-
-  return sanitizeArticleHtml(withResolvedLinks);
 }
 
 export function extractHeroImage(rawItem: any, contentHtml: string, baseUrl?: string): string | undefined {
-  const isValidImage = (url: string, metaObj?: any) => {
+  const isValidImage = (url: string) => {
     if (!url) return false;
-    if (isTrackerUrl(url)) return false;
-    if (metaObj && typeof metaObj === 'object') {
-      const w = String(metaObj['@_width'] ?? metaObj.width ?? '').trim();
-      const h = String(metaObj['@_height'] ?? metaObj.height ?? '').trim();
-      if (w === '1' || w === '0' || w === '1px' || w === '0px' || h === '1' || h === '0' || h === '1px' || h === '0px') {
-        return false;
-      }
-    }
     const lower = url.toLowerCase();
     if (
       lower.includes('feedburner') ||
       lower.includes('tracking') ||
-      lower.includes('beacon') ||
-      lower.includes('pixel') ||
       lower.includes('google_preferred_source') ||
       lower.includes('badge') ||
       lower.includes('logo') ||
@@ -183,32 +156,30 @@ export function extractHeroImage(rawItem: any, contentHtml: string, baseUrl?: st
     if (rawItem['News:Image']) {
       const ni = rawItem['News:Image'];
       const url = typeof ni === 'string' ? ni : ni?.['#text'] || ni?.['@_url'];
-      if (url && isValidImage(url, ni)) return stripTrackingParams(resolveUrl(url, baseUrl));
+      if (url && isValidImage(url)) return stripTrackingParams(resolveUrl(url, baseUrl));
     }
 
     if (rawItem['media:content']) {
       const mc = rawItem['media:content'];
       if (typeof mc === 'object') {
-        const firstMc = Array.isArray(mc) ? mc[0] : mc;
-        const url = firstMc?.['@_url'];
-        if (url && isValidImage(url, firstMc)) return stripTrackingParams(resolveUrl(url, baseUrl));
+        const url = mc['@_url'] || (Array.isArray(mc) && mc[0]?.['@_url']);
+        if (url && isValidImage(url)) return stripTrackingParams(resolveUrl(url, baseUrl));
       }
     }
 
     if (rawItem['media:thumbnail']) {
       const mt = rawItem['media:thumbnail'];
       if (typeof mt === 'object') {
-        const firstMt = Array.isArray(mt) ? mt[0] : mt;
-        const url = firstMt?.['@_url'];
-        if (url && isValidImage(url, firstMt)) return stripTrackingParams(resolveUrl(url, baseUrl));
+        const url = mt['@_url'] || (Array.isArray(mt) && mt[0]?.['@_url']);
+        if (url && isValidImage(url)) return stripTrackingParams(resolveUrl(url, baseUrl));
       }
     }
 
     // 2. enclosure with image type
     if (rawItem.enclosure) {
-      const enc = Array.isArray(rawItem.enclosure) ? rawItem.enclosure[0] : rawItem.enclosure;
-      const url = enc?.['@_url'];
-      if (url && isValidImage(url, enc)) {
+      const enc = rawItem.enclosure;
+      const url = enc['@_url'];
+      if (url && isValidImage(url)) {
         return stripTrackingParams(resolveUrl(url, baseUrl));
       }
     }
@@ -216,12 +187,9 @@ export function extractHeroImage(rawItem: any, contentHtml: string, baseUrl?: st
 
   // 3. <img> in content or description
   if (contentHtml) {
-    const imgTags = [...contentHtml.matchAll(/<img\b[^>]*>/gi)];
-    for (const tagMatch of imgTags) {
-      const tag = tagMatch[0];
-      if (isTrackingPixelImgTag(tag)) continue;
-      const srcMatch = tag.match(/(?:src|data-src|data-lazy-src)=["']([^"']+)["']/i);
-      const src = srcMatch?.[1];
+    const matches = [...contentHtml.matchAll(/<img[^>]+(?:src|data-src|data-lazy-src)=["']([^"']+)["']/gi)];
+    for (const m of matches) {
+      const src = m[1];
       if (src && isValidImage(src)) {
         return stripTrackingParams(resolveUrl(src, baseUrl));
       }
@@ -284,12 +252,11 @@ export function formatRelativeTime(timestamp: number): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-// Fallback robust parser for feeds with unclosed HTML in XML (e.g., The Daily Star)
+// Fallback robust parser for feeds with unclosed HTML in XML (e.g. The Daily Star)
 function parseXmlWithRegexFallback(
   xmlString: string,
   feedInfo: { id: string; title: string; url: string; defaultTags?: string[] }
 ): { feedTitle: string; items: FeedItem[] } {
-  const cleanFeedUrl = stripTrackingParams(feedInfo.url);
   const channelTitleMatch =
     xmlString.match(/<channel[\s>][\s\S]*?<title[^>]*>([\s\S]*?)<\/title>/i) ||
     xmlString.match(/<feed[\s>][\s\S]*?<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -320,7 +287,7 @@ function parseXmlWithRegexFallback(
       const urlMatch = block.match(/https?:\/\/[^\s<"']+/i);
       if (urlMatch) link = urlMatch[0];
     }
-    link = stripTrackingParams(resolveUrl(link.trim(), cleanFeedUrl));
+    link = resolveUrl(link.trim(), feedInfo.url);
 
     // Date
     const dateMatch = block.match(
@@ -338,15 +305,12 @@ function parseXmlWithRegexFallback(
     const contentMatch = block.match(/<content[^>]*>([\s\S]*?)<\/content>/i);
     const descMatch = block.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
 
-    const rawContentHtml = cleanCdata(contentEncodedMatch?.[1] || contentMatch?.[1] || descMatch?.[1] || '');
-    const contentHtml = sanitizeAndCleanInlineFeedHtml(rawContentHtml, cleanFeedUrl);
+    const contentHtml = cleanCdata(contentEncodedMatch?.[1] || contentMatch?.[1] || descMatch?.[1] || '');
     const cleanBody = stripHtml(contentHtml);
     const summary = cleanBody.slice(0, 240);
 
-    // Hero image (also check enclosure tag in raw XML block)
-    const enclosureMatch = block.match(/<enclosure[^>]+url=["']([^"']+)["'][^>]*>/i);
-    const enclosureObj = enclosureMatch?.[1] ? { enclosure: { '@_url': enclosureMatch[1] } } : {};
-    const imageUrl = extractHeroImage(enclosureObj, rawContentHtml, cleanFeedUrl);
+    // Hero image
+    const imageUrl = extractHeroImage({}, contentHtml, feedInfo.url);
 
     const guidMatch = block.match(/<(?:guid|id)[^>]*>([\s\S]*?)<\/(?:guid|id)>/i);
     const guid = guidMatch ? cleanCdata(guidMatch[1]) : link || title;
@@ -354,18 +318,21 @@ function parseXmlWithRegexFallback(
 
     const readTimeMin = calculateReadTime(cleanBody || summary);
 
+    const finalLink = link ? stripTrackingParams(link) : link;
+    const safeContentHtml = stripTrackingFromHtml(contentHtml);
+
     items.push({
       id,
       feedId: feedInfo.id,
       feedTitle,
-      feedUrl: cleanFeedUrl,
+      feedUrl: feedInfo.url,
       title,
-      link,
+      link: finalLink,
       pubDate,
       timestamp,
       author,
       summary,
-      contentHtml: contentHtml || `<p>${summary}</p>`,
+      contentHtml: safeContentHtml || `<p>${summary}</p>`,
       contentClean: cleanBody,
       imageUrl,
       tags: [...(feedInfo.defaultTags || [])],
@@ -382,15 +349,13 @@ function parseXmlWithRegexFallback(
 
 /**
  * Direct HTML Portal Scraper:
- * When a Bangladeshi newspaper portal does not have an RSS feed (e.g. bdnews24.com,
- * thefinancialexpress.com.bd, or any custom news portal URL), this extracts news stories
- * directly from the portal's HTML page so they can be browsed and opened in clean Reader View.
+ * When a Bangladeshi newspaper portal does not have an RSS feed, this extracts
+ * news stories directly from the portal HTML page for Reader View.
  */
 export function parseHtmlPortalToFeed(
   htmlString: string,
   feedInfo: { id: string; title: string; url: string; defaultTags?: string[] }
 ): { feedTitle: string; items: FeedItem[] } {
-  const cleanFeedUrl = stripTrackingParams(feedInfo.url);
   let feedTitle = feedInfo.title;
   const ogSiteMatch =
     htmlString.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i) ||
@@ -407,24 +372,22 @@ export function parseHtmlPortalToFeed(
 
   let baseHostname = '';
   try {
-    baseHostname = new URL(cleanFeedUrl).hostname.replace(/^www\./, '');
+    baseHostname = new URL(feedInfo.url).hostname.replace(/^www\./, '');
   } catch {}
 
   const seenUrls = new Set<string>();
   const seenTitles = new Set<string>();
   const items: FeedItem[] = [];
 
-  // Bound HTML size and strip script/style/svg blocks so regex matching never lags on mobile Safari/WKWebView
-  const cleanPortalHtml = (htmlString.length > 350000 ? htmlString.slice(0, 350000) : htmlString)
+  const cleanPortalHtml = (htmlString.length > 700000 ? htmlString.slice(0, 700000) : htmlString)
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, ' ');
 
-  // Match <a> tags in HTML with bounded inner content
   const anchorMatches = [...cleanPortalHtml.matchAll(/<a\s+([^>]{1,600})>([\s\S]{1,1800}?)<\/a>/gi)];
 
   for (const match of anchorMatches) {
-    if (items.length >= 30) break;
+    if (items.length >= 80) break;
 
     const attrs = match[1];
     const innerHtml = match[2];
@@ -439,13 +402,12 @@ export function parseHtmlPortalToFeed(
       rawHref.startsWith('javascript:') ||
       rawHref.startsWith('mailto:') ||
       rawHref.startsWith('tel:') ||
-      rawHref.includes('/cdn-cgi/') ||
-      isTrackerUrl(rawHref)
+      rawHref.includes('/cdn-cgi/')
     ) {
       continue;
     }
 
-    const fullUrl = stripTrackingParams(resolveUrl(rawHref, cleanFeedUrl));
+    const fullUrl = resolveUrl(rawHref, feedInfo.url);
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(fullUrl);
@@ -453,7 +415,6 @@ export function parseHtmlPortalToFeed(
       continue;
     }
 
-    // Must belong to same root domain
     if (baseHostname && !parsedUrl.hostname.includes(baseHostname)) {
       continue;
     }
@@ -461,8 +422,7 @@ export function parseHtmlPortalToFeed(
     const pathname = parsedUrl.pathname.replace(/\/+$/, '');
     const segments = pathname.split('/').filter(Boolean);
 
-    // Filter out non-article navigation/category/utility paths
-    if (pathname.length < 14 || segments.length === 0) continue;
+    if (pathname.length < 10 || segments.length === 0) continue;
     if (
       /\/(login|signin|signup|register|privacy|terms|contact|about|advertise|archive|search|author|tag|topic|category|collection|section|video|videos|photo|photos|gallery|live|poll|weather|epaper|todays-paper)$/i.test(
         pathname
@@ -474,14 +434,12 @@ export function parseHtmlPortalToFeed(
       continue;
     }
 
-    // Require article-like URL structure (digits in slug, 2+ hyphens in slug, or 3+ path segments)
     const lastSegment = segments[segments.length - 1] || '';
     const hyphenCount = (lastSegment.match(/-/g) || []).length;
     const looksLikeArticle =
       /\d/.test(lastSegment) || hyphenCount >= 2 || segments.length >= 3;
     if (!looksLikeArticle) continue;
 
-    // Extract best headline candidate
     const headingMatch = innerHtml.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
     const ariaLabelMatch = attrs.match(/aria-label=["']([^"']+)["']/i);
     const titleAttrMatch = attrs.match(/title=["']([^"']+)["']/i);
@@ -497,19 +455,19 @@ export function parseHtmlPortalToFeed(
       title = stripHtml(innerHtml);
     }
 
-    // Clean up common prefixes/suffixes and validate title length (at least 4 words / 22 chars)
     title = title.replace(/\s+/g, ' ').trim();
     const wordCount = title.split(/\s+/).length;
-    if (!title || title.length < 22 || title.length > 240 || wordCount < 4) continue;
+    if (!title || title.length < 18 || title.length > 240 || wordCount < 3) continue;
     if (title.includes('@') || /^(read more|view more|click here|subscribe|follow us)/i.test(title)) {
       continue;
     }
 
-    if (seenUrls.has(fullUrl) || seenTitles.has(title.toLowerCase())) continue;
-    seenUrls.add(fullUrl);
-    seenTitles.add(title.toLowerCase());
+    const canonUrl = `${parsedUrl.hostname.toLowerCase().replace(/^www\./, '')}${pathname}`;
+    const normTitle = title.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+    if (seenUrls.has(canonUrl) || seenTitles.has(normTitle)) continue;
+    seenUrls.add(canonUrl);
+    seenTitles.add(normTitle);
 
-    // Look at surrounding sibling HTML around the anchor for image or summary paragraph
     const matchIndex = match.index ?? 0;
     const matchEnd = matchIndex + match[0].length;
     const beforeWindow = cleanPortalHtml.slice(Math.max(0, matchIndex - 500), matchIndex);
@@ -517,12 +475,10 @@ export function parseHtmlPortalToFeed(
       .slice(matchEnd, matchEnd + 900)
       .split(/<\/article>|<article\b|<h[1-4]\b/i)[0] || '';
 
-    // Extract image if inside the anchor or immediately preceding in the same card
     const imageUrl =
-      extractHeroImage({}, innerHtml, cleanFeedUrl) ||
-      extractHeroImage({}, beforeWindow.split(/<article\b|<li\b/i).pop() || '', cleanFeedUrl);
+      extractHeroImage({}, innerHtml, feedInfo.url) ||
+      extractHeroImage({}, beforeWindow.split(/<article\b|<li\b/i).pop() || '', feedInfo.url);
 
-    // Extract real news summary from inner paragraph or sibling paragraph/excerpt right after </a>
     const pMatch =
       innerHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
       afterWindow.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
@@ -539,18 +495,20 @@ export function parseHtmlPortalToFeed(
     const { timestamp, pubDate } = parseFeedDate(timeMatch?.[1], items.length);
     const id = `${feedInfo.id}_${encodeURIComponent(fullUrl.slice(-70))}`;
 
+    const finalLink = stripTrackingParams(fullUrl);
+    const safeContentHtml = stripTrackingFromHtml(summary ? `<p>${summary}</p>` : '');
+
     items.push({
       id,
       feedId: feedInfo.id,
       feedTitle,
-      feedUrl: cleanFeedUrl,
+      feedUrl: feedInfo.url,
       title,
-      link: fullUrl,
+      link: finalLink,
       pubDate,
       timestamp,
       summary,
-      // Keep contentClean short so ReaderView automatically triggers article extraction on open
-      contentHtml: summary ? `<p>${summary}</p>` : '',
+      contentHtml: safeContentHtml,
       contentClean: '',
       imageUrl,
       tags: [...(feedInfo.defaultTags || [])],
@@ -571,7 +529,6 @@ export function parseXmlFeed(
   feedTitle: string;
   items: FeedItem[];
 } {
-  const cleanFeedUrl = stripTrackingParams(feedInfo.url);
   const rawItemCount = (xmlString.match(/<(?:item|entry)[\s>]/gi) || []).length;
 
   try {
@@ -595,7 +552,7 @@ export function parseXmlFeed(
     const itemsList = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
 
     if (itemsList.length < rawItemCount && rawItemCount > 1) {
-      return parseXmlWithRegexFallback(xmlString, { ...feedInfo, url: cleanFeedUrl });
+      return parseXmlWithRegexFallback(xmlString, feedInfo);
     }
 
     const items: FeedItem[] = [];
@@ -618,7 +575,7 @@ export function parseXmlFeed(
       } else if (typeof link === 'object') {
         link = link['@_href'] || link['#text'] || '';
       }
-      link = stripTrackingParams(resolveUrl(String(link || '').trim(), cleanFeedUrl));
+      link = resolveUrl(String(link || '').trim(), feedInfo.url);
 
       // Date
       const rawDate = raw.pubDate ?? raw['dc:date'] ?? raw.published ?? raw.updated;
@@ -645,35 +602,34 @@ export function parseXmlFeed(
         : '';
       const content = raw.content ? (typeof raw.content === 'object' ? raw.content['#text'] : raw.content) : '';
 
-      const rawContentHtml = cleanCdata(contentEncoded || content || description || '');
-      const contentHtml = sanitizeAndCleanInlineFeedHtml(rawContentHtml, cleanFeedUrl);
+      const contentHtml = cleanCdata(contentEncoded || content || description || '');
       const cleanBody = stripHtml(contentHtml);
-      const summary = stripHtml(sanitizeAndCleanInlineFeedHtml(cleanCdata(String(description || '')), cleanFeedUrl) || cleanBody).slice(0, 240);
+      const summary = stripHtml(description || cleanBody).slice(0, 240);
 
       // Hero image
-      const imageUrl = extractHeroImage(raw, rawContentHtml, cleanFeedUrl);
+      const imageUrl = extractHeroImage(raw, contentHtml, feedInfo.url);
 
-      // Unique ID
-      const guidRaw = raw.guid ? (typeof raw.guid === 'object' ? raw.guid['#text'] : raw.guid) : raw.id;
-      const guid = typeof guidRaw === 'string' && /^https?:\/\//i.test(guidRaw.trim())
-        ? stripTrackingParams(guidRaw.trim())
-        : guidRaw;
+      // Unique ID - computed BEFORE stripping link so existing IDs never change
+      const guid = raw.guid ? (typeof raw.guid === 'object' ? raw.guid['#text'] : raw.guid) : raw.id;
       const id = `${feedInfo.id}_${encodeURIComponent(String(guid || link || title).slice(0, 80))}`;
 
       const readTimeMin = calculateReadTime(cleanBody || summary);
+
+      const finalLink = link ? stripTrackingParams(link) : link;
+      const safeContentHtml = stripTrackingFromHtml(contentHtml);
 
       items.push({
         id,
         feedId: feedInfo.id,
         feedTitle,
-        feedUrl: cleanFeedUrl,
+        feedUrl: feedInfo.url,
         title,
-        link,
+        link: finalLink,
         pubDate,
         timestamp,
         author: author ? stripHtml(cleanCdata(author)) : undefined,
         summary,
-        contentHtml: contentHtml || `<p>${summary}</p>`,
+        contentHtml: safeContentHtml || `<p>${summary}</p>`,
         contentClean: cleanBody,
         imageUrl,
         tags: [...(feedInfo.defaultTags || [])],
@@ -690,12 +646,12 @@ export function parseXmlFeed(
     }
 
     if (rawItemCount > 0) {
-      return parseXmlWithRegexFallback(xmlString, { ...feedInfo, url: cleanFeedUrl });
+      return parseXmlWithRegexFallback(xmlString, feedInfo);
     }
 
     return { feedTitle, items: [] };
   } catch {
-    return parseXmlWithRegexFallback(xmlString, { ...feedInfo, url: cleanFeedUrl });
+    return parseXmlWithRegexFallback(xmlString, feedInfo);
   }
 }
 
@@ -717,7 +673,7 @@ export function filterArticles(
       return false;
     }
 
-    // Folder feeds filter (when a specific folder is selected)
+    // Folder feeds filter
     if (selectedFeedIds && selectedFeedIds.length > 0 && !selectedFeedIds.includes(article.feedId)) {
       return false;
     }
@@ -772,14 +728,11 @@ const KNOWN_DOMAIN_RSS_MAP: Array<{ match: RegExp; rssUrl: string }> = [
   { match: /(?:^|\.)dw\.com$/i, rssUrl: 'https://rss.dw.com/rdf/rss-en-all' },
 ];
 
-/**
- * Given a website or feed URL and optional HTML, produces an ordered list of candidate RSS/Atom feed URLs to probe.
- */
 export function buildRssDiscoveryCandidates(rawUrl: string, html?: string): string[] {
   const candidates: string[] = [];
   const addCandidate = (u?: string) => {
     if (!u) return;
-    const resolved = stripTrackingParams(resolveUrl(u, rawUrl));
+    const resolved = resolveUrl(u, rawUrl);
     if (resolved && /^https?:\/\//i.test(resolved) && !candidates.includes(resolved)) {
       candidates.push(resolved);
     }
@@ -792,7 +745,7 @@ export function buildRssDiscoveryCandidates(rawUrl: string, html?: string): stri
     return candidates;
   }
 
-  // 1. Inspect explicit <link rel="alternate" type="application/rss+xml"> tags in HTML first
+  // 1. Inspect explicit <link rel="alternate" type="application/rss+xml"> tags
   if (html) {
     const linkMatches = [
       ...html.matchAll(
@@ -828,7 +781,7 @@ export function buildRssDiscoveryCandidates(rawUrl: string, html?: string): stri
   }
 
   // 2. Standard path combinations for blogs & newspapers
-  const cleanBase = stripTrackingParams(parsedUrl.href).replace(/\/+$/, '');
+  const cleanBase = parsedUrl.href.replace(/\/+$/, '');
   const origin = parsedUrl.origin;
   const pathClean = parsedUrl.pathname.replace(/\/+$/, '');
 
@@ -861,10 +814,6 @@ export function buildRssDiscoveryCandidates(rawUrl: string, html?: string): stri
   return candidates.filter((c) => c !== parsedUrl?.href && c !== cleanBase);
 }
 
-/**
- * Recursively extracts story paragraphs and metadata from embedded JSON scripts
- * (JSON-LD with @graph, Next.js __NEXT_DATA__, Quintype static-page / story-elements, etc.).
- */
 function extractFromEmbeddedJsonScripts(html: string): {
   title: string;
   author: string;
@@ -925,15 +874,10 @@ function extractFromEmbeddedJsonScripts(html: string): {
     if (!image) {
       const img = node.image || node['hero-image-s3-key'] ? node.image : null;
       const firstImg = Array.isArray(img) ? img[0] : img;
-      if (typeof firstImg === 'string' && firstImg.startsWith('http') && !isTrackerUrl(firstImg)) {
-        image = stripTrackingParams(firstImg);
-      } else if (
-        firstImg &&
-        typeof firstImg.url === 'string' &&
-        firstImg.url.startsWith('http') &&
-        !isTrackerUrl(firstImg.url)
-      ) {
-        image = stripTrackingParams(firstImg.url);
+      if (typeof firstImg === 'string' && firstImg.startsWith('http')) {
+        image = firstImg;
+      } else if (firstImg && typeof firstImg.url === 'string' && firstImg.url.startsWith('http')) {
+        image = firstImg.url;
       }
     }
 
@@ -992,10 +936,6 @@ function extractFromEmbeddedJsonScripts(html: string): {
   return { title, author, image, paragraphs };
 }
 
-/**
- * Pure, cross-environment HTML article extractor that strips <noscript> / JS warnings
- * and extracts full article blocks from semantic HTML or embedded JSON-LD / Next.js / Quintype state.
- */
 export function extractReadableArticleFromHtml(
   html: string,
   url: string
@@ -1010,7 +950,6 @@ export function extractReadableArticleFromHtml(
   paragraphCount: number;
   blocks: Array<{ type: 'p' | 'h2' | 'h3' | 'blockquote' | 'img'; text?: string; src?: string }>;
 } {
-  const cleanUrl = stripTrackingParams(url);
   const embedded = extractFromEmbeddedJsonScripts(html);
 
   const readMeta = (pattern: RegExp): string => {
@@ -1040,10 +979,11 @@ export function extractReadableArticleFromHtml(
     readMeta(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) ||
     readMeta(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
 
-  // Strip script, style, noscript, nav, header, footer, aside, form, button, svg, iframe, object, embed, input, link, meta BEFORE scanning DOM blocks
   const cleanedHtml = html
-    .replace(/<(script|style|noscript|nav|header|footer|aside|form|button|svg|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<(input|link|meta|base|embed|object|iframe|script|style)\b[^>]*\/?>/gi, ' ');
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<(?:nav|header|footer|aside|form|button|svg|iframe)\b[^>]*>[\s\S]*?<\/(?:nav|header|footer|aside|form|button|svg|iframe)>/gi, ' ');
 
   const h1Match = cleanedHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
   const titleTagMatch = cleanedHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -1058,13 +998,12 @@ export function extractReadableArticleFromHtml(
   const title = isBoilerplateOrJsWarning(rawTitle) ? 'Newspaper Story' : rawTitle;
   const author = embedded.author || metaAuthor || undefined;
   const leadImageRaw = embedded.image || ogImage || '';
-  const resolvedLeadImage = leadImageRaw ? stripTrackingParams(resolveUrl(leadImageRaw, cleanUrl)) : undefined;
-  const leadImage = resolvedLeadImage && !isTrackerUrl(resolvedLeadImage) ? resolvedLeadImage : undefined;
+  const leadImage = leadImageRaw ? stripTrackingParams(resolveUrl(leadImageRaw, url)) : undefined;
 
   let siteName = ogSiteName;
   if (!siteName) {
     try {
-      siteName = new URL(cleanUrl).hostname.replace(/^www\./, '');
+      siteName = new URL(url).hostname.replace(/^www\./, '');
     } catch {
       siteName = '';
     }
@@ -1084,14 +1023,12 @@ export function extractReadableArticleFromHtml(
     domBlocks.push({ type, text });
   };
 
-  // Focus on <article> or <main> if present to avoid sidebar/menu links
   const articleRegionMatch =
     cleanedHtml.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i) ||
     cleanedHtml.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
   const targetHtml =
     articleRegionMatch && articleRegionMatch[1].length > 400 ? articleRegionMatch[1] : cleanedHtml;
 
-  // Match p, h2, h3, blockquote tags
   const blockMatches = [
     ...targetHtml.matchAll(/<(p|h2|h3|blockquote)\b[^>]*>([\s\S]*?)<\/\1>/gi),
   ];
@@ -1100,7 +1037,6 @@ export function extractReadableArticleFromHtml(
     addBlock(tag, m[2]);
   }
 
-  // Also check div containers that separate paragraphs via <br><br> (common in Bangla newspapers)
   if (domBlocks.filter((b) => b.type === 'p').length < 3) {
     const detailDivMatches = [
       ...cleanedHtml.matchAll(

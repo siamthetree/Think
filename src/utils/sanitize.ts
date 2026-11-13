@@ -1,9 +1,12 @@
 import DOMPurify from 'dompurify';
-import {
-  stripTrackingParams,
-  isTrackerUrl,
-  isAllowedPublisherMediaUrl,
-} from './urlSecurity';
+import { isTrackingPixel, isTrackerUrl } from './trackerRules';
+import { isFirstPartyMedia } from './mediaPolicy';
+import { buildImageProxyUrl } from './mediaShare';
+
+export const MEDIA_PLACEHOLDER_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="340" viewBox="0 0 600 340" fill="none"><rect width="600" height="340" fill="#141418"/><circle cx="300" cy="150" r="28" fill="#24242A"/><path d="M292 142l16 8-16 8v-16z" fill="#FF6719"/><text x="50%" y="210" text-anchor="middle" fill="#A8A29E" font-family="-apple-system, sans-serif" font-size="13" font-weight="600">Tap to load image</text></svg>';
+
+export const MEDIA_PLACEHOLDER_DATA_URI = `data:image/svg+xml;utf8,${encodeURIComponent(MEDIA_PLACEHOLDER_SVG)}`;
 
 /** Escape plain text so it is safe to place inside HTML markup. */
 export function escapeHtml(text: string): string {
@@ -23,120 +26,105 @@ export function isJavaScriptWarningText(text: string): boolean {
   return JS_WARNING_BOILERPLATE_RE.test(text.trim());
 }
 
-/**
- * Checks whether an <img> tag is a tracking pixel, 1x1/0x0 beacon, hidden via inline style,
- * or points to a known tracker/beacon domain.
- */
-export function isTrackingPixelImgTag(imgTagHtml: string): boolean {
-  if (!imgTagHtml) return false;
+export interface SanitizeArticleOptions {
+  publisherUrl?: string;
+  blockThirdPartyMedia?: boolean;
+  tapToLoadMedia?: boolean;
+}
 
-  // 1. Check width="1", height="1", width="0", height="0" (quoted or unquoted, with optional px)
-  if (/\b(?:width|height)\s*=\s*(?:["']?\s*(?:0|1)(?:px)?\s*["']?)(?:\s|>|\/|$)/i.test(imgTagHtml)) {
-    return true;
-  }
-
-  // 2. Check inline style containing display:none, visibility:hidden, opacity:0, width:1px, height:1px, width:0, height:0
-  const styleMatch = imgTagHtml.match(/\bstyle\s*=\s*(?:["']([^"']*)["']|([^\s>]+))/i);
-  const styleVal = (styleMatch?.[1] || styleMatch?.[2] || '').toLowerCase();
-  if (styleVal) {
-    if (
-      /display\s*:\s*none/i.test(styleVal) ||
-      /visibility\s*:\s*hidden/i.test(styleVal) ||
-      /opacity\s*:\s*0(?:\b|;|px|$)/i.test(styleVal) ||
-      /(?:^|;|\s)(?:width|height)\s*:\s*(?:0|1)(?:px)?(?:\b|;|\s|$)/i.test(styleVal)
-    ) {
-      return true;
+function getPurify() {
+  if (typeof DOMPurify === 'function') {
+    const win =
+      typeof window !== 'undefined'
+        ? window
+        : (globalThis as unknown as { window?: unknown }).window;
+    if (win) {
+      return (DOMPurify as any)(win);
     }
   }
-
-  // 3. Check src / data-src against known tracker hosts or 1x1 pixel filenames
-  const srcMatch = imgTagHtml.match(/\b(?:src|data-src|data-lazy-src)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
-  const rawSrc = (srcMatch?.[1] || srcMatch?.[2] || '').trim();
-  if (!rawSrc) return true;
-  if (isTrackerUrl(rawSrc)) return true;
-  if (/(?:^|\/|[._-])1x1(?:[._-]|$)/i.test(rawSrc) || /\btracking\b|\bbeacon\b|\bpixel\b/i.test(rawSrc)) {
-    return true;
-  }
-
-  return false;
-}
-
-export interface SanitizeArticleOptions {
-  articleUrl?: string;
-  blockThirdPartyMedia?: boolean;
-  strictTextOnlyMode?: boolean;
+  return DOMPurify;
 }
 
 /**
- * Pure cross-environment HTML sanitizer and tracking pixel blocker.
- * Strips executable/external tags (<script>, <iframe>, <object>, <embed>, <form>, <input>, <style>, <link>, <meta>),
- * inline on* attributes, tracking pixels (1x1, 0x0, hidden styles, tracker domains), and tracking URL parameters.
- * Forces rel="noopener noreferrer" and referrerPolicy="no-referrer" on all <a> tags, and
- * referrerPolicy="no-referrer" on all allowed <img> and <video> tags.
+ * Sanitize untrusted article HTML (RSS content, scraped pages) before it is
+ * rendered with dangerouslySetInnerHTML. Removes tracking pixels, trackers,
+ * scripts, iframes, forms, and handles media privacy policy.
  */
-export function sanitizeArticleHtml(html: string, options?: SanitizeArticleOptions): string {
+export function sanitizeArticleHtml(html: string, options: SanitizeArticleOptions = {}): string {
   if (!html) return '';
 
-  const blockThirdParty = options?.blockThirdPartyMedia ?? false;
-  const strictTextOnly = options?.strictTextOnlyMode ?? false;
-  const articleUrl = options?.articleUrl;
+  const purify = getPurify();
+  const withoutNoscript = html.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
 
-  // Step 1: Remove paired executable and external resource blocks BEFORE DOMPurify (so tracking styles on <img> are inspected before style attributes are stripped)
-  let working = html
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(script|iframe|object|embed|form|style|noscript|button|applet|frame|frameset)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
-    .replace(/<(script|iframe|object|embed|form|input|style|link|meta|noscript|button|base|applet|frame|frameset)\b[^>]*\/?>/gi, '');
+  // Add hooks for this sanitize pass
+  purify.addHook('uponSanitizeElement', (node: Element, data: any) => {
+    if (data.tagName === 'img') {
+      const width = node.getAttribute('width');
+      const height = node.getAttribute('height');
+      const style = node.getAttribute('style');
+      const src = node.getAttribute('src') || node.getAttribute('data-src') || '';
 
-  // Step 2: Detect and remove tracking pixels and hidden beacon <img> tags BEFORE style attributes are stripped
-  working = working.replace(/<img\b[^>]*>/gi, (imgTag) => {
-    if (isTrackingPixelImgTag(imgTag)) {
-      return '';
+      // 1. Remove tracking pixels and tracker URLs
+      if (isTrackingPixel({ width, height, style, src }) || (src && isTrackerUrl(src))) {
+        node.remove();
+        return;
+      }
+
+      // 2. Apply media privacy policy: block third-party media or tap-to-load
+      const isBlocked =
+        Boolean(options.tapToLoadMedia) ||
+        Boolean(
+          options.blockThirdPartyMedia &&
+            options.publisherUrl &&
+            src &&
+            !isFirstPartyMedia(src, options.publisherUrl)
+        );
+
+      if (isBlocked) {
+        node.setAttribute('data-chinta-src', src);
+        node.setAttribute('src', MEDIA_PLACEHOLDER_DATA_URI);
+        node.setAttribute('data-chinta-blocked', '1');
+        node.setAttribute('class', 'chinta-tap-to-load-img');
+      } else if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
+        const proxied = buildImageProxyUrl(src);
+        if (proxied) {
+          node.setAttribute('src', proxied);
+        }
+      }
     }
-    if (strictTextOnly) {
-      return '';
-    }
-    const srcMatch = imgTag.match(/\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
-    const rawSrc = (srcMatch?.[1] || srcMatch?.[2] || '').trim();
-    if (!rawSrc || /^javascript:|^data:text\//i.test(rawSrc)) {
-      return '';
-    }
-    if (blockThirdParty && articleUrl && !isAllowedPublisherMediaUrl(rawSrc, articleUrl, true)) {
-      return '';
-    }
-    return imgTag;
   });
 
-  // Step 3: Remove or sanitize <video> and <audio> tags
-  working = working.replace(/<(video|audio)\b([^>]*)>([\s\S]*?)<\/\1>/gi, (fullTag, tagName, attrs, inner) => {
-    if (strictTextOnly) return '';
-    const srcMatch = String(attrs).match(/\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
-    const rawSrc = (srcMatch?.[1] || srcMatch?.[2] || '').trim();
-    if (rawSrc && isTrackerUrl(rawSrc)) return '';
-    if (blockThirdParty && articleUrl && rawSrc && !isAllowedPublisherMediaUrl(rawSrc, articleUrl, true)) {
-      return '';
+  purify.addHook('afterSanitizeElements', (node: Element) => {
+    // For <a> tags whose href is a tracker URL, remove the tag but keep its text
+    if (node.nodeName === 'A') {
+      const href = node.getAttribute('href') || '';
+      if (isTrackerUrl(href)) {
+        const parent = node.parentNode;
+        if (parent) {
+          while (node.firstChild) {
+            parent.insertBefore(node.firstChild, node);
+          }
+          parent.removeChild(node);
+        }
+      }
     }
-    return `<${tagName}${attrs}>${inner}</${tagName}>`;
   });
 
-  // Step 4: Remove any <a> link pointing to known tracker/beacon hosts, and clean allowed <a> links
-  working = working.replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (fullMatch, attrs, inner) => {
-    const hrefMatch = String(attrs).match(/\bhref\s*=\s*(?:["']([^"']*)["']|([^\s>]+))/i);
-    const rawHref = (hrefMatch?.[1] || hrefMatch?.[2] || '').trim();
-    if (!rawHref || /^javascript:|^vbscript:|^data:/i.test(rawHref)) {
-      return inner;
+  purify.addHook('afterSanitizeAttributes', (node: Element) => {
+    // Enforce rel and referrerpolicy on all surviving <a> links
+    if (node.nodeName === 'A') {
+      node.setAttribute('rel', 'noopener noreferrer');
+      node.setAttribute('referrerpolicy', 'no-referrer');
+      node.setAttribute('target', '_blank');
     }
-    if (isTrackerUrl(rawHref)) {
-      // If the tracker anchor only wraps an empty or stripped image, remove completely
-      const textInside = String(inner).replace(/<[^>]+>/g, '').trim();
-      return textInside ? textInside : '';
+    if (node.nodeName === 'IMG') {
+      node.setAttribute('referrerpolicy', 'no-referrer');
     }
-    const cleanHref = stripTrackingParams(rawHref);
-    return `<a href="${escapeHtml(cleanHref)}" rel="noopener noreferrer" referrerpolicy="no-referrer">${inner}</a>`;
   });
 
-  // Step 5: Run DOMPurify when in browser DOM environment
-  if (typeof window !== 'undefined' && typeof DOMPurify?.sanitize === 'function') {
-    working = DOMPurify.sanitize(working, {
+  let clean = '';
+  try {
+    clean = purify.sanitize(withoutNoscript, {
       USE_PROFILES: { html: true },
       FORBID_TAGS: [
         'script',
@@ -148,63 +136,20 @@ export function sanitizeArticleHtml(html: string, options?: SanitizeArticleOptio
         'style',
         'link',
         'meta',
-        'noscript',
-        'button',
-        'base',
+        'video',
+        'audio',
+        'source',
+        'track',
       ],
-      FORBID_ATTR: ['style', 'onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
-      ADD_ATTR: ['referrerpolicy', 'target', 'rel'],
+      FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
     });
+  } finally {
+    purify.removeHook('uponSanitizeElement');
+    purify.removeHook('afterSanitizeElements');
+    purify.removeHook('afterSanitizeAttributes');
   }
 
-  // Step 6: Strip any remaining inline on* event handlers or style attributes in all environments
-  working = working
-    .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/\s+style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-
-  // Step 7: Enforce rel="noopener noreferrer" and referrerpolicy="no-referrer" on all <a> tags
-  working = working.replace(/<a\b([^>]*)>/gi, (_, attrs) => {
-    const hrefMatch = String(attrs).match(/\bhref\s*=\s*(?:["']([^"']*)["']|([^\s>]+))/i);
-    const rawHref = (hrefMatch?.[1] || hrefMatch?.[2] || '').trim();
-    if (!rawHref || isTrackerUrl(rawHref) || /^javascript:/i.test(rawHref)) {
-      return '<a>';
-    }
-    const cleanHref = stripTrackingParams(rawHref);
-    return `<a href="${escapeHtml(cleanHref)}" rel="noopener noreferrer" referrerpolicy="no-referrer">`;
-  });
-
-  // Step 8: Enforce referrerpolicy="no-referrer" and stripped tracking params on all allowed <img> and <video> tags
-  working = working.replace(/<img\b([^>]*)>/gi, (fullImg, attrs) => {
-    if (isTrackingPixelImgTag(fullImg)) return '';
-    const srcMatch = String(attrs).match(/\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
-    const rawSrc = (srcMatch?.[1] || srcMatch?.[2] || '').trim();
-    if (!rawSrc || isTrackerUrl(rawSrc) || /^javascript:/i.test(rawSrc)) return '';
-    if (blockThirdParty && articleUrl && !isAllowedPublisherMediaUrl(rawSrc, articleUrl, true)) {
-      return '';
-    }
-    const cleanSrc = stripTrackingParams(rawSrc);
-    const altMatch = String(attrs).match(/\balt\s*=\s*["']([^"']*)["']/i);
-    const altAttr = altMatch ? ` alt="${escapeHtml(altMatch[1])}"` : ' alt=""';
-    return `<img src="${escapeHtml(cleanSrc)}"${altAttr} referrerpolicy="no-referrer" loading="lazy" />`;
-  });
-
-  working = working.replace(/<video\b([^>]*)>/gi, (_, attrs) => {
-    const srcMatch = String(attrs).match(/\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
-    const rawSrc = (srcMatch?.[1] || srcMatch?.[2] || '').trim();
-    if (rawSrc && isTrackerUrl(rawSrc)) return '';
-    let cleanedAttrs = String(attrs).replace(/\breferrerpolicy\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-    if (rawSrc) {
-      const cleanSrc = stripTrackingParams(rawSrc);
-      cleanedAttrs = cleanedAttrs.replace(
-        /\bsrc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i,
-        `src="${escapeHtml(cleanSrc)}"`
-      );
-    }
-    return `<video${cleanedAttrs} referrerpolicy="no-referrer">`;
-  });
-
-  // Step 9: Remove JavaScript warning boilerplate paragraphs
-  return working.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (full, inner) => {
+  return clean.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (full, inner) => {
     const plain = String(inner).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     return isJavaScriptWarningText(plain) ? '' : full;
   });

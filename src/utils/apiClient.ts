@@ -12,26 +12,83 @@ import {
   parseFeedDate,
 } from './feedParser';
 import { escapeHtml } from './sanitize';
-import { checkSafeExternalUrl, stripTrackingParams } from './urlSecurity';
-import {
-  GENERIC_STATIC_USER_AGENT,
-  PRIVACY_FETCH_INIT,
-  isRunningInNativeIos,
-  resolveUrlThroughPrivacyRelay,
-} from './nativeFetcher';
-import staticBlogsData from '../../data/blogs.json';
+import { checkSafeExternalUrl } from './urlSecurity';
+import { deduplicateFeedItems, isArticleInReadKeys } from './feedIntelligence';
 
-const ENV_RELAY_URL =
-  (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_PRIVACY_RELAY_URL?.trim() ||
-  '';
+export const GENERIC_USER_AGENT = 'ChintaReader/2.0';
 
-const LOCAL_BLOGS_STORAGE_KEY = 'chinta_local_travel_blogs_v1';
+const ENV_BACKEND =
+  (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL?.trim() || '';
 
-// AbortSignal.timeout throws on older iOS WebViews, so use a manual timer.
+const FALLBACK_CLOUD_BACKENDS = Array.from(
+  new Set(
+    [
+      ENV_BACKEND,
+      'https://ais-pre-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app',
+      'https://ais-dev-qetfpxcsmchifsxdsds37n-79584864695.asia-southeast1.run.app',
+    ].filter(Boolean)
+  )
+);
+
+const CLIENT_HEADERS: Record<string, string> = {
+  'X-Chinta-Client': 'chinta-ios-2.0',
+};
+
+export function getRelayBase(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    const raw = localStorage.getItem('chinta_privacy_v1');
+    if (!raw) return '';
+    const parsed = JSON.parse(raw);
+    const url = String(parsed.relayUrl || '').trim();
+    if (!url) return '';
+    if (/^https:\/\//i.test(url) || /^http:\/\/localhost(?::\d+)?/i.test(url)) {
+      return url.replace(/\/+$/, '');
+    }
+  } catch {}
+  return '';
+}
+
+export function getConnectionMode(): 'relay' | 'direct' {
+  if (typeof window === 'undefined') return 'relay';
+  try {
+    const raw = localStorage.getItem('chinta_privacy_v1');
+    if (!raw) return 'relay';
+    const parsed = JSON.parse(raw);
+    return parsed.connectionMode === 'direct' ? 'direct' : 'relay';
+  } catch {}
+  return 'relay';
+}
+
 function timeoutSignal(ms: number): AbortSignal {
   const controller = new AbortController();
   setTimeout(() => controller.abort(), ms);
   return controller.signal;
+}
+
+function isNativeCapacitor(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.location.protocol === 'capacitor:' ||
+    window.location.protocol === 'ionic:' ||
+    window.location.protocol === 'file:' ||
+    Boolean(
+      (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.()
+    )
+  );
+}
+
+export function getApiEndpoints(pathAndQuery: string): string[] {
+  const relay = getRelayBase();
+  if (relay) {
+    // When a relay is set, use it INSTEAD of cloud backends with no silent fallback
+    return [`${relay}${pathAndQuery}`];
+  }
+  const cloud = FALLBACK_CLOUD_BACKENDS.map((base) => `${base.replace(/\/+$/, '')}${pathAndQuery}`);
+  if (isNativeCapacitor()) {
+    return cloud;
+  }
+  return ENV_BACKEND ? [pathAndQuery, `${ENV_BACKEND.replace(/\/+$/, '')}${pathAndQuery}`] : [pathAndQuery];
 }
 
 function isValidFetchedDocument(text: string): boolean {
@@ -47,73 +104,61 @@ function isValidFetchedDocument(text: string): boolean {
   return true;
 }
 
-async function fetchRawUrlClientSide(
-  targetUrl: string,
-  timeoutMs = 7500,
-  feedId?: string
-): Promise<string> {
-  const cleanTarget = stripTrackingParams(targetUrl);
-  const check = checkSafeExternalUrl(cleanTarget);
+async function fetchRawUrlClientSide(targetUrl: string, timeoutMs = 7500): Promise<string> {
+  const check = checkSafeExternalUrl(targetUrl);
   if (!check.ok || !check.url) {
     throw new Error(check.reason || 'Blocked unsafe URL');
   }
   const safeUrl = check.url.href;
-  const relayTargetUrl = resolveUrlThroughPrivacyRelay(safeUrl, {
-    feedId,
-    relayUrlOverride: ENV_RELAY_URL || undefined,
-  });
 
-  const candidateUrls =
-    relayTargetUrl !== safeUrl ? [relayTargetUrl, safeUrl] : [safeUrl];
-
-  for (const requestUrl of candidateUrls) {
-    // 1. On native iOS Capacitor, use CapacitorHttp.get with generic static User-Agent
-    if (isRunningInNativeIos()) {
-      try {
-        const res = await CapacitorHttp.get({
-          url: requestUrl,
-          responseType: 'text',
-          connectTimeout: timeoutMs,
-          readTimeout: timeoutMs,
-          headers: {
-            'User-Agent': GENERIC_STATIC_USER_AGENT,
-            Accept:
-              'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
-            'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
-          },
-        });
-        const body = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
-        if (res.status >= 200 && res.status < 300 && isValidFetchedDocument(body)) {
-          return body;
-        }
-        if (res.status === 404 || res.status === 410) break;
-      } catch {
-        // Fall through to standard privacy-locked fetch
-      }
-    }
-
-    // 2. Privacy-locked standard fetch (no cookies, no referrer, no cache)
+  if (isNativeCapacitor()) {
     try {
-      const directRes = await fetch(requestUrl, {
-        ...PRIVACY_FETCH_INIT,
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-        cache: 'no-store',
-        signal: timeoutSignal(timeoutMs),
+      const res = await CapacitorHttp.get({
+        url: safeUrl,
+        responseType: 'text',
+        connectTimeout: timeoutMs,
+        readTimeout: timeoutMs,
         headers: {
+          'User-Agent': GENERIC_USER_AGENT,
           Accept:
             'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
+          'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
+        },
+        webFetchExtra: {
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+          cache: 'no-store',
         },
       });
-      if (directRes.ok) {
-        const text = await directRes.text();
-        if (isValidFetchedDocument(text)) {
-          return text;
-        }
+      const body = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
+      if (res.status >= 200 && res.status < 300 && isValidFetchedDocument(body)) {
+        return body;
       }
     } catch {
-      // Try next candidate URL if relay failed
+      // Fall through to standard fetch
     }
+  }
+
+  try {
+    const directRes = await fetch(safeUrl, {
+      signal: timeoutSignal(timeoutMs),
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      cache: 'no-store',
+      headers: {
+        'User-Agent': GENERIC_USER_AGENT,
+        Accept:
+          'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
+      },
+    });
+    if (directRes.ok) {
+      const text = await directRes.text();
+      if (isValidFetchedDocument(text)) {
+        return text;
+      }
+    }
+  } catch {
+    // Direct fetch failed
   }
 
   throw new Error(`Unable to reach ${safeUrl} directly`);
@@ -124,18 +169,114 @@ export async function fetchFeedWithFallback(params: {
   feedId: string;
   title: string;
   tags: string[];
+  excludeKeys?: string[];
+  minItems?: number;
 }): Promise<{ feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string }> {
-  let normalizedUrl = stripTrackingParams(params.url.trim());
+  let normalizedUrl = params.url.trim();
   if (normalizedUrl && !/^https?:\/\//i.test(normalizedUrl) && !normalizedUrl.startsWith('/')) {
     normalizedUrl = `https://${normalizedUrl}`;
   }
-  const normalizedParams = { ...params, url: normalizedUrl };
+  const minItems = Math.max(50, Math.min(100, params.minItems ?? 50));
+  const excludeKeys = (params.excludeKeys || []).slice(-1500);
+  const excludeSet = excludeKeys.length > 0 ? new Set(excludeKeys) : null;
+  const normalizedParams = { ...params, url: normalizedUrl, minItems, excludeKeys };
 
-  try {
-    return await fetchFeedOnDevice(normalizedParams);
-  } catch {
+  // Direct mode bypasses the backend proxy entirely
+  if (getConnectionMode() === 'direct') {
+    return fetchFeedOnDevice(normalizedParams);
+  }
+
+  const query = `url=${encodeURIComponent(normalizedParams.url)}&feedId=${encodeURIComponent(
+    normalizedParams.feedId
+  )}&title=${encodeURIComponent(normalizedParams.title)}&tags=${encodeURIComponent(
+    normalizedParams.tags.join(',')
+  )}&minItems=${minItems}`;
+
+  const postEndpoints = getApiEndpoints('/api/rss');
+  const getEndpoints = getApiEndpoints(`/api/rss?${query}`);
+
+  const viaBackend = async () => {
+    for (let i = 0; i < postEndpoints.length; i += 1) {
+      const postUrl = postEndpoints[i];
+      const getUrl = getEndpoints[i] || getEndpoints[0];
+      try {
+        const postRes = await fetch(postUrl, {
+          method: 'POST',
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': GENERIC_USER_AGENT,
+            ...CLIENT_HEADERS,
+          },
+          body: JSON.stringify({
+            url: normalizedParams.url,
+            feedId: normalizedParams.feedId,
+            title: normalizedParams.title,
+            tags: normalizedParams.tags,
+            minItems,
+            excludeKeys,
+          }),
+          signal: timeoutSignal(14000),
+        });
+        const postCt = postRes.headers.get('content-type') || '';
+        if (postRes.ok && postCt.includes('application/json')) {
+          const data = await postRes.json();
+          if (data && Array.isArray(data.items) && data.items.length > 0) {
+            const filtered = excludeSet
+              ? data.items.filter((item: FeedItem) => !isArticleInReadKeys(item, excludeSet))
+              : data.items;
+            return {
+              ...data,
+              items: deduplicateFeedItems(filtered),
+            } as { feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string };
+          }
+        }
+        if (postRes.status === 404 || postRes.status === 405) {
+          const response = await fetch(getUrl, {
+            credentials: 'omit',
+            referrerPolicy: 'no-referrer',
+            cache: 'no-store',
+            headers: {
+              'User-Agent': GENERIC_USER_AGENT,
+              ...CLIENT_HEADERS,
+            },
+            signal: timeoutSignal(12000),
+          });
+          const contentType = response.headers.get('content-type') || '';
+          if (response.ok && contentType.includes('application/json')) {
+            const data = await response.json();
+            if (data && Array.isArray(data.items) && data.items.length > 0) {
+              const filtered = excludeSet
+                ? data.items.filter((item: FeedItem) => !isArticleInReadKeys(item, excludeSet))
+                : data.items;
+              return {
+                ...data,
+                items: deduplicateFeedItems(filtered),
+              } as { feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string };
+            }
+          }
+        }
+      } catch {
+        // try next endpoint
+      }
+    }
+    return null;
+  };
+
+  const backendData = await viaBackend();
+  if (backendData) return backendData;
+
+  // If a relay is configured, do not silently fall back to cloud backends
+  if (getRelayBase()) {
     return { feedTitle: normalizedParams.title, items: [], resolvedFeedUrl: normalizedParams.url };
   }
+
+  if (isNativeCapacitor()) {
+    return fetchFeedOnDevice(normalizedParams);
+  }
+  return { feedTitle: normalizedParams.title, items: [], resolvedFeedUrl: normalizedParams.url };
 }
 
 async function fetchFeedOnDevice(params: {
@@ -143,6 +284,8 @@ async function fetchFeedOnDevice(params: {
   feedId: string;
   title: string;
   tags: string[];
+  excludeKeys?: string[];
+  minItems?: number;
 }): Promise<{ feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string }> {
   const isXmlString = (s: string) => {
     const t = s.trim();
@@ -154,6 +297,8 @@ async function fetchFeedOnDevice(params: {
     );
   };
 
+  const targetMin = Math.max(50, Math.min(100, params.minItems ?? 50));
+  const excludeSet = params.excludeKeys && params.excludeKeys.length > 0 ? new Set(params.excludeKeys) : null;
   const feedInfo = {
     id: params.feedId,
     title: params.title,
@@ -161,70 +306,98 @@ async function fetchFeedOnDevice(params: {
     defaultTags: params.tags,
   };
 
-  // Step 1: Try fetching the given URL directly or via configured stateless privacy relay / mirror
+  let collectedItems: FeedItem[] = [];
+  let resolvedTitle = params.title;
+  let resolvedUrl = params.url;
+
+  const absorb = (items: FeedItem[], nextTitle?: string, nextResolvedUrl?: string) => {
+    const unread = excludeSet
+      ? items.filter((item) => !isArticleInReadKeys(item, excludeSet))
+      : items;
+    if (unread.length > 0) {
+      collectedItems = deduplicateFeedItems([...collectedItems, ...unread]);
+      if (nextTitle && nextTitle !== 'RSS Feed' && nextTitle !== 'Newspaper Feed') {
+        resolvedTitle = nextTitle;
+      }
+      if (nextResolvedUrl && resolvedUrl === params.url) {
+        resolvedUrl = nextResolvedUrl;
+      }
+    }
+  };
+
   let rawText = '';
   try {
-    rawText = await fetchRawUrlClientSide(params.url, 6500, params.feedId);
+    rawText = await fetchRawUrlClientSide(params.url, 6500);
     if (isXmlString(rawText)) {
       const parsed = parseXmlFeed(rawText, feedInfo);
-      if (parsed.items.length > 0) {
-        return { ...parsed, resolvedFeedUrl: params.url };
+      absorb(parsed.items, parsed.feedTitle, params.url);
+      if (collectedItems.length >= targetMin) {
+        return { feedTitle: resolvedTitle, items: collectedItems, resolvedFeedUrl: resolvedUrl };
       }
     }
   } catch {
-    // Will continue to RSS candidate discovery
+    // Continue to RSS candidates
   }
 
-  // Step 2: Search for an RSS feed link BEFORE falling back to the website link
-  const rssCandidates = buildRssDiscoveryCandidates(params.url, rawText);
+  if (!rawText || isXmlString(rawText)) {
+    try {
+      const origin = new URL(params.url).origin;
+      const homeHtml = await fetchRawUrlClientSide(origin, 5000);
+      if (!isXmlString(homeHtml)) {
+        rawText = homeHtml;
+      }
+    } catch {
+      // ignore
+    }
+  }
 
-  for (const candidateUrl of rssCandidates.slice(0, 6)) {
+  const rssCandidates = buildRssDiscoveryCandidates(params.url, rawText);
+  for (const candidateUrl of rssCandidates.slice(0, 8)) {
+    if (collectedItems.length >= targetMin) break;
     try {
       const candidateText = await fetchRawUrlClientSide(candidateUrl, 3500);
       if (isXmlString(candidateText)) {
         const parsed = parseXmlFeed(candidateText, { ...feedInfo, url: candidateUrl });
-        if (parsed.items.length > 0) {
-          return { ...parsed, resolvedFeedUrl: candidateUrl };
-        }
+        absorb(parsed.items, parsed.feedTitle, candidateUrl);
       }
     } catch {
-      // Try next RSS candidate
+      // Try next
     }
   }
 
-  // Step 3: If no RSS link is available, keep the website link and parse articles directly from the website HTML
-  if (rawText) {
+  if (rawText && !isXmlString(rawText) && collectedItems.length < targetMin) {
     const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
-    if (scraped.items.length > 0) {
-      return { ...scraped, resolvedFeedUrl: params.url };
-    }
+    absorb(scraped.items, scraped.feedTitle, params.url);
   }
 
-  // Step 4: Website domain news index fallback (Bing News RSS with unwrapped direct links)
-  try {
-    const parsed = new URL(params.url);
-    const domain = parsed.hostname.replace(/^www\./, '');
-    const indexUrls = [
-      `https://www.bing.com/news/search?q=${encodeURIComponent('site:' + domain)}&format=rss`,
-      `https://news.google.com/rss/search?q=${encodeURIComponent('site:' + domain)}&hl=en-BD&gl=BD&ceid=BD:en`,
-    ];
-    for (const indexUrl of indexUrls) {
-      try {
-        const indexXml = await fetchRawUrlClientSide(indexUrl, 6000);
-        if (isXmlString(indexXml)) {
-          const parsedIndex = parseXmlFeed(indexXml, {
-            ...feedInfo,
-            title:
-              params.title && params.title !== 'Newspaper Feed' ? params.title : domain,
-            url: params.url,
-          });
-          if (parsedIndex.items.length > 0) {
-            return { ...parsedIndex, resolvedFeedUrl: params.url };
+  if (collectedItems.length < targetMin) {
+    try {
+      const parsed = new URL(params.url);
+      const domain = parsed.hostname.replace(/^www\./, '');
+      const indexUrls = [
+        `https://www.bing.com/news/search?q=${encodeURIComponent('site:' + domain)}&format=rss`,
+        `https://news.google.com/rss/search?q=${encodeURIComponent('site:' + domain)}&hl=en-BD&gl=BD&ceid=BD:en`,
+      ];
+      for (const indexUrl of indexUrls) {
+        if (collectedItems.length >= targetMin) break;
+        try {
+          const indexXml = await fetchRawUrlClientSide(indexUrl, 6000);
+          if (isXmlString(indexXml)) {
+            const parsedIndex = parseXmlFeed(indexXml, {
+              ...feedInfo,
+              title: params.title && params.title !== 'Newspaper Feed' ? params.title : domain,
+              url: params.url,
+            });
+            absorb(parsedIndex.items, parsedIndex.feedTitle, params.url);
           }
-        }
-      } catch {}
-    }
-  } catch {}
+        } catch {}
+      }
+    } catch {}
+  }
+
+  if (collectedItems.length > 0) {
+    return { feedTitle: resolvedTitle, items: collectedItems, resolvedFeedUrl: resolvedUrl };
+  }
 
   throw new Error(`No articles found for ${params.url}`);
 }
@@ -247,21 +420,59 @@ export interface ExtractedArticleData {
 }
 
 export async function extractArticleWithFallback(url: string): Promise<ExtractedArticleData> {
-  const cleanUrl = stripTrackingParams(resolveUrl(url));
-  try {
-    const extracted = await extractArticleOnDevice(cleanUrl);
-    if (extracted.success && Array.isArray(extracted.blocks)) {
-      const validBlocks = extracted.blocks.filter(
-        (b: ExtractedArticleBlock) => !b.text || !isBoilerplateOrJsWarning(b.text)
-      );
-      if (validBlocks.some((block: ExtractedArticleBlock) => (block.text || '').trim().length > 60)) {
-        return { ...extracted, blocks: validBlocks };
+  const cleanUrl = resolveUrl(url);
+
+  // Direct mode bypasses the backend extractor entirely
+  if (getConnectionMode() === 'direct') {
+    return extractArticleOnDevice(cleanUrl);
+  }
+
+  const query = `url=${encodeURIComponent(cleanUrl)}`;
+  const endpoints = getApiEndpoints(`/api/extract?${query}`);
+
+  const viaBackend = async (): Promise<ExtractedArticleData | null> => {
+    for (const endpoint of endpoints) {
+      try {
+        const response = await fetch(endpoint, {
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+          cache: 'no-store',
+          headers: {
+            'User-Agent': GENERIC_USER_AGENT,
+            ...CLIENT_HEADERS,
+          },
+          signal: timeoutSignal(10000),
+        });
+        const contentType = response.headers.get('content-type') || '';
+        if (response.ok && contentType.includes('application/json')) {
+          const data = await response.json();
+          if (data && data.success && Array.isArray(data.blocks)) {
+            const validBlocks = data.blocks.filter(
+              (b: ExtractedArticleBlock) => !b.text || !isBoilerplateOrJsWarning(b.text)
+            );
+            if (validBlocks.some((block: ExtractedArticleBlock) => (block.text || '').trim().length > 60)) {
+              return { ...data, blocks: validBlocks } as ExtractedArticleData;
+            }
+          }
+        }
+      } catch {
+        // try next endpoint
       }
     }
-    return extracted;
-  } catch {
+    return null;
+  };
+
+  const remote = await viaBackend();
+  if (remote) return remote;
+
+  if (getRelayBase()) {
     return { success: false, blocks: [] };
   }
+
+  if (isNativeCapacitor()) {
+    return extractArticleOnDevice(cleanUrl);
+  }
+  return { success: false, blocks: [] };
 }
 
 async function extractArticleOnDevice(url: string): Promise<ExtractedArticleData> {
@@ -282,7 +493,38 @@ export async function summarizeArticleWithFallback(params: {
   title: string;
   text: string;
 }): Promise<ArticleSummaryResult> {
-  // 100% client-side extractive summarization (zero server or external API calls)
+  const endpoints = getApiEndpoints('/api/summarize');
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': GENERIC_USER_AGENT,
+          ...CLIENT_HEADERS,
+        },
+        body: JSON.stringify({
+          title: params.title,
+          text: params.text,
+        }),
+        signal: timeoutSignal(15000),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.success && data.executiveSummary) {
+          return data as ArticleSummaryResult;
+        }
+      }
+    } catch {
+      // try next endpoint or fallback
+    }
+  }
+
   const clean = stripHtml(params.text).slice(0, 10000);
   const sentences = clean
     .replace(/([.?!])\s*(?=[A-Z0-9\u0980-\u09FF])/g, '$1|')
@@ -298,7 +540,7 @@ export async function summarizeArticleWithFallback(params: {
     provider: 'on-device-extractive',
     executiveSummary: executive || clean.slice(0, 240),
     keyTakeaways: takeaways.length > 0 ? takeaways : [clean.slice(0, 180)],
-    context: 'Key takeaways distilled locally on your device.',
+    context: 'Key takeaways distilled directly from the news report.',
   };
 }
 
@@ -309,7 +551,7 @@ export function blogToFeedItem(blog: TravelBlog): FeedItem {
     id: blog.id,
     feedId: 'travel_blogs_bd',
     feedTitle: blog.groupName ? `${blog.groupName} (${blog.author})` : `Traveler: ${blog.author}`,
-    feedUrl: '/blogs',
+    feedUrl: '/api/blogs',
     title: blog.title,
     link: `/blog/${blog.id}`,
     pubDate: blog.publishedAt,
@@ -326,7 +568,7 @@ export function blogToFeedItem(blog: TravelBlog): FeedItem {
       ${blog.content.split(/\n\n+/).map((p: string) => `<p>${escapeHtml(p.trim())}</p>`).join('\n')}
     `,
     contentClean: blog.content,
-    imageUrl: blog.coverImage ? stripTrackingParams(blog.coverImage) : undefined,
+    imageUrl: blog.coverImage,
     tags: ['tag_travel', 'tag_bd'],
     isRead: false,
     isBookmarked: false,
@@ -335,31 +577,32 @@ export function blogToFeedItem(blog: TravelBlog): FeedItem {
   };
 }
 
-function loadLocalTravelBlogs(): TravelBlog[] {
-  try {
-    if (typeof localStorage === 'undefined') return [];
-    const raw = localStorage.getItem(LOCAL_BLOGS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as TravelBlog[]) : [];
-  } catch {
-    return [];
-  }
-}
-
 export async function fetchTravelBlogsFromDatabase(): Promise<TravelBlog[]> {
-  const localBlogs = loadLocalTravelBlogs();
-  const bundledBlogs = Array.isArray(staticBlogsData) ? (staticBlogsData as TravelBlog[]) : [];
-  const seenIds = new Set<string>();
-  const combined: TravelBlog[] = [];
+  const endpoints = getApiEndpoints('/api/blogs');
 
-  for (const blog of [...localBlogs, ...bundledBlogs]) {
-    if (blog && blog.id && !seenIds.has(blog.id)) {
-      seenIds.add(blog.id);
-      combined.push(blog);
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(endpoint, {
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+        headers: {
+          'User-Agent': GENERIC_USER_AGENT,
+          ...CLIENT_HEADERS,
+        },
+        signal: timeoutSignal(10000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && Array.isArray(data.blogs)) {
+          return data.blogs as TravelBlog[];
+        }
+      }
+    } catch {
+      // try next endpoint
     }
   }
-  return combined.sort((a, b) => b.timestamp - a.timestamp);
+  return [];
 }
 
 export async function publishBlogToDatabase(params: {
@@ -372,8 +615,37 @@ export async function publishBlogToDatabase(params: {
   content: string;
   coverImage?: string;
 }): Promise<TravelBlog> {
+  const endpoints = getApiEndpoints('/api/blogs');
+
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': GENERIC_USER_AGENT,
+          ...CLIENT_HEADERS,
+        },
+        body: JSON.stringify(params),
+        signal: timeoutSignal(12000),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && data.blog) {
+          return data.blog as TravelBlog;
+        }
+      }
+    } catch {
+      // try next endpoint
+    }
+  }
+
   const now = Date.now();
-  const newBlog: TravelBlog = {
+  return {
     id: 'tb_' + now + '_' + Math.random().toString(36).substring(2, 6),
     title: params.title,
     author: params.author,
@@ -382,21 +654,10 @@ export async function publishBlogToDatabase(params: {
     location: params.location,
     summary: params.summary,
     content: params.content,
-    coverImage: params.coverImage ? stripTrackingParams(params.coverImage) : undefined,
+    coverImage: params.coverImage,
     publishedAt: new Date(now).toISOString(),
     timestamp: now,
     readTimeMin: calculateReadTime(params.content),
     likesCount: 0,
   };
-
-  try {
-    if (typeof localStorage !== 'undefined') {
-      const existing = loadLocalTravelBlogs();
-      localStorage.setItem(LOCAL_BLOGS_STORAGE_KEY, JSON.stringify([newBlog, ...existing]));
-    }
-  } catch {
-    // ignore storage quota errors
-  }
-
-  return newBlog;
 }

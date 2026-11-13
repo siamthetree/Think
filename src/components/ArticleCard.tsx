@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import {
   Bookmark,
   Share2,
@@ -12,7 +12,7 @@ import {
   Loader2,
   Image as ImageIcon,
 } from 'lucide-react';
-import type { FeedItem, PrivacyPreferences } from '../types';
+import type { FeedItem } from '../types';
 import { formatRelativeTime } from '../utils/feedParser';
 import { SourceAvatar } from './SourceAvatar';
 import { PerspectiveLogo } from './PerspectiveLogo';
@@ -22,9 +22,9 @@ import {
   triggerHapticDisarm,
   triggerHapticComplete,
 } from '../utils/haptics';
-import { isPlaceholderSummary, loadPrivacyPreferencesFromStorage } from '../utils/storage';
-import { isAllowedPublisherMediaUrl, stripTrackingParams } from '../utils/urlSecurity';
-import { resolveImageThroughPrivacyRelay } from '../utils/nativeFetcher';
+import { isPlaceholderSummary, loadPrivacySettingsFromStorage } from '../utils/storage';
+import { isFirstPartyMedia } from '../utils/mediaPolicy';
+import { buildImageProxyUrl } from '../utils/mediaShare';
 import {
   computeSwipeActionState,
   computeReleaseVelocity,
@@ -44,7 +44,6 @@ interface ArticleCardProps {
   viewMode?: 'magazine' | 'compact';
   isLoadingArticleId?: string | null;
   readingSpeedProfile?: ReadingSpeedProfile;
-  privacyPreferences?: PrivacyPreferences;
   onSelect: (article: FeedItem) => void;
   onToggleBookmark: (id: string, e?: React.MouseEvent) => void;
   onToggleRead: (id: string, e?: React.MouseEvent) => void;
@@ -68,7 +67,6 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   viewMode = 'magazine',
   isLoadingArticleId = null,
   readingSpeedProfile,
-  privacyPreferences,
   onSelect,
   onToggleBookmark,
   onToggleRead,
@@ -80,10 +78,6 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     ? estimateArticleReadTime(article, readingSpeedProfile).minutes
     : article.readTimeMin || 3;
   const isLoadingThis = isLoadingArticleId === article.id;
-
-  const activePrivacy = privacyPreferences || loadPrivacyPreferencesFromStorage();
-  const blockThirdPartyMedia = activePrivacy.blockThirdPartyMedia ?? true;
-  const strictTextOnlyMode = activePrivacy.strictTextOnlyMode ?? false;
 
   const pseudoCount = (seed: string, min: number, max: number) => {
     let hash = 0;
@@ -101,8 +95,28 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const [isCopied, setIsCopied] = useState(false);
   const [cardPressed, setCardPressed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
-  const [imageManuallyLoaded, setImageManuallyLoaded] = useState(false);
   const [showPerspectives, setShowPerspectives] = useState(false);
+
+  const privacySettings = useMemo(() => loadPrivacySettingsFromStorage(), []);
+  const extractedSummary =
+    article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
+  const extractedImage = article.imageUrl;
+  const coverUrl = article.imageUrl || extractedImage;
+
+  const isFirstParty = useMemo(() => {
+    if (!coverUrl) return true;
+    return isFirstPartyMedia(coverUrl, article.link || article.feedUrl);
+  }, [coverUrl, article.link, article.feedUrl]);
+
+  const isCoverBlockedInitially = useMemo(() => {
+    if (!coverUrl) return false;
+    return Boolean(
+      privacySettings.tapToLoadMedia ||
+      (privacySettings.blockThirdPartyMedia && !isFirstParty)
+    );
+  }, [coverUrl, privacySettings, isFirstParty]);
+
+  const [imageLoaded, setImageLoaded] = useState(!isCoverBlockedInitially);
 
   // Horizontal Swipe-Action State (Right swipe = Save/Bookmark, Left swipe = Mark Read/Unread)
   const [swipeState, setSwipeState] = useState<SwipeActionState>(INITIAL_SWIPE_STATE);
@@ -117,10 +131,6 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     samples: VelocitySample[];
   } | null>(null);
   const suppressNextClickRef = useRef(false);
-
-  const extractedSummary =
-    article.summary && !isPlaceholderSummary(article.summary) ? article.summary.trim() : '';
-  const extractedImage = article.imageUrl;
 
   const clearLongPress = () => {
     if (longPressTimerRef.current) {
@@ -290,13 +300,12 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       onShareArticle(article);
       return;
     }
-    const cleanShareLink = stripTrackingParams(article.link);
     if (navigator.share) {
       try {
         await navigator.share({
           title: article.title,
           text: article.summary,
-          url: cleanShareLink,
+          url: article.link,
         });
         return;
       } catch {
@@ -304,7 +313,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       }
     }
     if (navigator.clipboard) {
-      await navigator.clipboard.writeText(cleanShareLink);
+      await navigator.clipboard.writeText(article.link);
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
     }
@@ -435,7 +444,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                   onOpenPerspective(article);
                 }}
                 aria-label={`Perspectives for ${article.title}`}
-                title="Perspectives - Search same news across all sources"
+                title="Perspectives: Search same news across all sources"
                 className="p-2 rounded-full text-stone-400 hover:text-[#FF6719] transition-colors active:scale-90 flex items-center gap-1"
               >
                 <Layers className="w-4 h-4 text-[#FF6719]" />
@@ -491,19 +500,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     );
   }
 
-  const rawCoverUrl = article.imageUrl || extractedImage;
-  const publisherOriginUrl =
-    article.link && /^https?:\/\//i.test(article.link) ? article.link : article.feedUrl;
-  const isCoverAllowedByPrivacy = Boolean(
-    rawCoverUrl &&
-      isAllowedPublisherMediaUrl(rawCoverUrl, publisherOriginUrl, blockThirdPartyMedia)
-  );
-  const coverUrl = isCoverAllowedByPrivacy
-    ? resolveImageThroughPrivacyRelay(rawCoverUrl, activePrivacy.privacyRelayUrl)
-    : undefined;
   const hasCover = Boolean(coverUrl && !imageFailed);
-  const shouldGateCoverBehindTap = hasCover && strictTextOnlyMode && !imageManuallyLoaded;
-
   const displaySummary =
     article.summary && !isPlaceholderSummary(article.summary)
       ? article.summary
@@ -541,7 +538,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
         {isLoadingThis && (
           <div className="absolute top-3.5 right-4 z-20 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#FF6719]/15 text-[#FF6719] text-[11px] font-semibold">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>Loading…</span>
+            <span>Loading...</span>
           </div>
         )}
 
@@ -604,27 +601,29 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           </p>
         )}
 
-        {/* 4. Large Featured Cover Image (16:9 Aspect Ratio or Tap-to-Load Privacy Placeholder) */}
+        {/* 4. Large Featured Cover Image (16:9 Aspect Ratio: Tap to Read or Tap-to-Load if blocked) */}
         {hasCover && (
-          shouldGateCoverBehindTap ? (
+          !imageLoaded ? (
             <div
+              className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 flex flex-col items-center justify-center gap-2 p-4 text-center select-none"
               onClick={(e) => e.stopPropagation()}
-              className="relative w-full py-5 px-4 rounded-2xl bg-stone-100 dark:bg-stone-900/80 border border-stone-200/70 dark:border-white/[0.08] mb-3 flex items-center justify-between gap-3"
             >
-              <div className="flex items-center gap-2.5 text-xs text-stone-600 dark:text-stone-400">
-                <ImageIcon className="w-4 h-4 text-stone-400 shrink-0" />
-                <span>Remote publisher image hidden for IP privacy</span>
+              <div className="w-10 h-10 rounded-full bg-stone-200/80 dark:bg-white/10 flex items-center justify-center text-stone-500 dark:text-stone-400">
+                <ImageIcon className="w-5 h-5" />
+              </div>
+              <div className="text-xs font-medium text-stone-600 dark:text-stone-300">
+                {isFirstParty ? 'Tap to load image' : 'Third-party media blocked for privacy'}
               </div>
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   triggerHapticSelection();
-                  setImageManuallyLoaded(true);
+                  setImageLoaded(true);
                 }}
-                className="px-3 py-1.5 rounded-full text-xs font-semibold bg-[#FF6719]/15 text-[#FF6719] hover:bg-[#FF6719]/25 transition-colors shrink-0"
+                className="px-3 py-1 rounded-full bg-[#FF6719] text-white text-xs font-semibold hover:opacity-90 active:scale-95 transition-all shadow-xs"
               >
-                Load Image
+                Load image
               </button>
             </div>
           ) : (
@@ -633,7 +632,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
               className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 shadow-xs"
             >
               <img
-                src={coverUrl}
+                src={buildImageProxyUrl(coverUrl || '')}
                 alt={article.title}
                 referrerPolicy="no-referrer"
                 loading="lazy"
@@ -772,7 +771,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                   onOpenPerspective(article);
                 }}
                 aria-label={`Perspectives for ${article.title}`}
-                title="Perspectives - Search all matching news across app sources"
+                title="Perspectives: Search all matching news across app sources"
                 className="flex items-center gap-1.5 py-1 px-1.5 rounded-lg text-stone-600 dark:text-stone-300 hover:text-[#FF6719] dark:hover:text-[#FF6719] transition-colors whitespace-nowrap active:scale-95"
               >
                 <Layers className="w-3.5 h-3.5 text-[#FF6719]" />

@@ -1,22 +1,14 @@
+import './utils/preBootstrap';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import { StartupLoader } from './components/StartupLoader';
+import { FirebaseProvider } from './contexts/FirebaseContext';
 import './index.css';
 
-const hidePreSplash = () => {
-  const pre = document.getElementById('pre-splash');
-  if (!pre) return;
-  pre.classList.add('hidden');
-  window.setTimeout(() => {
-    pre.style.display = 'none';
-  }, 200);
-};
-
-const rootEl = document.getElementById('root')!;
-createRoot(rootEl).render(
-  <StartupLoader>
-    <App />
-  </StartupLoader>
+createRoot(document.getElementById('root')!).render(
+  <FirebaseProvider>
+    <StartupLoader>
+      <App />
+    </StartupLoader>
+  </FirebaseProvider>
 );
-
-hidePreSplash();

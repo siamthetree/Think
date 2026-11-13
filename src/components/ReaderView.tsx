@@ -21,8 +21,6 @@ import {
 import type { FeedItem, Tag, ReaderPreferences, ReaderTheme, ReaderFont, ReaderLineHeight } from '../types';
 import { sanitizeArticleHtml, blocksToHtml, isJavaScriptWarningText } from '../utils/sanitize';
 import { extractArticleWithFallback, summarizeArticleWithFallback, type ArticleSummaryResult } from '../utils/apiClient';
-import { isAllowedPublisherMediaUrl, stripTrackingParams } from '../utils/urlSecurity';
-import { resolveImageThroughPrivacyRelay } from '../utils/nativeFetcher';
 import {
   triggerHapticSelection,
   triggerHapticPull,
@@ -42,6 +40,7 @@ import {
 } from '../utils/touchGestures';
 import { QuoteShareModal } from './QuoteShareModal';
 import { PerspectiveLogo } from './PerspectiveLogo';
+import { SourceAvatar } from './SourceAvatar';
 import { generateQuickTldrBullets } from '../utils/feedIntelligence';
 import { savePhotoToGallery } from '../utils/storyCardRenderer';
 import { sanitizeTextSelection } from '../utils/articleLines';
@@ -50,6 +49,13 @@ import {
   estimateArticleReadTime,
   type ReadingSpeedProfile,
 } from '../utils/readingSpeed';
+import { isFirstPartyMedia } from '../utils/mediaPolicy';
+import { buildImageProxyUrl } from '../utils/mediaShare';
+import {
+  loadPrivacySettingsFromStorage,
+  savePrivacySettingsToStorage,
+  type PrivacySettings,
+} from '../utils/storage';
 
 interface ReaderViewProps {
   article: FeedItem;
@@ -110,7 +116,6 @@ function getEditorialSubtitle(summary?: string, title?: string): string | null {
   }
   const clean = summary.replace(/\s+/g, ' ').trim();
   if (!clean || clean === title) return null;
-  // Take first sentence or up to 120 chars for a clean newsletter-style standfirst
   const firstSentenceMatch = clean.match(/^[^.!?]+[.!?]/);
   const candidate = firstSentenceMatch ? firstSentenceMatch[0].trim() : clean;
   if (candidate.length > 140) {
@@ -242,7 +247,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [edgeBackOffset, setEdgeBackOffset] = useState(0);
   const [storySwipeOffset, setStorySwipeOffset] = useState(0);
-  const [loadedImageUrls, setLoadedImageUrls] = useState<Record<string, boolean>>({});
   const [extractedBlocks, setExtractedBlocks] = useState<
     { type: string; text?: string; src?: string; caption?: string }[] | null
   >(null);
@@ -257,10 +261,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
 
-  const blockThirdPartyMedia = preferences.blockThirdPartyMedia ?? true;
-  const strictTextOnlyMode = preferences.strictTextOnlyMode ?? false;
-  const publisherOriginUrl =
-    article.link && /^https?:\/\//i.test(article.link) ? article.link : article.feedUrl;
+  // Privacy settings state
+  const [privacySettings, setPrivacySettings] = useState<PrivacySettings>(() =>
+    loadPrivacySettingsFromStorage()
+  );
+  const [heroImageLoaded, setHeroImageLoaded] = useState(false);
+  const [loadedBlockImageUrls, setLoadedBlockImageUrls] = useState<Set<string>>(new Set());
 
   const containerRef = useRef<HTMLDivElement>(null);
   const articleBodyRef = useRef<HTMLDivElement>(null);
@@ -324,7 +330,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     );
   }, [article, extractedBlocks, fullReadableText, readingSpeedProfile]);
 
-  // Active reading time & completion refs for adaptive (words, lines, language) pace learning
+  // Active reading time & completion refs for adaptive pace learning
   const activeReadingMsRef = useRef(0);
   const lastTickAtRef = useRef(Date.now());
   const lastUserActivityRef = useRef(Date.now());
@@ -388,7 +394,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         forceCompleted || reachedEnd || maxScrollProgressRef.current >= 65 || isShortNonScrollable;
       if (!hasFinished) return;
 
-      // Avoid redundant re-submits unless user stayed noticeably longer finishing the tail
       if (lastReportedActiveMsRef.current > 0 && activeMs - lastReportedActiveMsRef.current < 2000) {
         return;
       }
@@ -490,7 +495,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       return;
     }
 
-    // 2. Swipe Left -> Next Story preview (swipe to previous story intentionally removed)
+    // 2. Swipe Left -> Next Story preview
     if (dx < -10 && onNextArticle) {
       setEdgeBackOffset(0);
       setStorySwipeOffset(Math.round(rubberBand(dx, 38, 0.5)));
@@ -535,7 +540,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const handleTouchStartSwipe = (e: React.TouchEvent) => {
     if (e.touches.length === 2) {
-      // Two-finger pinch-to-zoom typography scale
       swipeStartRef.current = null;
       setEdgeBackOffset(0);
       setStorySwipeOffset(0);
@@ -590,7 +594,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     endHorizontalGesture(endTouch.clientX, endTouch.clientY, cancelled);
   };
 
-  // Pointer fallback for mouse / trackpad horizontal swipe-back (ignores touch so touch events don't double-fire)
   const handlePointerDownSwipe = (e: React.PointerEvent<HTMLElement>) => {
     if (e.pointerType === 'touch' || e.button !== 0) return;
     beginHorizontalGesture(e.clientX, e.clientY, e.pointerId);
@@ -615,9 +618,31 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     endHorizontalGesture(e.clientX, e.clientY, cancelled);
   };
 
-  // Double-tap any paragraph in ReaderView to open Editorial Quote Card with that passage
-  const handleBodyParagraphClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  // Delegated click handler on article body: supports tap-to-load blocked images and double-tap quotes
+  const handleBodyClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
+
+    // 1. Delegated tap-to-load for blocked images inside sanitized HTML
+    if (
+      target &&
+      target.tagName === 'IMG' &&
+      (target.getAttribute('data-chinta-blocked') === '1' ||
+        target.classList.contains('chinta-tap-to-load-img'))
+    ) {
+      e.stopPropagation();
+      const originalSrc =
+        target.getAttribute('data-chinta-src') || target.getAttribute('data-src') || '';
+      if (originalSrc) {
+        triggerHapticSelection();
+        const proxied = buildImageProxyUrl(originalSrc);
+        target.setAttribute('src', proxied || originalSrc);
+        target.removeAttribute('data-chinta-blocked');
+        target.classList.remove('chinta-tap-to-load-img');
+      }
+      return;
+    }
+
+    // 2. Double-tap paragraph to open quote card
     const paragraphEl = target.closest('p, blockquote');
     const text = paragraphEl?.textContent?.trim() || '';
     if (!text || text.length < 24) return;
@@ -671,7 +696,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
-  // Handle scroll progress & auto-hide floating dock on downward scroll
   const handleScroll = () => {
     markUserActive();
     accumulateElapsedReadingMs();
@@ -711,11 +735,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const handleShare = async () => {
     triggerHapticSelection();
-    const cleanShareLink = stripTrackingParams(article.link || window.location.href);
     const shareData = {
       title: extractedMeta.title || article.title,
       text: `${extractedMeta.title || article.title} - ${article.feedTitle}`,
-      url: cleanShareLink,
+      url: article.link || window.location.href,
     };
 
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -727,9 +750,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       }
     }
 
-    if (navigator.clipboard && cleanShareLink) {
+    if (navigator.clipboard && article.link) {
       try {
-        await navigator.clipboard.writeText(cleanShareLink);
+        await navigator.clipboard.writeText(article.link);
         showToast('Link copied to clipboard');
         return;
       } catch {
@@ -739,7 +762,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     showToast('Story link ready');
   };
 
-  // Reset per-article state & flush any completed reading session when story changes or Reader unmounts
+  // Reset per-article state & flush any completed reading session when story changes
   useEffect(() => {
     activeReadingMsRef.current = 0;
     lastTickAtRef.current = Date.now();
@@ -753,9 +776,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setIsLoadingSummary(false);
     setExtractedBlocks(null);
     setActiveSelectionText('');
-    setLoadedImageUrls({});
     setScrollProgress(0);
     setControlsVisible(true);
+    setHeroImageLoaded(false);
+    setLoadedBlockImageUrls(new Set());
     lastScrollTopRef.current = initialScrollTop || 0;
     requestAnimationFrame(() => {
       containerRef.current?.scrollTo({ top: initialScrollTop || 0 });
@@ -766,7 +790,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [article.id, flushReadingSession]);
 
-  // Foreground active-reading timer (high-precision delta, pauses when backgrounded or idle >45s)
+  // Foreground active-reading timer
   useEffect(() => {
     const onInteract = () => markUserActive();
     const onVisibilityChange = () => {
@@ -795,7 +819,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [accumulateElapsedReadingMs, markUserActive]);
 
-  // Listen for native iOS/Web text highlight changes inside the article body
   useEffect(() => {
     document.addEventListener('selectionchange', syncArticleSelection);
     return () => {
@@ -803,14 +826,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [syncArticleSelection]);
 
-  // Automatically mark article as read upon viewing
   useEffect(() => {
     if (!article.isRead) {
       onToggleRead(article.id);
     }
   }, [article.id]);
 
-  // Fetch rich article extractor from URL for clean distraction-free reading if not already pre-loaded
   useEffect(() => {
     let cancelled = false;
     setExtractedMeta({});
@@ -874,7 +895,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const activeThemeSpec =
     READER_THEMES.find((t) => t.id === preferences.theme) || READER_THEMES[3];
 
-  // Dynamically synchronize CSS custom properties whenever preferences.theme changes
   useEffect(() => {
     const rootStyle = document.documentElement.style;
     for (const [prop, val] of Object.entries(activeThemeSpec.vars)) {
@@ -898,16 +918,15 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
-  // Body font family styles mapping
   const getBodyFontFamilyStyle = (font: ReaderFont) => {
     switch (font) {
       case 'sans':
-        return { fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif" };
+        return { fontFamily: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif" };
       case 'mono':
-        return { fontFamily: "ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, monospace" };
+        return { fontFamily: "'Space Mono', monospace, Courier" };
       case 'serif':
       default:
-        return { fontFamily: "Georgia, Cambria, 'Times New Roman', Times, serif" };
+        return { fontFamily: "'Lora', Georgia, Cambria, serif" };
     }
   };
 
@@ -923,6 +942,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
+  const updatePrivacy = (partial: Partial<PrivacySettings>) => {
+    const next = { ...privacySettings, ...partial };
+    setPrivacySettings(next);
+    savePrivacySettingsToStorage(next);
+  };
+
   const articleTags = tags.filter((t) => article.tags.includes(t.id));
   const rawAuthor = (extractedMeta.author || article.author || '').trim();
   const bylineText =
@@ -931,24 +956,20 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       : article.feedTitle.toUpperCase();
 
   const subtitle = getEditorialSubtitle(article.summary, extractedMeta.title || article.title);
-  const sourceInitial = (article.feedTitle || 'N').trim().charAt(0).toUpperCase();
   const authorInitial = rawAuthor ? rawAuthor.charAt(0).toUpperCase() : null;
 
-  // Body font size: default 19px for authentic editorial serif legibility
   const effectiveBodySize = Math.max(16, preferences.fontSize + 1);
 
-  const rawLeadImage = extractedMeta.leadImage || article.imageUrl;
-  const isLeadImageAllowed = Boolean(
-    rawLeadImage && isAllowedPublisherMediaUrl(rawLeadImage, publisherOriginUrl, blockThirdPartyMedia)
+  // Hero image media policy check
+  const leadImageUrl = extractedMeta.leadImage || article.imageUrl;
+  const isHeroFirstParty = leadImageUrl
+    ? isFirstPartyMedia(leadImageUrl, article.link || article.feedUrl)
+    : true;
+  const isHeroBlocked = Boolean(
+    leadImageUrl &&
+      (privacySettings.tapToLoadMedia ||
+        (privacySettings.blockThirdPartyMedia && !isHeroFirstParty))
   );
-  const safeLeadImageUrl = isLeadImageAllowed
-    ? resolveImageThroughPrivacyRelay(rawLeadImage, preferences.privacyRelayUrl)
-    : undefined;
-  const isLeadImageGatedBehindTap = Boolean(
-    safeLeadImageUrl && strictTextOnlyMode && !loadedImageUrls[safeLeadImageUrl]
-  );
-
-  const cleanArticlePermalink = article.link ? stripTrackingParams(article.link) : '';
 
   return (
     <div
@@ -994,11 +1015,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="reader-liquid-card rounded-3xl p-5 w-full max-w-sm text-stone-100 shadow-2xl border border-white/20 animate-in zoom-in-95 duration-150 max-h-[82vh] overflow-y-auto no-scrollbar"
+            className="reader-liquid-card rounded-3xl p-5 w-full max-w-sm text-stone-100 shadow-2xl border border-white/20 animate-in zoom-in-95 duration-150 max-h-[85vh] overflow-y-auto"
           >
             <div className="flex items-center justify-between pb-3.5 mb-4 border-b border-white/10">
               <span className="text-xs font-semibold uppercase tracking-wider text-stone-300">
-                Reader Appearance & Privacy
+                Reader Appearance
               </span>
               <button
                 onClick={() => {
@@ -1070,18 +1091,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               <span className="text-[11px] font-medium text-stone-400 block mb-2">Body Font</span>
               <div className="grid grid-cols-3 gap-1.5 p-1 bg-black/40 border border-white/10 rounded-2xl">
                 {[
-                  { id: 'serif', label: 'Serif', sample: 'Georgia', style: { fontFamily: 'Georgia, serif' } },
+                  { id: 'serif', label: 'Serif', sample: 'Lora', style: { fontFamily: "'Lora', serif" } },
                   {
                     id: 'sans',
                     label: 'Sans',
                     sample: 'SF Pro',
-                    style: { fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' },
+                    style: { fontFamily: "'Plus Jakarta Sans', sans-serif" },
                   },
                   {
                     id: 'mono',
                     label: 'Mono',
-                    sample: 'SF Mono',
-                    style: { fontFamily: 'ui-monospace, monospace' },
+                    sample: 'Space',
+                    style: { fontFamily: "'Space Mono', monospace" },
                   },
                 ].map((f) => {
                   const isActive = preferences.font === f.id;
@@ -1171,7 +1192,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </div>
 
             {/* Pure Focus Mode & Offline Cache Toggles */}
-            <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/10 mb-3">
+            <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/10 mb-4">
               <button
                 type="button"
                 onClick={() => {
@@ -1207,62 +1228,115 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               </button>
             </div>
 
-            {/* Privacy Shield Controls: Block 3P Media & Tap-to-Load Media Mode */}
-            <div className="pt-3 border-t border-white/10 space-y-2">
-              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400">
-                <Shield className="w-3.5 h-3.5" />
-                <span>IP & Tracker Protection</span>
+            {/* Privacy & Media Hardening Section */}
+            <div className="pt-3 border-t border-white/10">
+              <div className="flex items-center gap-1.5 mb-2.5">
+                <Shield className="w-3.5 h-3.5 text-[#FF6719]" />
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-300">
+                  Privacy & Media Policy
+                </span>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+
+              {/* Block 3rd-Party Media */}
+              <div className="flex items-center justify-between py-2 border-b border-white/5 text-xs">
+                <div>
+                  <div className="text-stone-200 font-medium">Block Third-Party Media</div>
+                  <div className="text-[10px] text-stone-400">Loads only publisher CDN images</div>
+                </div>
                 <button
                   type="button"
                   onClick={() => {
                     triggerHapticSelection();
-                    const next = !blockThirdPartyMedia;
-                    onUpdatePreferences({ ...preferences, blockThirdPartyMedia: next });
-                    showToast(next ? 'Third-party media blocked' : 'Third-party media allowed');
+                    updatePrivacy({ blockThirdPartyMedia: !privacySettings.blockThirdPartyMedia });
                   }}
-                  className={`py-2 px-2.5 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-all ${
-                    blockThirdPartyMedia
-                      ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                      : 'bg-black/35 border-white/10 text-stone-400 hover:text-white'
+                  className={`w-9 h-5 rounded-full p-0.5 transition-colors ${
+                    privacySettings.blockThirdPartyMedia ? 'bg-[#FF6719]' : 'bg-white/20'
                   }`}
                 >
-                  <Shield className="w-3.5 h-3.5 shrink-0" />
-                  <span>Block 3P Media</span>
+                  <div
+                    className={`w-4 h-4 rounded-full bg-white transition-transform ${
+                      privacySettings.blockThirdPartyMedia ? 'translate-x-4' : 'translate-x-0'
+                    }`}
+                  />
                 </button>
+              </div>
 
+              {/* Tap to Load Media */}
+              <div className="flex items-center justify-between py-2 border-b border-white/5 text-xs">
+                <div>
+                  <div className="text-stone-200 font-medium">Tap to Load All Media</div>
+                  <div className="text-[10px] text-stone-400">Zero image requests until tapped</div>
+                </div>
                 <button
                   type="button"
                   onClick={() => {
                     triggerHapticSelection();
-                    const next = !strictTextOnlyMode;
-                    onUpdatePreferences({ ...preferences, strictTextOnlyMode: next });
-                    showToast(next ? 'Tap-to-Load Media on' : 'Tap-to-Load Media off');
+                    updatePrivacy({ tapToLoadMedia: !privacySettings.tapToLoadMedia });
                   }}
-                  className={`py-2 px-2.5 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-all ${
-                    strictTextOnlyMode
-                      ? 'bg-[#FF6719]/20 border-[#FF6719]/50 text-[#FF6719]'
-                      : 'bg-black/35 border-white/10 text-stone-300 hover:text-white'
+                  className={`w-9 h-5 rounded-full p-0.5 transition-colors ${
+                    privacySettings.tapToLoadMedia ? 'bg-[#FF6719]' : 'bg-white/20'
                   }`}
                 >
-                  <ImageIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span>Tap-to-Load Media</span>
+                  <div
+                    className={`w-4 h-4 rounded-full bg-white transition-transform ${
+                      privacySettings.tapToLoadMedia ? 'translate-x-4' : 'translate-x-0'
+                    }`}
+                  />
                 </button>
               </div>
 
-              <div className="pt-1">
-                <label className="text-[10px] font-medium text-stone-400 block mb-1">
-                  Stateless Privacy Relay URL (Optional)
+              {/* Connection Mode */}
+              <div className="pt-2 text-xs">
+                <div className="text-stone-200 font-medium mb-1.5">Connection Mode</div>
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-black/40 border border-white/10 rounded-2xl mb-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHapticSelection();
+                      updatePrivacy({ connectionMode: 'relay' });
+                    }}
+                    className={`py-1.5 rounded-xl text-center font-medium transition-all ${
+                      privacySettings.connectionMode === 'relay'
+                        ? 'liquid-glass-dock text-white ring-1 ring-[#FF6719]'
+                        : 'text-stone-400 hover:text-stone-200'
+                    }`}
+                  >
+                    Relay (Private)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      triggerHapticSelection();
+                      updatePrivacy({ connectionMode: 'direct' });
+                    }}
+                    className={`py-1.5 rounded-xl text-center font-medium transition-all ${
+                      privacySettings.connectionMode === 'direct'
+                        ? 'liquid-glass-dock text-white ring-1 ring-amber-500'
+                        : 'text-stone-400 hover:text-stone-200'
+                    }`}
+                  >
+                    Direct Mode
+                  </button>
+                </div>
+                {privacySettings.connectionMode === 'direct' && (
+                  <p className="text-[10px] text-amber-400 leading-tight mb-2">
+                    Direct mode reveals your device IP address to publishers.
+                  </p>
+                )}
+              </div>
+
+              {/* Custom Relay URL */}
+              <div className="pt-1 text-xs">
+                <label htmlFor="chinta-relay-input" className="text-stone-300 font-medium block mb-1">
+                  Custom Relay URL (optional)
                 </label>
                 <input
+                  id="chinta-relay-input"
                   type="url"
-                  value={preferences.privacyRelayUrl || ''}
-                  onChange={(e) =>
-                    onUpdatePreferences({ ...preferences, privacyRelayUrl: e.target.value })
-                  }
-                  placeholder="https://your-worker.workers.dev/?url="
-                  className="w-full px-2.5 py-1.5 rounded-xl bg-black/40 border border-white/10 text-[11px] text-stone-200 placeholder:text-stone-500 focus:outline-none focus:border-[#FF6719]"
+                  placeholder="https://relay.example.com"
+                  value={privacySettings.relayUrl}
+                  onChange={(e) => updatePrivacy({ relayUrl: e.target.value })}
+                  className="w-full px-2.5 py-1.5 text-xs bg-black/50 border border-white/15 rounded-xl text-stone-100 placeholder:text-stone-500 focus:outline-hidden focus:border-[#FF6719]"
                 />
               </div>
             </div>
@@ -1290,7 +1364,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       )}
 
-      {/* Main Scrollable Article Reading Canvas */}
+      {/* Main Scrollable Article Reading Canvas: Clean Top */}
       <main
         ref={containerRef}
         onScroll={handleScroll}
@@ -1307,8 +1381,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             suppressCanvasClickRef.current = false;
             return;
           }
-          // Tapping the reading canvas toggles the floating bottom liquid glass controls
-          // (skip toggling if user just finished selecting/highlighting text)
           if (!showTypographyMenu && !showQuoteModal) {
             const sel = window.getSelection();
             if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
@@ -1366,13 +1438,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               className={`flex items-center justify-between ${subtitle ? 'mt-5' : 'mt-6'} mb-3.5`}
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Left: Overlapping circular avatar stack (deterministic local monograms only, zero remote favicon leaks) */}
+              {/* Left: Overlapping circular avatar stack with deterministic monogram */}
               <div className="flex items-center -space-x-2">
                 <div
-                  className="w-9 h-9 rounded-full bg-[#D92323] text-white flex items-center justify-center font-serif font-bold text-lg overflow-hidden shrink-0 shadow-xs"
+                  className="rounded-full overflow-hidden shrink-0 shadow-xs"
                   style={{ boxShadow: '0 0 0 2px var(--reader-bg)' }}
                 >
-                  <span>{sourceInitial}</span>
+                  <SourceAvatar name={article.feedTitle} url={article.feedUrl} size="md" />
                 </div>
 
                 {authorInitial && (
@@ -1401,7 +1473,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       triggerHapticSelection();
                       onOpenPerspective(article);
                     }}
-                    title="Perspective - View all sources covering this story"
+                    title="Perspective: View all sources covering this story"
                     style={{
                       backgroundColor: 'var(--reader-surface)',
                       borderColor: 'var(--reader-border)',
@@ -1416,7 +1488,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
                 <button
                   onClick={handleGenerateSummary}
-                  title="Toggle Editorial Summary"
+                  title="Toggle AI Editorial Summary"
                   style={{ color: 'var(--reader-heading)' }}
                   className="flex items-center gap-1.5 hover:opacity-80 transition-opacity active:scale-95"
                 >
@@ -1466,7 +1538,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           {/* 6. Thin Subtle Horizontal Divider */}
           <div className="border-b my-5" style={{ borderColor: 'var(--reader-border)' }} />
 
-          {/* Optional Editorial Summary Card */}
+          {/* Optional AI Editorial Summary Card */}
           {showSummary && (
             <aside
               onClick={(e) => e.stopPropagation()}
@@ -1506,7 +1578,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   style={{ color: 'var(--reader-muted)' }}
                 >
                   <div className="w-4 h-4 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin" />
-                  <span>Distilling key points…</span>
+                  <span>Distilling key points...</span>
                 </div>
               ) : summaryData ? (
                 <div className="space-y-3 text-[14px] leading-relaxed">
@@ -1538,63 +1610,65 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </aside>
           )}
 
-          {/* 7. Lead / Hero Image (respects Block Third-Party Media & Tap-to-Load Media Mode) */}
-          {safeLeadImageUrl && (
-            isLeadImageGatedBehindTap ? (
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="my-6 p-4 rounded-2xl border flex items-center justify-between gap-3 font-sans"
-                style={{
-                  backgroundColor: 'var(--reader-surface)',
-                  borderColor: 'var(--reader-border)',
-                }}
-              >
-                <div className="flex items-center gap-2.5 text-xs" style={{ color: 'var(--reader-muted)' }}>
-                  <ImageIcon className="w-4 h-4 text-[#FF6719] shrink-0" />
-                  <span>Lead image blocked until requested to protect your IP address</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    triggerHapticSelection();
-                    setLoadedImageUrls((prev) => ({ ...prev, [safeLeadImageUrl]: true }));
-                  }}
-                  className="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#FF6719] text-white active:scale-95 transition-transform shrink-0"
-                >
-                  Load Image
-                </button>
-              </div>
-            ) : (
-              <figure
-                className="my-6 overflow-hidden rounded-[2px] relative group"
-                style={{ backgroundColor: 'var(--reader-surface)' }}
-              >
-                <img
-                  src={safeLeadImageUrl}
-                  alt={extractedMeta.title || article.title}
-                  referrerPolicy="no-referrer"
-                  draggable={false}
-                  loading="eager"
-                  className="w-full h-auto object-cover block"
-                  onError={(e) => {
-                    (e.target as HTMLElement).style.display = 'none';
-                  }}
-                />
-                {!preferences.distractionFree && (
+          {/* 7. Lead / Hero Image with Tap-to-Load and Proxy Hardening */}
+          {leadImageUrl && (
+            <figure
+              className="my-6 overflow-hidden rounded-[2px] relative group"
+              style={{ backgroundColor: 'var(--reader-surface)' }}
+            >
+              {isHeroBlocked && !heroImageLoaded ? (
+                <div className="w-full aspect-[16/9] bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/10 rounded-2xl flex flex-col items-center justify-center gap-2 p-4 text-center">
+                  <div className="w-10 h-10 rounded-full bg-stone-200/80 dark:bg-white/10 flex items-center justify-center text-stone-500 dark:text-stone-400">
+                    <ImageIcon className="w-5 h-5" />
+                  </div>
+                  <div className="text-xs font-medium text-stone-600 dark:text-stone-300">
+                    {isHeroFirstParty ? 'Tap to load image' : 'Third-party media blocked for privacy'}
+                  </div>
                   <button
                     type="button"
-                    onClick={(e) => handleSaveArticlePhoto(safeLeadImageUrl, e)}
-                    aria-label="Save photo to gallery"
-                    title="Save photo to gallery"
-                    className="absolute bottom-2.5 right-2.5 liquid-glass-dock px-2.5 py-1 rounded-full text-[10px] font-sans font-semibold text-white/95 flex items-center gap-1 border border-white/20 shadow-lg opacity-85 hover:opacity-100 active:scale-95 transition-all"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      triggerHapticSelection();
+                      setHeroImageLoaded(true);
+                    }}
+                    className="px-3.5 py-1.5 rounded-full bg-[#FF6719] text-white text-xs font-semibold hover:opacity-90 active:scale-95 transition-all shadow-xs"
                   >
-                    <Download className="w-3 h-3" />
-                    <span>Save</span>
+                    Load image
                   </button>
-                )}
-              </figure>
-            )
+                </div>
+              ) : (
+                <>
+                  <img
+                    src={buildImageProxyUrl(leadImageUrl)}
+                    alt={extractedMeta.title || article.title}
+                    referrerPolicy="no-referrer"
+                    draggable={false}
+                    loading="eager"
+                    className="w-full h-auto object-cover block"
+                    onError={(e) => {
+                      (e.target as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                  {!preferences.distractionFree && (
+                    <button
+                      type="button"
+                      onClick={(e) =>
+                        handleSaveArticlePhoto(
+                          buildImageProxyUrl(leadImageUrl) || leadImageUrl,
+                          e
+                        )
+                      }
+                      aria-label="Save photo to gallery"
+                      title="Save photo to gallery"
+                      className="absolute bottom-2.5 right-2.5 liquid-glass-dock px-2.5 py-1 rounded-full text-[10px] font-sans font-semibold text-white/95 flex items-center gap-1 border border-white/20 shadow-lg opacity-85 hover:opacity-100 active:scale-95 transition-all"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Save</span>
+                    </button>
+                  )}
+                </>
+              )}
+            </figure>
           )}
 
           {/* Author Credit Attribution Line */}
@@ -1618,7 +1692,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           {/* 8. Article Body Copy */}
           <div
             ref={articleBodyRef}
-            onClick={handleBodyParagraphClick}
+            onClick={handleBodyClick}
             onMouseUp={syncArticleSelection}
             onTouchEnd={syncArticleSelection}
             style={{
@@ -1659,68 +1733,71 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   );
                 }
                 if (block.type === 'img' && block.src) {
-                  if (!isAllowedPublisherMediaUrl(block.src, publisherOriginUrl, blockThirdPartyMedia)) {
-                    return null;
-                  }
-                  const imgSrc =
-                    resolveImageThroughPrivacyRelay(block.src, preferences.privacyRelayUrl) ||
-                    block.src;
-                  if (strictTextOnlyMode && !loadedImageUrls[imgSrc]) {
-                    return (
-                      <div
-                        key={idx}
-                        onClick={(e) => e.stopPropagation()}
-                        className="my-5 p-4 rounded-2xl border flex items-center justify-between gap-3 font-sans"
-                        style={{
-                          backgroundColor: 'var(--reader-surface)',
-                          borderColor: 'var(--reader-border)',
-                        }}
-                      >
-                        <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--reader-muted)' }}>
-                          <ImageIcon className="w-4 h-4 text-[#FF6719] shrink-0" />
-                          <span>Article image hidden in Tap-to-Load Mode</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            triggerHapticSelection();
-                            setLoadedImageUrls((prev) => ({ ...prev, [imgSrc]: true }));
-                          }}
-                          className="px-3 py-1.5 rounded-full text-xs font-semibold bg-[#FF6719] text-white shrink-0"
-                        >
-                          Load Image
-                        </button>
-                      </div>
-                    );
-                  }
+                  const imgSrc = block.src;
+                  const isBlockFirstParty = isFirstPartyMedia(
+                    imgSrc,
+                    article.link || article.feedUrl
+                  );
+                  const isBlockBlocked = Boolean(
+                    privacySettings.tapToLoadMedia ||
+                      (privacySettings.blockThirdPartyMedia && !isBlockFirstParty)
+                  );
+                  const isLoaded = loadedBlockImageUrls.has(imgSrc) || !isBlockBlocked;
+
                   return (
                     <figure
                       key={idx}
                       className="my-6 overflow-hidden rounded-[2px]"
                       style={{ backgroundColor: 'var(--reader-surface)' }}
                     >
-                      <div className="relative">
-                        <img
-                          src={imgSrc}
-                          alt=""
-                          referrerPolicy="no-referrer"
-                          draggable={false}
-                          className="w-full h-auto object-cover block"
-                        />
-                        {!preferences.distractionFree && (
+                      {!isLoaded ? (
+                        <div className="w-full aspect-[16/9] bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/10 rounded-2xl flex flex-col items-center justify-center gap-2 p-4 text-center">
+                          <div className="w-10 h-10 rounded-full bg-stone-200/80 dark:bg-white/10 flex items-center justify-center text-stone-500 dark:text-stone-400">
+                            <ImageIcon className="w-5 h-5" />
+                          </div>
+                          <div className="text-xs font-medium text-stone-600 dark:text-stone-300">
+                            {isBlockFirstParty ? 'Tap to load image' : 'Third-party image blocked for privacy'}
+                          </div>
                           <button
                             type="button"
-                            onClick={(e) => handleSaveArticlePhoto(imgSrc, e)}
-                            aria-label="Save photo to gallery"
-                            title="Save photo to gallery"
-                            className="absolute bottom-2.5 right-2.5 liquid-glass-dock px-2.5 py-1 rounded-full text-[10px] font-sans font-semibold text-white/95 flex items-center gap-1 border border-white/20 shadow-lg opacity-85 hover:opacity-100 active:scale-95 transition-all"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              triggerHapticSelection();
+                              setLoadedBlockImageUrls((prev) => new Set(prev).add(imgSrc));
+                            }}
+                            className="px-3.5 py-1.5 rounded-full bg-[#FF6719] text-white text-xs font-semibold hover:opacity-90 active:scale-95 transition-all shadow-xs"
                           >
-                            <Download className="w-3 h-3" />
-                            <span>Save</span>
+                            Load image
                           </button>
-                        )}
-                      </div>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <img
+                            src={buildImageProxyUrl(imgSrc)}
+                            alt=""
+                            referrerPolicy="no-referrer"
+                            draggable={false}
+                            className="w-full h-auto object-cover block"
+                          />
+                          {!preferences.distractionFree && (
+                            <button
+                              type="button"
+                              onClick={(e) =>
+                                handleSaveArticlePhoto(
+                                  buildImageProxyUrl(imgSrc) || imgSrc,
+                                  e
+                                )
+                              }
+                              aria-label="Save photo to gallery"
+                              title="Save photo to gallery"
+                              className="absolute bottom-2.5 right-2.5 liquid-glass-dock px-2.5 py-1 rounded-full text-[10px] font-sans font-semibold text-white/95 flex items-center gap-1 border border-white/20 shadow-lg opacity-85 hover:opacity-100 active:scale-95 transition-all"
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>Save</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
                       {block.caption && (
                         <figcaption
                           className="pt-2 text-xs font-sans"
@@ -1739,9 +1816,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 className="article-prose max-w-none"
                 dangerouslySetInnerHTML={{
                   __html: sanitizeArticleHtml(article.contentHtml, {
-                    articleUrl: publisherOriginUrl,
-                    blockThirdPartyMedia,
-                    strictTextOnlyMode,
+                    publisherUrl: article.link || article.feedUrl,
+                    blockThirdPartyMedia: privacySettings.blockThirdPartyMedia,
+                    tapToLoadMedia: privacySettings.tapToLoadMedia,
                   }),
                 }}
               />
@@ -1797,7 +1874,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 style={{ color: 'var(--reader-muted)' }}
               >
                 <div className="w-2.5 h-2.5 border-2 border-[#FF6719] border-t-transparent rounded-full animate-spin shrink-0" />
-                <span>Loading full story…</span>
+                <span>Loading full story...</span>
               </div>
             )}
           </div>
@@ -1846,12 +1923,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 </button>
               </div>
 
-              {cleanArticlePermalink && cleanArticlePermalink.startsWith('http') && (
+              {article.link && article.link.startsWith('http') && (
                 <a
-                  href={cleanArticlePermalink}
+                  href={article.link}
                   target="_blank"
                   rel="noopener noreferrer"
-                  referrerPolicy="no-referrer"
                   className="inline-flex items-center gap-1 text-[11px] underline underline-offset-4 transition-opacity hover:opacity-80"
                   style={{ color: 'var(--reader-muted)' }}
                 >
@@ -1866,7 +1942,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
       {/* Floating Apple Liquid Glass Share Selected Line Pill */}
       {activeSelectionText && !showQuoteModal && !showTypographyMenu && (
-        <div className="fixed bottom-[calc(max(env(safe-area-inset-bottom,0px),1rem)+3.75rem)] left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-2 duration-150">
+        <div className="fixed bottom-[calc(max(env(safe-area-inset-bottom,8px),8px)+4.35rem)] left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-2 duration-150">
           <button
             type="button"
             onPointerDown={(e) => e.preventDefault()}
@@ -1891,148 +1967,181 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       )}
 
-      {/* Compact Apple Liquid Glass Floating Bottom Pill (Auto-hides on scroll down, tap screen to toggle) */}
+      {/* Bottom Floating iOS 26 Liquid Glass Capsule Dock */}
       <footer
-        className={`fixed bottom-[max(env(safe-area-inset-bottom,0px),1rem)] left-1/2 -translate-x-1/2 z-30 transition-all duration-300 ${
+        className={`fixed left-0 right-0 bottom-0 px-3 pb-[max(env(safe-area-inset-bottom,8px),8px)] pt-1 select-none z-30 pointer-events-none transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
           controlsVisible
-            ? 'translate-y-0 opacity-100 pointer-events-auto'
-            : 'translate-y-20 opacity-0 pointer-events-none'
+            ? 'translate-y-0 opacity-100'
+            : 'translate-y-20 opacity-0'
         }`}
       >
-        <div className="liquid-glass-dock px-2.5 py-1.5 rounded-full flex items-center gap-1 shadow-2xl border border-white/20">
-          {/* Back to Feed */}
-          <button
-            onClick={() => {
-              triggerHapticSelection();
-              onBack();
-            }}
-            aria-label="Back to Feed"
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium text-stone-200 hover:text-white hover:bg-white/10 transition-all active:scale-95"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="pr-0.5">Feed</span>
-          </button>
+        {(() => {
+          const isDarkDock = preferences.theme === 'slate' || preferences.theme === 'oled';
+          const getInkColor = (active: boolean, accentHex?: string) => {
+            if (accentHex && active) return accentHex;
+            if (isDarkDock) {
+              return active ? '#FFFFFF' : 'rgba(255, 255, 255, 0.85)';
+            }
+            return active ? '#111827' : 'rgba(28, 25, 23, 0.78)';
+          };
 
-          <div className="w-px h-4 bg-white/15 mx-0.5" />
+          const actions = [
+            {
+              id: 'feed',
+              label: 'Feed',
+              ariaLabel: 'Back to Feed',
+              icon: ArrowLeft,
+              isActive: false,
+              onClick: () => {
+                triggerHapticSelection();
+                onBack();
+              },
+            },
+            {
+              id: 'summary',
+              label: 'Summary',
+              ariaLabel: 'AI Summary',
+              icon: Sparkles,
+              isActive: showSummary,
+              accentHex: '#FF6719',
+              spinning: isLoadingSummary,
+              onClick: handleGenerateSummary,
+            },
+            {
+              id: 'style',
+              label: 'Style',
+              ariaLabel: 'Reader Appearance',
+              icon: Type,
+              isActive: showTypographyMenu,
+              onClick: () => {
+                triggerHapticSelection();
+                setShowTypographyMenu(!showTypographyMenu);
+              },
+            },
+            {
+              id: 'save',
+              label: 'Save',
+              ariaLabel: 'Bookmark',
+              icon: Bookmark,
+              isActive: article.isBookmarked,
+              accentHex: '#FF6719',
+              filled: article.isBookmarked,
+              onClick: () => {
+                triggerHapticSelection();
+                onToggleBookmark(article.id);
+                showToast(article.isBookmarked ? 'Removed bookmark' : 'Saved to bookmarks');
+              },
+            },
+            {
+              id: 'quote',
+              label: 'Quote',
+              ariaLabel: 'Create Quote Card',
+              icon: Quote,
+              isActive: showQuoteModal,
+              accentHex: '#FF6719',
+              preventSelectionClear: true,
+              onClick: () => {
+                triggerHapticSelection();
+                const sel =
+                  activeSelectionText ||
+                  sanitizeTextSelection(window.getSelection()?.toString() || '');
+                setSelectedQuoteText(sel);
+                setShowQuoteModal(true);
+                if (sel) {
+                  setActiveSelectionText('');
+                  window.getSelection()?.removeAllRanges();
+                }
+              },
+            },
+            {
+              id: 'share',
+              label: 'Share',
+              ariaLabel: 'Share',
+              icon: Share2,
+              isActive: false,
+              onClick: handleShare,
+            },
+            ...(onNextArticle
+              ? [
+                  {
+                    id: 'next',
+                    label: 'Next',
+                    ariaLabel: 'Next Story',
+                    icon: ChevronRight,
+                    isActive: false,
+                    onClick: () => {
+                      triggerHapticSelection();
+                      onNextArticle();
+                    },
+                  },
+                ]
+              : []),
+          ];
 
-          {/* Summary */}
-          <button
-            onClick={handleGenerateSummary}
-            aria-label="Editorial Summary"
-            title="Editorial Summary"
-            className={`p-2 rounded-full transition-all active:scale-90 ${
-              showSummary
-                ? 'bg-white/20 text-[#FF6719]'
-                : 'text-stone-300 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <Sparkles
-              className={`w-4 h-4 ${isLoadingSummary ? 'animate-spin text-[#FF6719]' : ''}`}
-            />
-          </button>
+          return (
+            <div className="relative mx-auto max-w-[372px]">
+              <nav
+                aria-label="Reader Controls"
+                className="pointer-events-auto liquid-glass-dock rounded-full p-1 px-1.5 flex items-center justify-between gap-0.5"
+              >
+                {actions.map((item) => {
+                  const Icon = item.icon;
+                  const ink = getInkColor(item.isActive, item.accentHex);
 
-          {/* Typography & Privacy Settings (Aa) */}
-          <button
-            onClick={() => {
-              triggerHapticSelection();
-              setShowTypographyMenu(!showTypographyMenu);
-            }}
-            aria-label="Reader Appearance"
-            className={`p-2 rounded-full transition-all active:scale-90 ${
-              showTypographyMenu
-                ? 'bg-white/20 text-white'
-                : 'text-stone-300 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <Type className="w-4 h-4" />
-          </button>
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onPointerDown={item.preventSelectionClear ? (e) => e.preventDefault() : undefined}
+                      onMouseDown={item.preventSelectionClear ? (e) => e.preventDefault() : undefined}
+                      onClick={item.onClick}
+                      aria-label={item.ariaLabel}
+                      aria-pressed={item.isActive}
+                      className="flex-1 min-h-[44px] flex flex-col items-center justify-center gap-0.5 relative rounded-full transition-transform duration-200 active:scale-90"
+                    >
+                      {item.isActive && (
+                        <span
+                          className="liquid-glass-active-bubble absolute inset-0.5 rounded-full pointer-events-none"
+                          style={{
+                            animation: 'tabIndicatorIn 260ms cubic-bezier(0.175,0.885,0.32,1.275) both',
+                          }}
+                          aria-hidden="true"
+                        />
+                      )}
 
-          {/* Bookmark */}
-          <button
-            onClick={() => {
-              triggerHapticSelection();
-              onToggleBookmark(article.id);
-              showToast(article.isBookmarked ? 'Removed bookmark' : 'Saved to bookmarks');
-            }}
-            aria-label="Bookmark"
-            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
-          >
-            <Bookmark
-              className={`w-4 h-4 ${
-                article.isBookmarked ? 'fill-[#FF6719] text-[#FF6719]' : ''
-              }`}
-            />
-          </button>
+                      <span className="relative flex items-center justify-center w-5 h-5 z-10">
+                        <Icon
+                          className={item.spinning ? 'animate-spin' : ''}
+                          style={{
+                            width: 18,
+                            height: 18,
+                            strokeWidth: item.isActive ? 2.2 : 1.85,
+                            color: ink,
+                            fill: item.filled ? '#FF6719' : 'none',
+                            filter: isDarkDock
+                              ? 'drop-shadow(0 1px 2px rgba(0,0,0,0.45))'
+                              : 'none',
+                            transition: 'color 200ms ease, stroke-width 200ms ease',
+                          }}
+                        />
+                      </span>
 
-          {/* Editorial Quote Card */}
-          <button
-            type="button"
-            onPointerDown={(e) => e.preventDefault()}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => {
-              triggerHapticSelection();
-              const sel =
-                activeSelectionText ||
-                sanitizeTextSelection(window.getSelection()?.toString() || '');
-              setSelectedQuoteText(sel);
-              setShowQuoteModal(true);
-              if (sel) {
-                setActiveSelectionText('');
-                window.getSelection()?.removeAllRanges();
-              }
-            }}
-            aria-label="Create Quote Card"
-            title="Pick or highlight any line to share"
-            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
-          >
-            <Quote className="w-4 h-4" />
-          </button>
-
-          {/* Share */}
-          <button
-            type="button"
-            onClick={handleShare}
-            aria-label="Share"
-            className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
-          >
-            <Share2 className="w-4 h-4" />
-          </button>
-
-          {/* Previous / Next Story Navigation */}
-          {(onPrevArticle || onNextArticle) && (
-            <>
-              <div className="w-px h-4 bg-white/15 mx-0.5" />
-              {onPrevArticle && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHapticSelection();
-                    onPrevArticle();
-                  }}
-                  aria-label="Previous Story"
-                  title="Previous Story"
-                  className="p-2 rounded-full text-stone-300 hover:text-white hover:bg-white/10 transition-all active:scale-90"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-              )}
-              {onNextArticle && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    triggerHapticSelection();
-                    onNextArticle();
-                  }}
-                  aria-label="Next Story"
-                  className="flex items-center gap-0.5 px-2.5 py-1.5 rounded-full text-xs font-medium text-stone-200 hover:text-white hover:bg-white/10 transition-all active:scale-95"
-                >
-                  <span>Next</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </>
-          )}
-        </div>
+                      <span
+                        className="text-[10px] tracking-tight font-medium whitespace-nowrap z-10 transition-colors duration-200"
+                        style={{
+                          color: ink,
+                          textShadow: isDarkDock ? '0 1px 2px rgba(0,0,0,0.5)' : 'none',
+                        }}
+                      >
+                        {item.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </nav>
+            </div>
+          );
+        })()}
       </footer>
 
       {/* Editorial Quote Card Share Modal */}
@@ -2043,7 +2152,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           ...article,
           title: extractedMeta.title || article.title,
           author: extractedMeta.author || article.author,
-          imageUrl: safeLeadImageUrl,
+          imageUrl: extractedMeta.leadImage || article.imageUrl,
         }}
         initialQuoteText={selectedQuoteText}
         articleText={fullReadableText}

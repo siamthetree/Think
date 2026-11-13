@@ -1,5 +1,5 @@
-import type { Tag, Feed, FeedItem, ReaderPreferences, PrivacyPreferences } from '../types';
-import { truncateHtmlSafely, stripTrackingParams } from './urlSecurity';
+import type { Tag, Feed, FeedItem, ReaderPreferences } from '../types';
+import { truncateHtmlSafely } from './urlSecurity';
 
 export const DEFAULT_TAGS: Tag[] = [
   { id: 'tag_bd', name: 'Bangladesh', color: '#059669' },
@@ -19,19 +19,12 @@ const STORAGE_KEYS = {
   ARTICLES: 'paperpress_articles_v2',
   TAGS: 'paperpress_tags_v2',
   PREFS: 'paperpress_reader_prefs_v2',
-  PRIVACY: 'chinta_privacy_prefs_v1',
   FOLDERS: 'paperpress_folders_v1',
   READ_KEYS: 'chinta_read_article_keys_v1',
+  PRIVACY: 'chinta_privacy_v1',
 };
 
 export const DEFAULT_FOLDERS: string[] = [];
-
-export const DEFAULT_PRIVACY_PREFERENCES: PrivacyPreferences = {
-  blockThirdPartyMedia: true,
-  strictTextOnlyMode: false,
-  privacyRelayUrl: '',
-  staticFeedMirrorUrl: '',
-};
 
 export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   font: 'serif',
@@ -39,16 +32,26 @@ export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   theme: 'slate',
   lineHeight: 'relaxed',
   distractionFree: false,
-  blockThirdPartyMedia: DEFAULT_PRIVACY_PREFERENCES.blockThirdPartyMedia,
-  strictTextOnlyMode: DEFAULT_PRIVACY_PREFERENCES.strictTextOnlyMode,
-  privacyRelayUrl: DEFAULT_PRIVACY_PREFERENCES.privacyRelayUrl,
-  staticFeedMirrorUrl: DEFAULT_PRIVACY_PREFERENCES.staticFeedMirrorUrl,
+};
+
+export interface PrivacySettings {
+  blockThirdPartyMedia: boolean;
+  tapToLoadMedia: boolean;
+  relayUrl: string;
+  connectionMode: 'relay' | 'direct';
+}
+
+export const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
+  blockThirdPartyMedia: true,
+  tapToLoadMedia: false,
+  relayUrl: '',
+  connectionMode: 'relay',
 };
 
 // Storage limits (keep payload compact while preserving full offline bodies without mid-tag truncation)
-const MAX_UNSAVED_ARTICLES = 120;
+const MAX_UNSAVED_ARTICLES = 450;
 const MAX_SAVED_HTML_CHARS = 50000;
-const MAX_HTML_CHARS = 20000;
+const MAX_HTML_CHARS = 18000;
 const FULL_BODY_MIN_CHARS = 800;
 
 // Demo stories shipped by older versions. They were invented, so they are removed on load.
@@ -72,7 +75,6 @@ function truncateTextAtWordBoundary(text: string, maxChars: number): string {
 
 function readArray<T>(key: string): T[] | null {
   try {
-    if (typeof localStorage === 'undefined') return null;
     const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
@@ -99,9 +101,6 @@ export function pruneArticles(articles: FeedItem[], maxUnsaved = MAX_UNSAVED_ART
       const charBudget = a.isBookmarked || a.isOfflineCached ? MAX_SAVED_HTML_CHARS : MAX_HTML_CHARS;
       return {
         ...a,
-        link: stripTrackingParams(a.link),
-        feedUrl: stripTrackingParams(a.feedUrl),
-        imageUrl: a.imageUrl ? stripTrackingParams(a.imageUrl) : undefined,
         contentHtml:
           a.contentHtml && a.contentHtml.length > charBudget
             ? truncateHtmlSafely(a.contentHtml, charBudget)
@@ -120,23 +119,21 @@ export function loadFeedsFromStorage(): Feed[] {
   if (!stored) return INITIAL_FEEDS;
   // Upgrade legacy slow homepage URLs if present in existing user storage
   return stored.map((f) => {
-    const cleanUrl = stripTrackingParams(f.url);
-    if (f.id === 'prothom_alo_en' && cleanUrl === 'https://en.prothomalo.com') {
+    if (f.id === 'prothom_alo_en' && f.url === 'https://en.prothomalo.com') {
       return { ...f, url: 'https://en.prothomalo.com/feed' };
     }
-    if (f.id === 'prothom_alo_bn' && cleanUrl === 'https://www.prothomalo.com') {
+    if (f.id === 'prothom_alo_bn' && f.url === 'https://www.prothomalo.com') {
       return { ...f, url: 'https://www.prothomalo.com/feed' };
     }
-    if (f.id === 'tbs_news' && cleanUrl === 'https://www.tbsnews.net') {
+    if (f.id === 'tbs_news' && f.url === 'https://www.tbsnews.net') {
       return { ...f, url: 'https://www.tbsnews.net/top-news/rss.xml' };
     }
-    return { ...f, url: cleanUrl };
+    return f;
   });
 }
 
 export function saveFeedsToStorage(feeds: Feed[]): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEYS.FEEDS, JSON.stringify(feeds));
   } catch (e) {
     console.error('Failed to save feeds to localStorage', e);
@@ -161,9 +158,6 @@ export function loadArticlesFromStorage(): FeedItem[] {
         a.contentHtml && isPlaceholderSummary(a.contentHtml) ? '' : a.contentHtml;
       return {
         ...a,
-        link: stripTrackingParams(a.link),
-        feedUrl: stripTrackingParams(a.feedUrl),
-        imageUrl: a.imageUrl ? stripTrackingParams(a.imageUrl) : undefined,
         summary: cleanSummary,
         contentHtml: cleanHtml,
         tags: Array.isArray(a.tags) ? a.tags : [],
@@ -239,15 +233,13 @@ export function saveArticlesToStorage(articles: FeedItem[]): void {
   const pruned = pruneArticles(articles, MAX_UNSAVED_ARTICLES);
   mirrorArticlesToIndexedDb(pruned);
   try {
-    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEYS.ARTICLES, JSON.stringify(pruned));
     return;
   } catch {
     // Fallback if localStorage is near its 5MB quota (full bodies remain safe in IndexedDB)
   }
   try {
-    if (typeof localStorage === 'undefined') return;
-    const slim = pruneArticles(articles, 50).map((a) =>
+    const slim = pruneArticles(articles, 180).map((a) =>
       a.isBookmarked ? a : { ...a, contentHtml: undefined, contentClean: undefined }
     );
     localStorage.setItem(STORAGE_KEYS.ARTICLES, JSON.stringify(slim));
@@ -262,117 +254,65 @@ export function loadTagsFromStorage(): Tag[] {
 
 export function saveTagsToStorage(tags: Tag[]): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEYS.TAGS, JSON.stringify(tags));
   } catch (e) {
     console.error('Failed to save tags to localStorage', e);
   }
 }
 
-export function loadPrivacyPreferencesFromStorage(): PrivacyPreferences {
-  try {
-    if (typeof localStorage === 'undefined') return { ...DEFAULT_PRIVACY_PREFERENCES };
-    const rawPrivacy = localStorage.getItem(STORAGE_KEYS.PRIVACY);
-    const rawPrefs = localStorage.getItem(STORAGE_KEYS.PREFS);
-    const parsedPrivacy = rawPrivacy ? JSON.parse(rawPrivacy) : {};
-    const parsedPrefs = rawPrefs ? JSON.parse(rawPrefs) : {};
-    return {
-      blockThirdPartyMedia:
-        typeof parsedPrivacy.blockThirdPartyMedia === 'boolean'
-          ? parsedPrivacy.blockThirdPartyMedia
-          : typeof parsedPrefs.blockThirdPartyMedia === 'boolean'
-          ? parsedPrefs.blockThirdPartyMedia
-          : DEFAULT_PRIVACY_PREFERENCES.blockThirdPartyMedia,
-      strictTextOnlyMode:
-        typeof parsedPrivacy.strictTextOnlyMode === 'boolean'
-          ? parsedPrivacy.strictTextOnlyMode
-          : typeof parsedPrefs.strictTextOnlyMode === 'boolean'
-          ? parsedPrefs.strictTextOnlyMode
-          : DEFAULT_PRIVACY_PREFERENCES.strictTextOnlyMode,
-      privacyRelayUrl: String(
-        parsedPrivacy.privacyRelayUrl ?? parsedPrefs.privacyRelayUrl ?? DEFAULT_PRIVACY_PREFERENCES.privacyRelayUrl
-      ).trim(),
-      staticFeedMirrorUrl: String(
-        parsedPrivacy.staticFeedMirrorUrl ??
-          parsedPrefs.staticFeedMirrorUrl ??
-          DEFAULT_PRIVACY_PREFERENCES.staticFeedMirrorUrl
-      ).trim(),
-    };
-  } catch {
-    return { ...DEFAULT_PRIVACY_PREFERENCES };
-  }
-}
-
-export function savePrivacyPreferencesToStorage(prefs: Partial<PrivacyPreferences>): PrivacyPreferences {
-  const current = loadPrivacyPreferencesFromStorage();
-  const next: PrivacyPreferences = {
-    blockThirdPartyMedia:
-      typeof prefs.blockThirdPartyMedia === 'boolean' ? prefs.blockThirdPartyMedia : current.blockThirdPartyMedia,
-    strictTextOnlyMode:
-      typeof prefs.strictTextOnlyMode === 'boolean' ? prefs.strictTextOnlyMode : current.strictTextOnlyMode,
-    privacyRelayUrl:
-      typeof prefs.privacyRelayUrl === 'string' ? prefs.privacyRelayUrl.trim() : current.privacyRelayUrl,
-    staticFeedMirrorUrl:
-      typeof prefs.staticFeedMirrorUrl === 'string' ? prefs.staticFeedMirrorUrl.trim() : current.staticFeedMirrorUrl,
-  };
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(STORAGE_KEYS.PRIVACY, JSON.stringify(next));
-      const rawReader = localStorage.getItem(STORAGE_KEYS.PREFS);
-      const parsedReader = rawReader ? JSON.parse(rawReader) : DEFAULT_READER_PREFERENCES;
-      localStorage.setItem(
-        STORAGE_KEYS.PREFS,
-        JSON.stringify({
-          ...DEFAULT_READER_PREFERENCES,
-          ...parsedReader,
-          ...next,
-        })
-      );
-    }
-  } catch (e) {
-    console.error('Failed to save privacy preferences to localStorage', e);
-  }
-  return next;
-}
-
 export function loadPreferencesFromStorage(): ReaderPreferences {
-  const privacy = loadPrivacyPreferencesFromStorage();
   try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(STORAGE_KEYS.PREFS);
-      if (raw) {
-        return {
-          ...DEFAULT_READER_PREFERENCES,
-          ...JSON.parse(raw),
-          ...privacy,
-        };
-      }
-    }
+    const raw = localStorage.getItem(STORAGE_KEYS.PREFS);
+    if (raw) return { ...DEFAULT_READER_PREFERENCES, ...JSON.parse(raw) };
   } catch (e) {
     console.error('Failed to load preferences from localStorage', e);
   }
-  return { ...DEFAULT_READER_PREFERENCES, ...privacy };
+  return DEFAULT_READER_PREFERENCES;
 }
 
 export function savePreferencesToStorage(prefs: ReaderPreferences): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEYS.PREFS, JSON.stringify(prefs));
-    const privacy: PrivacyPreferences = {
-      blockThirdPartyMedia:
-        typeof prefs.blockThirdPartyMedia === 'boolean'
-          ? prefs.blockThirdPartyMedia
-          : DEFAULT_PRIVACY_PREFERENCES.blockThirdPartyMedia,
-      strictTextOnlyMode:
-        typeof prefs.strictTextOnlyMode === 'boolean'
-          ? prefs.strictTextOnlyMode
-          : DEFAULT_PRIVACY_PREFERENCES.strictTextOnlyMode,
-      privacyRelayUrl: (prefs.privacyRelayUrl ?? '').trim(),
-      staticFeedMirrorUrl: (prefs.staticFeedMirrorUrl ?? '').trim(),
-    };
-    localStorage.setItem(STORAGE_KEYS.PRIVACY, JSON.stringify(privacy));
   } catch (e) {
     console.error('Failed to save preferences to localStorage', e);
+  }
+}
+
+export function loadPrivacySettingsFromStorage(): PrivacySettings {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.PRIVACY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          blockThirdPartyMedia:
+            typeof parsed.blockThirdPartyMedia === 'boolean'
+              ? parsed.blockThirdPartyMedia
+              : DEFAULT_PRIVACY_SETTINGS.blockThirdPartyMedia,
+          tapToLoadMedia:
+            typeof parsed.tapToLoadMedia === 'boolean'
+              ? parsed.tapToLoadMedia
+              : DEFAULT_PRIVACY_SETTINGS.tapToLoadMedia,
+          relayUrl:
+            typeof parsed.relayUrl === 'string'
+              ? parsed.relayUrl.trim()
+              : DEFAULT_PRIVACY_SETTINGS.relayUrl,
+          connectionMode:
+            parsed.connectionMode === 'direct' ? 'direct' : 'relay',
+        };
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load privacy settings from localStorage', e);
+  }
+  return DEFAULT_PRIVACY_SETTINGS;
+}
+
+export function savePrivacySettingsToStorage(settings: PrivacySettings): void {
+  try {
+    localStorage.setItem(STORAGE_KEYS.PRIVACY, JSON.stringify(settings));
+  } catch (e) {
+    console.error('Failed to save privacy settings to localStorage', e);
   }
 }
 
@@ -382,9 +322,8 @@ export function loadReadArticleKeysFromStorage(): string[] {
 
 export function saveReadArticleKeysToStorage(keys: string[]): void {
   try {
-    if (typeof localStorage === 'undefined') return;
-    // Keep up to the 2000 most recent read keys so old read articles never return on refresh
-    const bounded = keys.length > 2000 ? keys.slice(-2000) : keys;
+    // Keep up to the 4000 most recent read keys/signatures so old read articles never return on refresh
+    const bounded = keys.length > 4000 ? keys.slice(-4000) : keys;
     localStorage.setItem(STORAGE_KEYS.READ_KEYS, JSON.stringify(bounded));
   } catch (e) {
     console.error('Failed to save read article keys to localStorage', e);
@@ -401,7 +340,6 @@ export function loadFoldersFromStorage(): string[] {
 
 export function saveFoldersToStorage(folders: string[]): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     const clean = Array.from(new Set(folders.map((f) => f.trim()).filter(Boolean)));
     localStorage.setItem(STORAGE_KEYS.FOLDERS, JSON.stringify(clean));
   } catch (e) {
@@ -415,7 +353,6 @@ const LAST_SEEN_TS_KEY = 'chinta_last_seen_feed_ts_v1';
 
 export function loadReadingHabitFromStorage<T>(fallback: T): T {
   try {
-    if (typeof localStorage === 'undefined') return fallback;
     const raw = localStorage.getItem(HABIT_STORAGE_KEY);
     if (raw) {
       return { ...fallback, ...JSON.parse(raw) };
@@ -428,7 +365,6 @@ export function loadReadingHabitFromStorage<T>(fallback: T): T {
 
 export function saveReadingHabitToStorage<T>(state: T): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(HABIT_STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
     console.error('Failed to save reading habit to localStorage', e);
@@ -437,7 +373,6 @@ export function saveReadingHabitToStorage<T>(state: T): void {
 
 export function loadReadingProgressFromStorage<T>(): T | null {
   try {
-    if (typeof localStorage === 'undefined') return null;
     const raw = localStorage.getItem(PROGRESS_STORAGE_KEY);
     if (raw) return JSON.parse(raw) as T;
   } catch {
@@ -448,7 +383,6 @@ export function loadReadingProgressFromStorage<T>(): T | null {
 
 export function saveReadingProgressToStorage<T>(progress: T | null): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     if (!progress) {
       localStorage.removeItem(PROGRESS_STORAGE_KEY);
     } else {
@@ -461,7 +395,6 @@ export function saveReadingProgressToStorage<T>(progress: T | null): void {
 
 export function loadLastSeenFeedTimestamp(): number {
   try {
-    if (typeof localStorage === 'undefined') return 0;
     const raw = localStorage.getItem(LAST_SEEN_TS_KEY);
     if (raw) {
       const n = Number(raw);
@@ -475,7 +408,6 @@ export function loadLastSeenFeedTimestamp(): number {
 
 export function saveLastSeenFeedTimestamp(ts: number): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(LAST_SEEN_TS_KEY, String(ts));
   } catch {
     // ignore
@@ -486,7 +418,6 @@ const READING_SPEED_KEY = 'chinta_reading_speed_v1';
 
 export function loadReadingSpeedProfileFromStorage<T>(fallback: T): T {
   try {
-    if (typeof localStorage === 'undefined') return fallback;
     const raw = localStorage.getItem(READING_SPEED_KEY);
     if (raw) {
       return JSON.parse(raw) as T;
@@ -499,7 +430,6 @@ export function loadReadingSpeedProfileFromStorage<T>(fallback: T): T {
 
 export function saveReadingSpeedProfileToStorage<T>(profile: T): void {
   try {
-    if (typeof localStorage === 'undefined') return;
     localStorage.setItem(READING_SPEED_KEY, JSON.stringify(profile));
   } catch (e) {
     console.error('Failed to save reading speed profile to localStorage', e);

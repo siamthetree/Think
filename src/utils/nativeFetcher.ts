@@ -6,14 +6,9 @@ import {
   parseXmlFeed,
   stripHtml,
 } from './feedParser';
-import {
-  validateSafeExternalUrl,
-  stripTrackingParams,
-  buildStatelessRelayUrl,
-  isTrackerUrl,
-} from './urlSecurity';
-import { sanitizeArticleHtml } from './sanitize';
-import { loadPrivacyPreferencesFromStorage } from './storage';
+import { validateSafeExternalUrl } from './urlSecurity';
+
+export const GENERIC_USER_AGENT = 'ChintaReader/2.0';
 
 export interface ExtractedArticleResult {
   title?: string;
@@ -26,15 +21,6 @@ export interface ExtractedArticleResult {
   readTimeMin: number;
   paragraphCount: number;
 }
-
-export const GENERIC_STATIC_USER_AGENT =
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
-
-export const PRIVACY_FETCH_INIT: RequestInit = {
-  credentials: 'omit',
-  referrerPolicy: 'no-referrer',
-  cache: 'no-store',
-};
 
 /**
  * Detects whether the app is running inside a native iOS Capacitor IPA shell
@@ -52,144 +38,78 @@ export function isRunningInNativeIos(): boolean {
 }
 
 /**
- * Resolves a feed or article URL through the optional user-configured stateless CORS/privacy relay
- * or static GitHub Pages feed mirror from storage.ts.
+ * Fetches raw text/HTML from a validated target URL directly via native CapacitorHttp
+ * or standard browser fetch without routing user URLs to untrusted third-party CORS proxies.
  */
-export function resolveUrlThroughPrivacyRelay(
-  targetUrl: string,
-  options?: { feedId?: string; relayUrlOverride?: string; mirrorUrlOverride?: string }
-): string {
-  const safeTarget = validateSafeExternalUrl(stripTrackingParams(targetUrl)).href;
-  const privacy = loadPrivacyPreferencesFromStorage();
-  const mirrorBase = (options?.mirrorUrlOverride ?? privacy.staticFeedMirrorUrl ?? '').trim();
-  const relayBase = (options?.relayUrlOverride ?? privacy.privacyRelayUrl ?? '').trim();
-
-  if (mirrorBase && options?.feedId) {
-    try {
-      const parsedMirror = validateSafeExternalUrl(mirrorBase);
-      const baseHref = parsedMirror.href.replace(/\/+$/, '');
-      return `${baseHref}/feeds/${encodeURIComponent(options.feedId)}.xml`;
-    } catch {
-      // Fall through to relay or direct URL
-    }
-  }
-
-  if (relayBase) {
-    return buildStatelessRelayUrl(safeTarget, relayBase);
-  }
-
-  return safeTarget;
-}
-
-/**
- * Routes an image URL through the user-defined stateless privacy relay if configured.
- */
-export function resolveImageThroughPrivacyRelay(
-  imageUrl: string | undefined,
-  relayUrlOverride?: string
-): string | undefined {
-  if (!imageUrl) return undefined;
-  const clean = stripTrackingParams(imageUrl.trim());
-  if (!clean || isTrackerUrl(clean)) return undefined;
-  if (clean.startsWith('/') || clean.startsWith('data:')) return clean;
-
-  const privacy = loadPrivacyPreferencesFromStorage();
-  const relayBase = (relayUrlOverride ?? privacy.privacyRelayUrl ?? '').trim();
-  if (!relayBase) return clean;
-
-  try {
-    return buildStatelessRelayUrl(clean, relayBase);
-  } catch {
-    return clean;
-  }
-}
-
-/**
- * Fetches raw text/HTML from a validated target URL via optional stateless privacy relay,
- * native CapacitorHttp, or privacy-hardened browser fetch (credentials: 'omit',
- * referrerPolicy: 'no-referrer', cache: 'no-store').
- */
-export async function fetchRawUrlText(
-  targetUrl: string,
-  options?: { feedId?: string; timeoutMs?: number }
-): Promise<{ text: string; finalUrl: string }> {
-  const safeDirectUrl = validateSafeExternalUrl(stripTrackingParams(targetUrl)).href;
-  const requestUrl = resolveUrlThroughPrivacyRelay(safeDirectUrl, { feedId: options?.feedId });
-  const timeoutMs = options?.timeoutMs ?? 8000;
+async function fetchRawUrlText(targetUrl: string): Promise<{ text: string; finalUrl: string }> {
+  const safeUrl = validateSafeExternalUrl(targetUrl).href;
 
   if (isRunningInNativeIos()) {
     try {
       const res = await CapacitorHttp.get({
-        url: requestUrl,
+        url: safeUrl,
         responseType: 'text',
-        connectTimeout: timeoutMs,
-        readTimeout: timeoutMs,
+        connectTimeout: 8000,
+        readTimeout: 8000,
         headers: {
-          'User-Agent': GENERIC_STATIC_USER_AGENT,
-          Accept:
-            'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
+          'User-Agent': GENERIC_USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        webFetchExtra: {
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+          cache: 'no-store',
         },
       });
       const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
       if (res.status >= 200 && res.status < 300 && text.trim().length > 40) {
-        return { text, finalUrl: stripTrackingParams(res.url || safeDirectUrl) };
+        return { text, finalUrl: res.url || safeUrl };
       }
     } catch {
-      // Fall through to standard privacy-locked fetch
+      // Fall through to standard fetch
     }
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(requestUrl, {
-      ...PRIVACY_FETCH_INIT,
-      credentials: 'omit',
-      referrerPolicy: 'no-referrer',
-      cache: 'no-store',
-      signal: controller.signal,
-      headers: {
-        Accept:
-          'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
-      },
-    });
-    if (!res.ok) {
-      throw new Error(`Unable to fetch ${safeDirectUrl} (HTTP ${res.status})`);
-    }
-    const text = await res.text();
-    return { text, finalUrl: stripTrackingParams(res.url || safeDirectUrl) };
-  } finally {
-    clearTimeout(timer);
+  const res = await fetch(safeUrl, {
+    credentials: 'omit',
+    referrerPolicy: 'no-referrer',
+    cache: 'no-store',
+    headers: {
+      'User-Agent': GENERIC_USER_AGENT,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`Unable to fetch ${safeUrl} (HTTP ${res.status})`);
   }
+  const text = await res.text();
+  return { text, finalUrl: res.url || safeUrl };
 }
 
 /**
- * Pure client-side HTML article extractor.
+ * Pure client-side HTML article extractor (used in the iOS .ipa when offline from Node backend).
  * Extracts JSON-LD articleBody and clean paragraph/heading blocks for Distraction-Free Reader View.
  */
 export function extractReadableArticleFromHtml(
   html: string,
   baseUrl: string
 ): ExtractedArticleResult {
-  const cleanBaseUrl = stripTrackingParams(baseUrl);
   const resolveRelative = (raw: string | undefined | null): string => {
     if (!raw) return '';
     const trimmed = raw.trim();
     if (!trimmed || trimmed.startsWith('data:')) return '';
     try {
-      const resolved = new URL(trimmed, cleanBaseUrl);
+      const resolved = new URL(trimmed, baseUrl);
       if (resolved.pathname.startsWith('/_next/image')) {
         const inner = resolved.searchParams.get('url');
-        if (inner) return stripTrackingParams(new URL(inner, cleanBaseUrl).href);
+        if (inner) return new URL(inner, baseUrl).href;
       }
-      const cleanHref = stripTrackingParams(resolved.href);
-      return isTrackerUrl(cleanHref) ? '' : cleanHref;
+      return resolved.href;
     } catch {
-      return stripTrackingParams(trimmed);
+      return trimmed;
     }
   };
 
-  // Extract metadata via regex so it works in both Node tests and browser DOM
   const getMeta = (key: string): string => {
     const r1 = new RegExp(
       `<meta[^>]+(?:property|name)=["']${key}["'][^>]+content=["']([^"']+)["']`,
@@ -219,7 +139,6 @@ export function extractReadableArticleFromHtml(
 
   const structuredParagraphs: string[] = [];
 
-  // 1. Inspect JSON-LD scripts for full articleBody (used by Prothom Alo, bdnews24, Daily Star, etc.)
   const jsonLdMatches = [
     ...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi),
   ];
@@ -267,9 +186,8 @@ export function extractReadableArticleFromHtml(
     }
   }
 
-  // 2. Strip script/style/nav/footer/aside and extract clean <p>, <h2>, <h3>, <blockquote>
   const bodyOnly = html
-    .replace(/<(script|style|noscript|iframe|object|embed|svg|nav|header|footer|aside|form)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<(script|style|noscript|iframe|svg|nav|header|footer|aside|form)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ');
 
   const paragraphs: string[] = [];
@@ -314,7 +232,7 @@ export function extractReadableArticleFromHtml(
     paragraphs.push(`<p>${descriptionFallback}</p>`);
   }
 
-  const contentHtml = sanitizeArticleHtml(paragraphs.join('\n'), { articleUrl: cleanBaseUrl });
+  const contentHtml = paragraphs.join('\n');
   const contentClean = stripHtml(contentHtml);
   const readTimeMin = calculateReadTime(contentClean);
 
@@ -323,7 +241,7 @@ export function extractReadableArticleFromHtml(
     author,
     publishedTime,
     siteName,
-    leadImage: leadImage || undefined,
+    leadImage,
     contentHtml,
     contentClean,
     readTimeMin,
@@ -332,8 +250,9 @@ export function extractReadableArticleFromHtml(
 }
 
 /**
- * Serverless Universal Feed Loader:
- * Operates 100% client-side via Capacitor / native fetching or user-configured stateless relay / mirror URL.
+ * Universal Feed Loader:
+ * Uses `/api/rss` when connected to the Node server or relay, and falls back
+ * to on-device native fetching + parsing inside the iOS .ipa build.
  */
 export async function fetchFeedUniversal(feed: {
   id: string;
@@ -341,7 +260,35 @@ export async function fetchFeedUniversal(feed: {
   url: string;
   defaultTags?: string[];
 }): Promise<{ feedTitle: string; items: FeedItem[] }> {
-  const { text, finalUrl } = await fetchRawUrlText(feed.url, { feedId: feed.id });
+  if (!isRunningInNativeIos()) {
+    try {
+      const params = new URLSearchParams({
+        url: feed.url,
+        feedId: feed.id,
+        feedTitle: feed.title,
+        defaultTags: (feed.defaultTags || []).join(','),
+      });
+      const res = await fetch(`/api/rss?${params.toString()}`, {
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data && Array.isArray(data.items)) {
+          return {
+            feedTitle: data.feedTitle || feed.title,
+            items: data.items,
+          };
+        }
+      }
+    } catch {
+      // Fall through to native on-device fetcher
+    }
+  }
+
+  const { text, finalUrl } = await fetchRawUrlText(feed.url);
   const trimmed = text.trim();
 
   if (/^<!doctype\s+html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) {
@@ -361,12 +308,32 @@ export async function fetchFeedUniversal(feed: {
 }
 
 /**
- * Serverless Universal Article Reader Extractor:
- * Operates 100% client-side using on-device HTML/JSON-LD extraction and privacy-hardened fetching.
+ * Universal Article Reader Extractor:
+ * Uses `/api/extract` when connected to the Node server, and falls back
+ * to on-device HTML/JSON-LD extraction inside the iOS .ipa build.
  */
 export async function extractArticleUniversal(
   articleUrl: string
 ): Promise<ExtractedArticleResult> {
+  if (!isRunningInNativeIos()) {
+    try {
+      const res = await fetch(`/api/extract?url=${encodeURIComponent(articleUrl)}`, {
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data && data.contentHtml) {
+          return data;
+        }
+      }
+    } catch {
+      // Fall through to native on-device extractor
+    }
+  }
+
   const { text, finalUrl } = await fetchRawUrlText(articleUrl);
   return extractReadableArticleFromHtml(text, finalUrl);
 }
