@@ -8,8 +8,6 @@ import {
 } from './feedParser';
 import { validateSafeExternalUrl } from './urlSecurity';
 
-export const GENERIC_USER_AGENT = 'ChintaReader/2.0';
-
 export interface ExtractedArticleResult {
   title?: string;
   author?: string;
@@ -52,13 +50,8 @@ async function fetchRawUrlText(targetUrl: string): Promise<{ text: string; final
         connectTimeout: 8000,
         readTimeout: 8000,
         headers: {
-          'User-Agent': GENERIC_USER_AGENT,
+          'User-Agent': 'ChintaReader/2.0 (iOS; +https://chinta.app)',
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        webFetchExtra: {
-          credentials: 'omit',
-          referrerPolicy: 'no-referrer',
-          cache: 'no-store',
         },
       });
       const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
@@ -71,11 +64,7 @@ async function fetchRawUrlText(targetUrl: string): Promise<{ text: string; final
   }
 
   const res = await fetch(safeUrl, {
-    credentials: 'omit',
-    referrerPolicy: 'no-referrer',
-    cache: 'no-store',
     headers: {
-      'User-Agent': GENERIC_USER_AGENT,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     },
   });
@@ -110,6 +99,7 @@ export function extractReadableArticleFromHtml(
     }
   };
 
+  // Extract metadata via regex so it works in both Node tests and browser DOM
   const getMeta = (key: string): string => {
     const r1 = new RegExp(
       `<meta[^>]+(?:property|name)=["']${key}["'][^>]+content=["']([^"']+)["']`,
@@ -139,6 +129,7 @@ export function extractReadableArticleFromHtml(
 
   const structuredParagraphs: string[] = [];
 
+  // 1. Inspect JSON-LD scripts for full articleBody (used by Prothom Alo, bdnews24, Daily Star, etc.)
   const jsonLdMatches = [
     ...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi),
   ];
@@ -186,6 +177,7 @@ export function extractReadableArticleFromHtml(
     }
   }
 
+  // 2. Strip script/style/nav/footer/aside and extract clean <p>, <h2>, <h3>, <blockquote>
   const bodyOnly = html
     .replace(/<(script|style|noscript|iframe|svg|nav|header|footer|aside|form)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ');
@@ -251,7 +243,7 @@ export function extractReadableArticleFromHtml(
 
 /**
  * Universal Feed Loader:
- * Uses `/api/rss` when connected to the Node server or relay, and falls back
+ * Uses `/api/rss` when connected to the Node server, and seamlessly falls back
  * to on-device native fetching + parsing inside the iOS .ipa build.
  */
 export async function fetchFeedUniversal(feed: {
@@ -260,6 +252,7 @@ export async function fetchFeedUniversal(feed: {
   url: string;
   defaultTags?: string[];
 }): Promise<{ feedTitle: string; items: FeedItem[] }> {
+  // 1. Try backend API first (unless running inside capacitor:// local protocol without backend)
   if (!isRunningInNativeIos()) {
     try {
       const params = new URLSearchParams({
@@ -268,11 +261,7 @@ export async function fetchFeedUniversal(feed: {
         feedTitle: feed.title,
         defaultTags: (feed.defaultTags || []).join(','),
       });
-      const res = await fetch(`/api/rss?${params.toString()}`, {
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-        cache: 'no-store',
-      });
+      const res = await fetch(`/api/rss?${params.toString()}`);
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -288,6 +277,7 @@ export async function fetchFeedUniversal(feed: {
     }
   }
 
+  // 2. Native iOS / Client-Side Direct Fetcher
   const { text, finalUrl } = await fetchRawUrlText(feed.url);
   const trimmed = text.trim();
 
@@ -309,7 +299,7 @@ export async function fetchFeedUniversal(feed: {
 
 /**
  * Universal Article Reader Extractor:
- * Uses `/api/extract` when connected to the Node server, and falls back
+ * Uses `/api/extract` when connected to the Node server, and seamlessly falls back
  * to on-device HTML/JSON-LD extraction inside the iOS .ipa build.
  */
 export async function extractArticleUniversal(
@@ -317,11 +307,7 @@ export async function extractArticleUniversal(
 ): Promise<ExtractedArticleResult> {
   if (!isRunningInNativeIos()) {
     try {
-      const res = await fetch(`/api/extract?url=${encodeURIComponent(articleUrl)}`, {
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-        cache: 'no-store',
-      });
+      const res = await fetch(`/api/extract?url=${encodeURIComponent(articleUrl)}`);
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();

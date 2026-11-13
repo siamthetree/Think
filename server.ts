@@ -401,7 +401,7 @@ function parseHtmlPortalToFeed(
     if (ogSiteMatch?.[1]) {
       feedTitle = stripHtml(ogSiteMatch[1]);
     } else if (titleTagMatch?.[1]) {
-      feedTitle = stripHtml(titleTagMatch[1]).split(/[|\-\u2013\u2014]/)[0].trim() || feedInfo.title;
+      feedTitle = stripHtml(titleTagMatch[1]).split(/[|\-–—]/)[0].trim() || feedInfo.title;
     }
   }
 
@@ -1586,8 +1586,8 @@ app.get('/api/extract', requireApiAccess, extractRateLimiter, async (req: Reques
   }
 });
 
-// 2b. SSRF-Safe Image Proxy for Canvas Story Cards, Save-to-Gallery & Media Proxy
-app.get(['/api/image-proxy', '/api/image'], requireApiAccess, extractRateLimiter, async (req: Request, res: Response) => {
+// 2b. SSRF-Safe Image Proxy for Canvas Story Cards & Save-to-Gallery
+app.get('/api/image-proxy', requireApiAccess, extractRateLimiter, async (req: Request, res: Response) => {
   let imageUrl = resolveUrl(String(req.query.url || '').trim());
   if (!imageUrl || imageUrl.length > 2048) {
     return res.status(400).json({ error: 'Missing or invalid url query parameter' });
@@ -1609,7 +1609,8 @@ app.get(['/api/image-proxy', '/api/image'], requireApiAccess, extractRateLimiter
       signal: controller.signal,
       redirect: 'follow',
       headers: {
-        'User-Agent': 'ChintaReader/2.0',
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1',
         Accept: 'image/avif,image/webp,image/apng,image/png,image/jpeg,image/*,*/*;q=0.8',
       },
     });

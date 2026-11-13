@@ -1,5 +1,4 @@
 import type { Feed, FeedItem, Tag } from '../types';
-import { stripTrackingParams } from './trackerRules';
 
 export interface StoryCluster {
   id: string;
@@ -134,7 +133,7 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * Lightweight English/Bengali stemmer so inflections unify.
+ * Lightweight English/Bengali stemmer so inflections (tighten/tightened/tightening, rates/rate) unify.
  */
 export function normalizeTopicToken(token: string): string {
   const clean = token.trim().toLowerCase();
@@ -250,6 +249,8 @@ export function computeStorySimilarity(a: FeedItem, b: FeedItem): {
 
 /**
  * Topic-strict cross-source Perspective search across all articles from all app sources.
+ * Excludes broad geographic/category words and matches strictly on shared headline tokens,
+ * bigrams, and specific story subjects.
  */
 export function findPerspectivesAcrossSources(
   target: FeedItem,
@@ -370,10 +371,12 @@ export function findPerspectivesAcrossSources(
   };
 }
 
+/** Backwards-compatible alias for cross-source Perspective search */
 export const searchPerspectivesAcrossSources = findPerspectivesAcrossSources;
 
 /**
  * Groups related articles into Perspective Clusters while keeping chronological feed order.
+ * Uses strict topic matching so unrelated category articles never falsely cluster.
  */
 export function clusterStoriesByTopic(articles: FeedItem[]): StoryCluster[] {
   const assigned = new Set<string>();
@@ -621,6 +624,7 @@ export function recordArticleReadInHabit(
   const alreadyRecordedEver = prevTotalReadIds.includes(articleId);
 
   if (current.todayReadIds.includes(articleId)) {
+    // Still ensure metadata is present in readHistory if passed
     if (articleMeta && !(current.readHistory || []).some((h) => h.id === articleId)) {
       const entry: ReadHistoryEntry = {
         id: articleId,
@@ -724,6 +728,7 @@ export function computeSpotifyReadingStats(
   const history = normalized.readHistory || [];
   const readArticlesFromFeed = articles.filter((a) => a.isRead);
 
+  // Unify read story IDs across persistent log + currently read items
   const allReadIds = new Set<string>([
     ...(normalized.totalReadIds || []),
     ...normalized.todayReadIds,
@@ -733,6 +738,7 @@ export function computeSpotifyReadingStats(
 
   const totalStoriesRead = Math.max(allReadIds.size, normalized.todayReadIds.length);
 
+  // Accumulate minutes & per-source stats
   let accumulatedHistoryMin = 0;
   const sourceAgg = new Map<
     string,
@@ -792,6 +798,7 @@ export function computeSpotifyReadingStats(
     addStoryStat(art);
   }
 
+  // Fold in persistent sourceReadCounts if older entries aren't in history anymore
   if (normalized.sourceReadCounts) {
     for (const [key, count] of Object.entries(normalized.sourceReadCounts)) {
       if (!count) continue;
@@ -821,6 +828,7 @@ export function computeSpotifyReadingStats(
   );
   const estimatedWordsRead = totalMinutesRead * 220;
 
+  // Ranked #1-#5 Top Publishers
   const sortedSources = Array.from(sourceAgg.values())
     .sort((a, b) => b.storyCount - a.storyCount || b.minutes - a.minutes)
     .slice(0, 5);
@@ -838,6 +846,7 @@ export function computeSpotifyReadingStats(
     sharePercent: Math.round((s.storyCount / totalSourceStories) * 100),
   }));
 
+  // Ranked #1-#4 Top Beats / Genres
   const sortedTags = Array.from(tagAgg.values())
     .sort((a, b) => b.storyCount - a.storyCount)
     .slice(0, 4);
@@ -857,6 +866,7 @@ export function computeSpotifyReadingStats(
     };
   });
 
+  // Recent stories ready to share as Spotify Song cards
   const recentMerged: ReadHistoryEntry[] = [];
   const seenRecent = new Set<string>();
   for (const h of history) {
@@ -890,6 +900,7 @@ export function computeSpotifyReadingStats(
       tags: art.tags || [],
     });
   }
+  // If user hasn't read anything yet, offer latest unread feed stories for Song Share preview
   if (recentMerged.length === 0 && articles.length > 0) {
     for (const art of articles.slice(0, 4)) {
       recentMerged.push({
@@ -906,6 +917,7 @@ export function computeSpotifyReadingStats(
     }
   }
 
+  // Determine Reader Aura persona
   const leadBeat = topGenres[0]?.tagId || '';
   let readerAura: SpotifyReaderAura = {
     title: 'Signal Seeker',
@@ -965,8 +977,7 @@ export function canonicalizeArticleLink(rawLink?: string): string {
   const trimmed = rawLink.trim();
   if (!trimmed) return '';
   try {
-    const stripped = stripTrackingParams(trimmed);
-    const parsed = new URL(stripped);
+    const parsed = new URL(trimmed);
     const trackingParams = [
       'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
       'fbclid', 'gclid', 'ref', 'mc_cid', 'mc_eid', 'guccounter', 'cmpid', 'taid',
@@ -982,7 +993,7 @@ export function canonicalizeArticleLink(rawLink?: string): string {
     const search = parsed.searchParams.toString();
     return `${proto}//${host}${cleanPath}${search ? `?${search}` : ''}`;
   } catch {
-    return stripTrackingParams(trimmed).replace(/^http:\/\//i, 'https://').replace(/\/+$/, '').toLowerCase();
+    return trimmed.replace(/^http:\/\//i, 'https://').replace(/\/+$/, '').toLowerCase();
   }
 }
 
@@ -1055,7 +1066,8 @@ export function filterOutAlreadyReadIncoming(
 }
 
 /**
- * Deduplicates feed items by id, canonical link, and normalized headline while merging rich fields.
+ * Deduplicates feed items by id, canonical link, and normalized headline while merging rich fields
+ * and local flags so repeated/syndicated duplicates never stack up in the newsfeed.
  */
 export function deduplicateFeedItems(items: FeedItem[]): FeedItem[] {
   if (items.length <= 1) return items;
@@ -1136,24 +1148,28 @@ export function deduplicateFeedItems(items: FeedItem[]): FeedItem[] {
 }
 
 /**
- * Ranks & interleaves articles like a newsfeed:
- * - Newly fetched refresh waves stay surfaced at top
- * - Unread stories rank ahead of read items
- * - Diversifies consecutive sources
+ * Ranks & interleaves articles like a Facebook/Instagram feed:
+ * - Newly fetched refresh waves (fetchedBatchTs) stay surfaced at the top
+ * - Unread stories rank ahead of previously read items
+ * - Within each wave, sorts newest-first while breaking up long single-source streaks (>2 consecutive)
  */
 export function rankAndInterleaveFeedItems(items: FeedItem[]): FeedItem[] {
   if (items.length <= 1) return items;
 
   const sorted = [...items].sort((a, b) => {
+    // 1. Unread items ahead of already-read items
     if (a.isRead !== b.isRead) return a.isRead ? 1 : -1;
 
+    // 2. Refresh/arrival wave priority (fresh batches surface at the top!)
     const batchA = Math.floor((a.fetchedBatchTs || 0) / 1000);
     const batchB = Math.floor((b.fetchedBatchTs || 0) / 1000);
     if (batchA !== batchB) return batchB - batchA;
 
+    // 3. Publication timestamp newest-first
     return (b.timestamp || 0) - (a.timestamp || 0);
   });
 
+  // Group into same (isRead, batchSecond) buckets and diversify consecutive sources inside large buckets
   const result: FeedItem[] = [];
   let i = 0;
   while (i < sorted.length) {
@@ -1175,6 +1191,7 @@ export function rankAndInterleaveFeedItems(items: FeedItem[]): FeedItem[] {
       continue;
     }
 
+    // Smoothly cap consecutive posts from the same source to 2 in a row when other sources exist
     const queue = [...bucket];
     let lastFeedId = '';
     let streak = 0;
@@ -1202,6 +1219,7 @@ export function rankAndInterleaveFeedItems(items: FeedItem[]): FeedItem[] {
 
 /**
  * Clears read articles from the refreshed scope while recording their keys so they never come back.
+ * Bookmarked read stories are preserved with hiddenFromFeed=true so Saved tab keeps them intact.
  */
 export function clearReadArticlesForRefresh(
   articles: FeedItem[],
@@ -1233,8 +1251,7 @@ export function clearReadArticlesForRefresh(
 }
 
 /**
- * Filters incoming articles to find genuinely new unread ones not yet present in currentArticles or readKeys.
- * Compares stripped link versions to match cleanly across tracker parameter variations.
+ * Filters incoming articles to find genuinely new unread ones not yet present in currentArticles or readKeys
  */
 export function findNewIncomingArticles(
   currentArticles: FeedItem[],
@@ -1243,11 +1260,7 @@ export function findNewIncomingArticles(
 ): FeedItem[] {
   const existingIds = new Set(currentArticles.map((a) => a.id));
   const existingLinks = new Set(
-    currentArticles.flatMap((a) => [
-      a.link,
-      stripTrackingParams(a.link || ''),
-      canonicalizeArticleLink(a.link),
-    ].filter(Boolean))
+    currentArticles.flatMap((a) => [a.link, canonicalizeArticleLink(a.link)].filter(Boolean))
   );
   const existingTitles = new Set(
     currentArticles
@@ -1260,14 +1273,8 @@ export function findNewIncomingArticles(
     if (readKeys && isArticleInReadKeys(item, readKeys)) continue;
     if (existingIds.has(item.id)) continue;
 
-    const strippedLink = stripTrackingParams(item.link || '');
     const canonLink = canonicalizeArticleLink(item.link);
-    if (
-      item.link &&
-      (existingLinks.has(item.link) ||
-        (strippedLink && existingLinks.has(strippedLink)) ||
-        (canonLink && existingLinks.has(canonLink)))
-    ) {
+    if (item.link && (existingLinks.has(item.link) || (canonLink && existingLinks.has(canonLink)))) {
       continue;
     }
 
@@ -1278,7 +1285,6 @@ export function findNewIncomingArticles(
 
     existingIds.add(item.id);
     if (item.link) existingLinks.add(item.link);
-    if (strippedLink) existingLinks.add(strippedLink);
     if (canonLink) existingLinks.add(canonLink);
     if (titleKey.length >= MIN_HEADLINE_DEDUP_CHARS) existingTitles.add(titleKey);
     uniqueNew.push(item);

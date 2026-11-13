@@ -45,7 +45,7 @@ public actor FeedNetworkClient {
     
     public init(
         rateLimiter: HostRateLimiter,
-        userAgent: String = "ChintaReader/2.0",
+        userAgent: String = "ChintaReader/2.0 (iOS; +https://chinta.app)",
         timeout: TimeInterval = 15.0
     ) {
         self.rateLimiter = rateLimiter
@@ -56,10 +56,6 @@ public actor FeedNetworkClient {
         config.timeoutIntervalForRequest = timeout
         config.timeoutIntervalForResource = timeout * 2
         config.httpShouldSetCookies = false
-        config.httpCookieAcceptPolicy = .never
-        config.httpCookieStorage = nil
-        config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         self.sessionConfig = config
     }
     
@@ -79,7 +75,6 @@ public actor FeedNetworkClient {
         request.httpMethod = "GET"
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/rss+xml, application/atom+xml, application/feed+json, application/xml, text/xml;q=0.9, */*;q=0.8", forHTTPHeaderField: "Accept")
-        // Never send a Referer header
         
         if let etag = etag, !etag.isEmpty {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
@@ -104,7 +99,7 @@ public actor FeedNetworkClient {
         let newLastModified = headers["Last-Modified"] as? String ?? headers["last-modified"] as? String
         let cacheTTL = parseCacheControlMaxAge(headers["Cache-Control"] as? String)
         
-        // Only persist feed.url when every redirect hop was a permanent 301 or 308 redirect
+        // Only persist feed.url when every redirect hop was a permanent 301 or 308 redirect (never on temporary 302/303/307)
         var permanentRedirectURL: URL? = nil
         if redirectDelegate.shouldPersistRedirectURL,
            let finalURL = httpResponse.url,

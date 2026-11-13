@@ -15,8 +15,6 @@ import { escapeHtml } from './sanitize';
 import { checkSafeExternalUrl } from './urlSecurity';
 import { deduplicateFeedItems, isArticleInReadKeys } from './feedIntelligence';
 
-export const GENERIC_USER_AGENT = 'ChintaReader/2.0';
-
 const ENV_BACKEND =
   (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL?.trim() || '';
 
@@ -34,32 +32,7 @@ const CLIENT_HEADERS: Record<string, string> = {
   'X-Chinta-Client': 'chinta-ios-2.0',
 };
 
-export function getRelayBase(): string {
-  if (typeof window === 'undefined') return '';
-  try {
-    const raw = localStorage.getItem('chinta_privacy_v1');
-    if (!raw) return '';
-    const parsed = JSON.parse(raw);
-    const url = String(parsed.relayUrl || '').trim();
-    if (!url) return '';
-    if (/^https:\/\//i.test(url) || /^http:\/\/localhost(?::\d+)?/i.test(url)) {
-      return url.replace(/\/+$/, '');
-    }
-  } catch {}
-  return '';
-}
-
-export function getConnectionMode(): 'relay' | 'direct' {
-  if (typeof window === 'undefined') return 'relay';
-  try {
-    const raw = localStorage.getItem('chinta_privacy_v1');
-    if (!raw) return 'relay';
-    const parsed = JSON.parse(raw);
-    return parsed.connectionMode === 'direct' ? 'direct' : 'relay';
-  } catch {}
-  return 'relay';
-}
-
+// AbortSignal.timeout throws on older iOS WebViews, so use a manual timer.
 function timeoutSignal(ms: number): AbortSignal {
   const controller = new AbortController();
   setTimeout(() => controller.abort(), ms);
@@ -78,16 +51,13 @@ function isNativeCapacitor(): boolean {
   );
 }
 
-export function getApiEndpoints(pathAndQuery: string): string[] {
-  const relay = getRelayBase();
-  if (relay) {
-    // When a relay is set, use it INSTEAD of cloud backends with no silent fallback
-    return [`${relay}${pathAndQuery}`];
-  }
+function getApiEndpoints(pathAndQuery: string): string[] {
   const cloud = FALLBACK_CLOUD_BACKENDS.map((base) => `${base.replace(/\/+$/, '')}${pathAndQuery}`);
   if (isNativeCapacitor()) {
+    // Native iOS app: use configured/cloud backends
     return cloud;
   }
+  // Web: use same-origin Express backend (avoids cross-origin preflight failures)
   return ENV_BACKEND ? [pathAndQuery, `${ENV_BACKEND.replace(/\/+$/, '')}${pathAndQuery}`] : [pathAndQuery];
 }
 
@@ -111,42 +81,42 @@ async function fetchRawUrlClientSide(targetUrl: string, timeoutMs = 7500): Promi
   }
   const safeUrl = check.url.href;
 
+  // 1. On native iOS Capacitor, use CapacitorHttp.get (NSURLSession, no WebView CORS restrictions)
   if (isNativeCapacitor()) {
-    try {
-      const res = await CapacitorHttp.get({
-        url: safeUrl,
-        responseType: 'text',
-        connectTimeout: timeoutMs,
-        readTimeout: timeoutMs,
-        headers: {
-          'User-Agent': GENERIC_USER_AGENT,
-          Accept:
-            'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
-          'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
-        },
-        webFetchExtra: {
-          credentials: 'omit',
-          referrerPolicy: 'no-referrer',
-          cache: 'no-store',
-        },
-      });
-      const body = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
-      if (res.status >= 200 && res.status < 300 && isValidFetchedDocument(body)) {
-        return body;
+    const userAgents = [
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+      'ChintaReader/2.0 (iOS; +https://chinta.app)',
+    ];
+    for (const ua of userAgents) {
+      try {
+        const res = await CapacitorHttp.get({
+          url: safeUrl,
+          responseType: 'text',
+          connectTimeout: timeoutMs,
+          readTimeout: timeoutMs,
+          headers: {
+            'User-Agent': ua,
+            Accept:
+              'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
+            'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
+          },
+        });
+        const body = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
+        if (res.status >= 200 && res.status < 300 && isValidFetchedDocument(body)) {
+          return body;
+        }
+        if (res.status === 404 || res.status === 410) break;
+      } catch {
+        // Fall through to next User-Agent or standard fetch
       }
-    } catch {
-      // Fall through to standard fetch
     }
   }
 
+  // 2. Standard fetch (works directly when CapacitorHttp plugin is enabled or when target allows CORS)
   try {
     const directRes = await fetch(safeUrl, {
       signal: timeoutSignal(timeoutMs),
-      credentials: 'omit',
-      referrerPolicy: 'no-referrer',
-      cache: 'no-store',
       headers: {
-        'User-Agent': GENERIC_USER_AGENT,
         Accept:
           'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/xhtml+xml, */*',
       },
@@ -158,7 +128,7 @@ async function fetchRawUrlClientSide(targetUrl: string, timeoutMs = 7500): Promi
       }
     }
   } catch {
-    // Direct fetch failed
+    // Direct fetch blocked by CORS or failed
   }
 
   throw new Error(`Unable to reach ${safeUrl} directly`);
@@ -181,11 +151,6 @@ export async function fetchFeedWithFallback(params: {
   const excludeSet = excludeKeys.length > 0 ? new Set(excludeKeys) : null;
   const normalizedParams = { ...params, url: normalizedUrl, minItems, excludeKeys };
 
-  // Direct mode bypasses the backend proxy entirely
-  if (getConnectionMode() === 'direct') {
-    return fetchFeedOnDevice(normalizedParams);
-  }
-
   const query = `url=${encodeURIComponent(normalizedParams.url)}&feedId=${encodeURIComponent(
     normalizedParams.feedId
   )}&title=${encodeURIComponent(normalizedParams.title)}&tags=${encodeURIComponent(
@@ -202,12 +167,8 @@ export async function fetchFeedWithFallback(params: {
       try {
         const postRes = await fetch(postUrl, {
           method: 'POST',
-          credentials: 'omit',
-          referrerPolicy: 'no-referrer',
-          cache: 'no-store',
           headers: {
             'Content-Type': 'application/json',
-            'User-Agent': GENERIC_USER_AGENT,
             ...CLIENT_HEADERS,
           },
           body: JSON.stringify({
@@ -233,15 +194,10 @@ export async function fetchFeedWithFallback(params: {
             } as { feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string };
           }
         }
+        // Fallback to GET if a remote endpoint only accepts GET
         if (postRes.status === 404 || postRes.status === 405) {
           const response = await fetch(getUrl, {
-            credentials: 'omit',
-            referrerPolicy: 'no-referrer',
-            cache: 'no-store',
-            headers: {
-              'User-Agent': GENERIC_USER_AGENT,
-              ...CLIENT_HEADERS,
-            },
+            headers: CLIENT_HEADERS,
             signal: timeoutSignal(12000),
           });
           const contentType = response.headers.get('content-type') || '';
@@ -265,13 +221,9 @@ export async function fetchFeedWithFallback(params: {
     return null;
   };
 
+  // Try backend first (works on Web and on iPhone via Cloud Run URL), then on-device fallback on native iOS Capacitor
   const backendData = await viaBackend();
   if (backendData) return backendData;
-
-  // If a relay is configured, do not silently fall back to cloud backends
-  if (getRelayBase()) {
-    return { feedTitle: normalizedParams.title, items: [], resolvedFeedUrl: normalizedParams.url };
-  }
 
   if (isNativeCapacitor()) {
     return fetchFeedOnDevice(normalizedParams);
@@ -325,6 +277,7 @@ async function fetchFeedOnDevice(params: {
     }
   };
 
+  // Step 1: Try fetching the given URL directly
   let rawText = '';
   try {
     rawText = await fetchRawUrlClientSide(params.url, 6500);
@@ -336,9 +289,10 @@ async function fetchFeedOnDevice(params: {
       }
     }
   } catch {
-    // Continue to RSS candidates
+    // Will continue to RSS candidate discovery
   }
 
+  // If XML came back with fewer than targetMin items, also pull homepage HTML to find section feeds / stories
   if (!rawText || isXmlString(rawText)) {
     try {
       const origin = new URL(params.url).origin;
@@ -351,6 +305,7 @@ async function fetchFeedOnDevice(params: {
     }
   }
 
+  // Step 2: Search for RSS feeds and accumulate across section feeds until targetMin unread items are reached
   const rssCandidates = buildRssDiscoveryCandidates(params.url, rawText);
   for (const candidateUrl of rssCandidates.slice(0, 8)) {
     if (collectedItems.length >= targetMin) break;
@@ -361,15 +316,17 @@ async function fetchFeedOnDevice(params: {
         absorb(parsed.items, parsed.feedTitle, candidateUrl);
       }
     } catch {
-      // Try next
+      // Try next RSS candidate
     }
   }
 
+  // Step 3: Supplement from website HTML portal anchors if still below targetMin
   if (rawText && !isXmlString(rawText) && collectedItems.length < targetMin) {
     const scraped = parseHtmlPortalToFeed(rawText, feedInfo);
     absorb(scraped.items, scraped.feedTitle, params.url);
   }
 
+  // Step 4: Website domain news index fallback (Bing News RSS + Google News RSS) if still below targetMin
   if (collectedItems.length < targetMin) {
     try {
       const parsed = new URL(params.url);
@@ -421,12 +378,6 @@ export interface ExtractedArticleData {
 
 export async function extractArticleWithFallback(url: string): Promise<ExtractedArticleData> {
   const cleanUrl = resolveUrl(url);
-
-  // Direct mode bypasses the backend extractor entirely
-  if (getConnectionMode() === 'direct') {
-    return extractArticleOnDevice(cleanUrl);
-  }
-
   const query = `url=${encodeURIComponent(cleanUrl)}`;
   const endpoints = getApiEndpoints(`/api/extract?${query}`);
 
@@ -434,13 +385,7 @@ export async function extractArticleWithFallback(url: string): Promise<Extracted
     for (const endpoint of endpoints) {
       try {
         const response = await fetch(endpoint, {
-          credentials: 'omit',
-          referrerPolicy: 'no-referrer',
-          cache: 'no-store',
-          headers: {
-            'User-Agent': GENERIC_USER_AGENT,
-            ...CLIENT_HEADERS,
-          },
+          headers: CLIENT_HEADERS,
           signal: timeoutSignal(10000),
         });
         const contentType = response.headers.get('content-type') || '';
@@ -462,12 +407,9 @@ export async function extractArticleWithFallback(url: string): Promise<Extracted
     return null;
   };
 
+  // Try backend first, then on-device extraction on native iOS Capacitor
   const remote = await viaBackend();
   if (remote) return remote;
-
-  if (getRelayBase()) {
-    return { success: false, blocks: [] };
-  }
 
   if (isNativeCapacitor()) {
     return extractArticleOnDevice(cleanUrl);
@@ -499,12 +441,8 @@ export async function summarizeArticleWithFallback(params: {
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-        cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': GENERIC_USER_AGENT,
           ...CLIENT_HEADERS,
         },
         body: JSON.stringify({
@@ -521,10 +459,11 @@ export async function summarizeArticleWithFallback(params: {
         }
       }
     } catch {
-      // try next endpoint or fallback
+      // try next endpoint or client fallback
     }
   }
 
+  // Client-side extractive fallback
   const clean = stripHtml(params.text).slice(0, 10000);
   const sentences = clean
     .replace(/([.?!])\s*(?=[A-Z0-9\u0980-\u09FF])/g, '$1|')
@@ -540,7 +479,7 @@ export async function summarizeArticleWithFallback(params: {
     provider: 'on-device-extractive',
     executiveSummary: executive || clean.slice(0, 240),
     keyTakeaways: takeaways.length > 0 ? takeaways : [clean.slice(0, 180)],
-    context: 'Key takeaways distilled directly from the news report.',
+    context: `Key takeaways distilled directly from the news report.`,
   };
 }
 
@@ -583,13 +522,7 @@ export async function fetchTravelBlogsFromDatabase(): Promise<TravelBlog[]> {
   for (const endpoint of endpoints) {
     try {
       const res = await fetch(endpoint, {
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-        cache: 'no-store',
-        headers: {
-          'User-Agent': GENERIC_USER_AGENT,
-          ...CLIENT_HEADERS,
-        },
+        headers: CLIENT_HEADERS,
         signal: timeoutSignal(10000),
       });
       if (res.ok) {
@@ -621,12 +554,8 @@ export async function publishBlogToDatabase(params: {
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-        cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': GENERIC_USER_AGENT,
           ...CLIENT_HEADERS,
         },
         body: JSON.stringify(params),
@@ -644,6 +573,7 @@ export async function publishBlogToDatabase(params: {
     }
   }
 
+  // Client-side fallback if server is unreachable
   const now = Date.now();
   return {
     id: 'tb_' + now + '_' + Math.random().toString(36).substring(2, 6),

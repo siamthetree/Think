@@ -1,4 +1,3 @@
-import './utils/preBootstrap';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import { StartupLoader } from './components/StartupLoader';

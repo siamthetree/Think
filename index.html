@@ -3,7 +3,6 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <meta name="referrer" content="no-referrer" />
 
     <!-- iOS PWA + status bar -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -18,9 +17,23 @@
     <meta property="og:description" content="Minimalist, distraction-free iPhone RSS feed reader with offline reading, customizable tags, and clean newspaper reader view." />
     <meta property="og:type" content="website" />
 
+    <!-- Critical font preconnects -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
     <!--
-      Instant dark background before React mounts to avoid white flash on iPhone.
-      Matches the splash-root background color exactly.
+      Font strategy:
+      • display=optional → browser uses fallback if fonts not cached yet (zero layout shift)
+      • We only load what the UI actually uses
+    -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Noto+Serif+Bengali:wght@400;600;700&display=optional"
+      rel="stylesheet"
+    />
+
+    <!--
+      Instant dark background before React mounts — no white flash on iPhone.
+      This matches the splash-root background colour exactly.
     -->
     <style>
       html, body, #root {
@@ -45,14 +58,80 @@
         pointer-events: none;
       }
     </style>
+
+    <!-- Suppress Vite HMR WebSocket warnings in native iOS WebViews -->
+    <script>
+      (function () {
+        var NativeWS = window.WebSocket;
+        if (typeof NativeWS !== 'undefined') {
+          window.WebSocket = function (url, protocols) {
+            var urlStr  = String(url || '');
+            var protoStr = String(protocols || '');
+            if (
+              protoStr.indexOf('vite') !== -1 ||
+              urlStr.indexOf('token=') !== -1 ||
+              urlStr.indexOf('vite-') !== -1
+            ) {
+              var ls = {};
+              var dummy = {
+                readyState: 1, url: urlStr, protocol: protocols,
+                send: function () {}, close: function () {},
+                addEventListener: function (t, fn) {
+                  ls[t] = ls[t] || []; ls[t].push(fn);
+                  if (t === 'open') setTimeout(function () { try { fn({ type: 'open', target: dummy }); } catch (e) {} }, 0);
+                },
+                removeEventListener: function (t, fn) {
+                  if (ls[t]) ls[t] = ls[t].filter(function (f) { return f !== fn; });
+                },
+                dispatchEvent: function () { return true; },
+              };
+              return dummy;
+            }
+            return new NativeWS(url, protocols);
+          };
+          window.WebSocket.prototype = NativeWS.prototype;
+          window.WebSocket.CONNECTING = 0; window.WebSocket.OPEN = 1;
+          window.WebSocket.CLOSING = 2;    window.WebSocket.CLOSED = 3;
+        }
+        window.addEventListener('unhandledrejection', function (e) {
+          var m = (e && (e.reason || e) && ((e.reason || e).message || String(e.reason || e))) || '';
+          if (m.indexOf('WebSocket') !== -1 || m.indexOf('vite:ws') !== -1) e.preventDefault();
+        });
+        window.addEventListener('error', function (e) {
+          var m = (e && (e.message || String(e))) || '';
+          if (m.indexOf('WebSocket') !== -1 || m.indexOf('vite:ws') !== -1) e.preventDefault();
+        });
+      })();
+    </script>
   </head>
 
   <body class="bg-[#090A0C] text-neutral-100 antialiased">
-    <!-- Pre-hydration placeholder -->
+    <!--
+      Pre-hydration placeholder:
+      Keeps screen non-blank during initial load before React mounts.
+    -->
     <div id="pre-splash" aria-hidden="true"></div>
 
     <div id="root"></div>
 
     <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Hide the pre-splash the instant React begins rendering -->
+    <script>
+      (function () {
+        // MutationObserver watches for React inserting real content into #root
+        var root = document.getElementById('root');
+        var pre  = document.getElementById('pre-splash');
+        if (!root || !pre) return;
+        var obs = new MutationObserver(function () {
+          if (root.children.length > 0) {
+            pre.classList.add('hidden');
+            setTimeout(function () { pre.style.display = 'none'; }, 200);
+            obs.disconnect();
+          }
+        });
+        obs.observe(root, { childList: true });
+      })();
+    </script>
   </body>
 </html>

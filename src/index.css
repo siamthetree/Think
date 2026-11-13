@@ -1,32 +1,16 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Self-hosted fonts: Latin and Bengali subsets */
-@import "@fontsource/lora/latin-400.css";
-@import "@fontsource/lora/latin-600.css";
-@import "@fontsource/lora/latin-700.css";
-@import "@fontsource/lora/latin-400-italic.css";
-@import "@fontsource/lora/latin-600-italic.css";
-
-@import "@fontsource/plus-jakarta-sans/latin-400.css";
-@import "@fontsource/plus-jakarta-sans/latin-500.css";
-@import "@fontsource/plus-jakarta-sans/latin-600.css";
-@import "@fontsource/plus-jakarta-sans/latin-700.css";
-
-@import "@fontsource/noto-serif-bengali/bengali-400.css";
-@import "@fontsource/noto-serif-bengali/bengali-600.css";
-@import "@fontsource/noto-serif-bengali/bengali-700.css";
-
 /* ─────────────────────────────────────────────────────────────
    SYSTEM FONTS & CSS CUSTOM PROPERTIES
 ───────────────────────────────────────────────────────────── */
 @layer base {
   :root {
     --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-    --font-serif: 'Lora', 'Noto Serif Bengali', 'Source Serif 4', Georgia, Cambria, serif;
+    --font-serif: 'Lora', 'Source Serif 4', Georgia, Cambria, serif;
     --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
 
-    /* Apple iOS Spring easing: matches UIKit spring(response:dampingFraction:) */
+    /* Apple iOS Spring easing — matches UIKit spring(response:dampingFraction:) */
     --spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
     --spring-soft: cubic-bezier(0.22, 1, 0.36, 1);
     --decelerate: cubic-bezier(0, 0, 0.2, 1);
@@ -83,8 +67,8 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   STARTUP BANNER: Apple-quality launch experience
-   Phase flow: mount -> animate-in (700ms spring) -> hold 3s -> animate-out (540ms)
+   STARTUP BANNER  — Apple-quality launch experience
+   Phase flow:  mount → animate-in (700ms spring) → hold 3s → animate-out (540ms)
 ───────────────────────────────────────────────────────────── */
 
 /* The full-screen launch banner that sits above everything */
@@ -98,13 +82,13 @@
   justify-content: center;
   background: #090A0C;
   overflow: hidden;
-  /* GPU composited layer: no jank */
+  /* GPU composited layer — no jank */
   transform: translateZ(0);
   will-change: opacity, transform;
   -webkit-backface-visibility: hidden;
 }
 
-/* Entry: scale from 1.06 -> 1 with a spring */
+/* Entry: scale from 1.06 → 1 with a beautiful spring */
 .splash-enter {
   animation: splashEnter 680ms var(--spring-soft) both;
 }
@@ -120,7 +104,7 @@
   }
 }
 
-/* Exit: gentle blur + scale up + fade like iOS app launch reversal */
+/* Exit: gentle blur + scale up + fade — exactly like iOS app launch reversal */
 .splash-exit {
   animation: splashExit 240ms var(--decelerate) both;
   pointer-events: none;
@@ -137,7 +121,9 @@
   }
 }
 
-/* Ambient radial glow: the breathing background halo */
+/* ── Splash interior elements ── */
+
+/* Ambient radial glow — the "breathing" background halo */
 .splash-glow {
   position: absolute;
   inset: 0;
@@ -239,9 +225,10 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   APP SHELL: the content beneath the splash
+   APP SHELL — the content beneath the splash
 ───────────────────────────────────────────────────────────── */
 
+/* When the splash exits, the app content zooms in naturally */
 .app-shell-ready {
   animation: appShellReveal 320ms var(--spring-soft) both;
 }
@@ -256,7 +243,8 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   APPLE iOS 26 LIQUID GLASS: Refractive 3D Curved Lens Surfaces
+   APPLE iOS 26 LIQUID GLASS — Refractive 3D Curved Lens Surfaces
+   Matches the translucent refractive capsule & orb aesthetic
 ───────────────────────────────────────────────────────────── */
 .liquid-glass {
   background: rgba(255, 255, 255, 0.62);
@@ -319,7 +307,7 @@
     0 4px 12px rgba(0, 0, 0, 0.40);
 }
 
-/* Recessed smoked-glass active bubble inside bottom capsule dock */
+/* Recessed smoked-glass active bubble inside the bottom capsule dock */
 .liquid-glass-active-bubble {
   background: rgba(15, 16, 20, 0.12);
   box-shadow:
@@ -333,6 +321,8 @@
     inset 0 1px 1px rgba(255, 255, 255, 0.14),
     0 2px 10px rgba(0, 0, 0, 0.45);
 }
+
+
 
 /* Progressive top atmospheric blur mask (no hard border) */
 .top-progressive-blur {
@@ -402,7 +392,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   NAVIGATION: Tab Bar (Floating iOS 26 Capsule)
+   NAVIGATION — Tab Bar (Floating iOS 26 Capsule)
 ───────────────────────────────────────────────────────────── */
 .tab-bar {
   position: relative;
@@ -430,6 +420,7 @@
   pointer-events: none;
 }
 
+/* Individual tab button */
 .tab-btn {
   flex: 1;
   display: flex;
@@ -448,6 +439,7 @@
   transition: transform 100ms var(--accelerate);
 }
 
+/* Active tab icon capsule indicator */
 .tab-active-indicator {
   position: absolute;
   inset: 2px 6px;
@@ -463,7 +455,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   FEED HEADER: Scroll-reactive frosted glass
+   FEED HEADER — Scroll-reactive frosted glass
 ───────────────────────────────────────────────────────────── */
 .feed-header {
   position: absolute;
@@ -504,7 +496,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   ARTICLE CARDS: Press feedback and smooth hover
+   ARTICLE CARDS — Press feedback & smooth hover
 ───────────────────────────────────────────────────────────── */
 .article-card {
   transition:
@@ -521,6 +513,7 @@
   background-color: rgba(255, 255, 255, 0.03);
 }
 
+/* Card image zoom on hover */
 .article-card-img {
   transition: transform 600ms var(--spring-soft);
   will-change: transform;
@@ -531,8 +524,10 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   READER VIEW: Premium reading experience
+   READER VIEW — Premium reading experience
 ───────────────────────────────────────────────────────────── */
+
+/* Reader sliding in from right (like iOS push navigation) */
 .reader-push-enter {
   animation: readerPushIn 420ms var(--spring-soft) both;
 }
@@ -551,6 +546,7 @@
   }
 }
 
+/* Reader slide out (pop navigation) */
 .reader-push-exit {
   animation: readerPushOut 320ms var(--accelerate) both;
   pointer-events: none;
@@ -567,6 +563,7 @@
   }
 }
 
+/* Reading progress bar */
 .reader-progress-bar {
   height: 2px;
   background: var(--accent);
@@ -576,6 +573,7 @@
   will-change: width;
 }
 
+/* Drop cap for first paragraph */
 .prose-drop-cap::first-letter {
   float: left;
   font-size: 3.4em;
@@ -617,7 +615,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   PULL TO REFRESH: Elastic overscroll indicator
+   PULL TO REFRESH — Elastic overscroll indicator
 ───────────────────────────────────────────────────────────── */
 .ptr-spinner {
   animation: ptrSpin 800ms linear infinite;
@@ -629,7 +627,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   MODALS & SHEETS: Bottom sheet entrance
+   MODALS & SHEETS — Bottom sheet entrance
 ───────────────────────────────────────────────────────────── */
 .sheet-backdrop {
   animation: sheetBackdropIn 300ms var(--standard) both;
@@ -665,7 +663,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   FEED CHIPS & FILTER TABS: Smooth segment indicator
+   FEED CHIPS & FILTER TABS — Smooth segment indicator
 ───────────────────────────────────────────────────────────── */
 .segment-tab {
   position: relative;
@@ -691,7 +689,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   SOURCE AVATAR / FAVICON: Shimmer skeleton
+   SOURCE AVATAR / FAVICON — Shimmer skeleton
 ───────────────────────────────────────────────────────────── */
 .skeleton-shimmer {
   background: linear-gradient(
@@ -717,11 +715,6 @@
 
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
 .pt-safe { padding-top:    env(safe-area-inset-top,    12px); }
-
-/* Tap-to-load blocked images indicator */
-.chinta-tap-to-load-img {
-  cursor: pointer;
-}
 
 /* ─────────────────────────────────────────────────────────────
    READER THEME PRESETS (Dynamic CSS Variables)
@@ -852,7 +845,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   ICON BUTTON PRESS STATES (native iOS feel: 44pt target)
+   ICON BUTTON PRESS STATES  (native iOS feel — 44pt target)
 ───────────────────────────────────────────────────────────── */
 .icon-btn {
   display: inline-flex;
@@ -873,7 +866,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   HEART LIKE BUTTON: spring pop
+   HEART LIKE BUTTON — spring pop
 ───────────────────────────────────────────────────────────── */
 .like-pop {
   animation: likePop 350ms var(--spring) both;
@@ -956,7 +949,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   SEARCH INPUT: smooth reveal animation
+   SEARCH INPUT — smooth reveal animation
 ───────────────────────────────────────────────────────────── */
 .search-reveal {
   animation: searchReveal 220ms var(--spring-soft) both;
@@ -968,7 +961,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   REDUCED MOTION: always respect accessibility prefs
+   REDUCED MOTION — always respect accessibility prefs
 ───────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -981,7 +974,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   MOBILE: disable min-width constraint
+   MOBILE — disable min-width constraint
 ───────────────────────────────────────────────────────────── */
 @media (max-width: 450px) {
   body { min-width: 0; }

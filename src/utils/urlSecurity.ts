@@ -2,8 +2,6 @@
  * URL Security, SSRF Protection, and Tag-Safe HTML Truncation Utilities
  */
 
-export { stripTrackingParams } from './trackerRules';
-
 export function isPrivateOrReservedIpv4(ip: string): boolean {
   const parts = ip.trim().split('.');
   if (parts.length !== 4) return true;
@@ -241,3 +239,4 @@ export function truncateHtmlSafely(html: string, maxChars: number): string {
 
   return safeSlice;
 }
+

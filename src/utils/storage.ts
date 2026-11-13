@@ -21,7 +21,6 @@ const STORAGE_KEYS = {
   PREFS: 'paperpress_reader_prefs_v2',
   FOLDERS: 'paperpress_folders_v1',
   READ_KEYS: 'chinta_read_article_keys_v1',
-  PRIVACY: 'chinta_privacy_v1',
 };
 
 export const DEFAULT_FOLDERS: string[] = [];
@@ -32,20 +31,6 @@ export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   theme: 'slate',
   lineHeight: 'relaxed',
   distractionFree: false,
-};
-
-export interface PrivacySettings {
-  blockThirdPartyMedia: boolean;
-  tapToLoadMedia: boolean;
-  relayUrl: string;
-  connectionMode: 'relay' | 'direct';
-}
-
-export const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
-  blockThirdPartyMedia: true,
-  tapToLoadMedia: false,
-  relayUrl: '',
-  connectionMode: 'relay',
 };
 
 // Storage limits (keep payload compact while preserving full offline bodies without mid-tag truncation)
@@ -278,44 +263,6 @@ export function savePreferencesToStorage(prefs: ReaderPreferences): void {
   }
 }
 
-export function loadPrivacySettingsFromStorage(): PrivacySettings {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.PRIVACY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        return {
-          blockThirdPartyMedia:
-            typeof parsed.blockThirdPartyMedia === 'boolean'
-              ? parsed.blockThirdPartyMedia
-              : DEFAULT_PRIVACY_SETTINGS.blockThirdPartyMedia,
-          tapToLoadMedia:
-            typeof parsed.tapToLoadMedia === 'boolean'
-              ? parsed.tapToLoadMedia
-              : DEFAULT_PRIVACY_SETTINGS.tapToLoadMedia,
-          relayUrl:
-            typeof parsed.relayUrl === 'string'
-              ? parsed.relayUrl.trim()
-              : DEFAULT_PRIVACY_SETTINGS.relayUrl,
-          connectionMode:
-            parsed.connectionMode === 'direct' ? 'direct' : 'relay',
-        };
-      }
-    }
-  } catch (e) {
-    console.error('Failed to load privacy settings from localStorage', e);
-  }
-  return DEFAULT_PRIVACY_SETTINGS;
-}
-
-export function savePrivacySettingsToStorage(settings: PrivacySettings): void {
-  try {
-    localStorage.setItem(STORAGE_KEYS.PRIVACY, JSON.stringify(settings));
-  } catch (e) {
-    console.error('Failed to save privacy settings to localStorage', e);
-  }
-}
-
 export function loadReadArticleKeysFromStorage(): string[] {
   return readArray<string>(STORAGE_KEYS.READ_KEYS) || [];
 }
@@ -435,3 +382,4 @@ export function saveReadingSpeedProfileToStorage<T>(profile: T): void {
     console.error('Failed to save reading speed profile to localStorage', e);
   }
 }
+
