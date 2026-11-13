@@ -1,0 +1,111 @@
+{
+  "entities": {
+    "UserRoot": {
+      "title": "UserRoot",
+      "description": "Authenticated reader identity document anchoring ownership for subcollections.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "photoUrl": { "type": "string", "maxLength": 512 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "createdAt", "updatedAt"]
+    },
+    "UserCloudState": {
+      "title": "UserCloudState",
+      "description": "Reader preferences, source folders, daily habit progress, and language reading speed calibration profile.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "folders": { "type": "array" },
+        "preferences": { "type": "object" },
+        "readingHabit": { "type": "object" },
+        "readingSpeedProfile": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "folders", "preferences", "readingHabit", "readingSpeedProfile", "createdAt", "updatedAt"]
+    },
+    "SubscribedSource": {
+      "title": "SubscribedSource",
+      "description": "RSS or web newspaper source subscribed by the user.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 200 },
+        "url": { "type": "string", "maxLength": 1024 },
+        "siteUrl": { "type": "string", "maxLength": 1024 },
+        "category": { "type": "string", "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 500 },
+        "defaultTags": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "id", "title", "url", "category", "defaultTags", "createdAt", "updatedAt"]
+    },
+    "SavedBookmark": {
+      "title": "SavedBookmark",
+      "description": "Bookmarked article saved by the reader for synced cross-device access.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "feedId": { "type": "string", "maxLength": 128 },
+        "feedTitle": { "type": "string", "maxLength": 200 },
+        "feedUrl": { "type": "string", "maxLength": 1024 },
+        "title": { "type": "string", "maxLength": 400 },
+        "link": { "type": "string", "maxLength": 1024 },
+        "pubDate": { "type": "string", "maxLength": 64 },
+        "timestamp": { "type": "number" },
+        "author": { "type": "string", "maxLength": 160 },
+        "summary": { "type": "string", "maxLength": 600 },
+        "imageUrl": { "type": "string", "maxLength": 1024 },
+        "tags": { "type": "array" },
+        "readTimeMin": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "id", "feedId", "feedTitle", "title", "link", "timestamp", "tags", "readTimeMin", "createdAt", "updatedAt"]
+    },
+    "ReadArticleEntry": {
+      "title": "ReadArticleEntry",
+      "description": "Persistent read-signature entry so articles already read are never re-surfaced across devices.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "entryKey": { "type": "string", "maxLength": 256 },
+        "canonicalUrl": { "type": "string", "maxLength": 1024 },
+        "headlineKey": { "type": "string", "maxLength": 300 },
+        "readAt": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "entryKey", "readAt", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserRoot" },
+      "description": "Authenticated user root document owning all nested reader state."
+    },
+    "/users/{userId}/meta/{stateId}": {
+      "schema": { "$ref": "#/entities/UserCloudState" },
+      "description": "Synced reader preferences, folders, habit progress, and speed profile."
+    },
+    "/users/{userId}/sources/{sourceId}": {
+      "schema": { "$ref": "#/entities/SubscribedSource" },
+      "description": "User's subscribed news sources."
+    },
+    "/users/{userId}/bookmarks/{bookmarkId}": {
+      "schema": { "$ref": "#/entities/SavedBookmark" },
+      "description": "User's saved/bookmarked articles."
+    },
+    "/users/{userId}/readEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/ReadArticleEntry" },
+      "description": "User's read-article signature entries for cross-device deduplication."
+    }
+  }
+}

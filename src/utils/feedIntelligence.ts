@@ -1,4 +1,5 @@
 import type { Feed, FeedItem, Tag } from '../types';
+import { stripTrackingParams } from './trackerRules';
 
 export interface StoryCluster {
   id: string;
@@ -133,7 +134,7 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * Lightweight English/Bengali stemmer so inflections (tighten/tightened/tightening, rates/rate) unify.
+ * Lightweight English/Bengali stemmer so inflections unify.
  */
 export function normalizeTopicToken(token: string): string {
   const clean = token.trim().toLowerCase();
@@ -249,8 +250,6 @@ export function computeStorySimilarity(a: FeedItem, b: FeedItem): {
 
 /**
  * Topic-strict cross-source Perspective search across all articles from all app sources.
- * Excludes broad geographic/category words and matches strictly on shared headline tokens,
- * bigrams, and specific story subjects.
  */
 export function findPerspectivesAcrossSources(
   target: FeedItem,
@@ -371,12 +370,10 @@ export function findPerspectivesAcrossSources(
   };
 }
 
-/** Backwards-compatible alias for cross-source Perspective search */
 export const searchPerspectivesAcrossSources = findPerspectivesAcrossSources;
 
 /**
  * Groups related articles into Perspective Clusters while keeping chronological feed order.
- * Uses strict topic matching so unrelated category articles never falsely cluster.
  */
 export function clusterStoriesByTopic(articles: FeedItem[]): StoryCluster[] {
   const assigned = new Set<string>();
@@ -624,7 +621,6 @@ export function recordArticleReadInHabit(
   const alreadyRecordedEver = prevTotalReadIds.includes(articleId);
 
   if (current.todayReadIds.includes(articleId)) {
-    // Still ensure metadata is present in readHistory if passed
     if (articleMeta && !(current.readHistory || []).some((h) => h.id === articleId)) {
       const entry: ReadHistoryEntry = {
         id: articleId,
@@ -728,7 +724,6 @@ export function computeSpotifyReadingStats(
   const history = normalized.readHistory || [];
   const readArticlesFromFeed = articles.filter((a) => a.isRead);
 
-  // Unify read story IDs across persistent log + currently read items
   const allReadIds = new Set<string>([
     ...(normalized.totalReadIds || []),
     ...normalized.todayReadIds,
@@ -738,7 +733,6 @@ export function computeSpotifyReadingStats(
 
   const totalStoriesRead = Math.max(allReadIds.size, normalized.todayReadIds.length);
 
-  // Accumulate minutes & per-source stats
   let accumulatedHistoryMin = 0;
   const sourceAgg = new Map<
     string,
@@ -798,7 +792,6 @@ export function computeSpotifyReadingStats(
     addStoryStat(art);
   }
 
-  // Fold in persistent sourceReadCounts if older entries aren't in history anymore
   if (normalized.sourceReadCounts) {
     for (const [key, count] of Object.entries(normalized.sourceReadCounts)) {
       if (!count) continue;
@@ -828,7 +821,6 @@ export function computeSpotifyReadingStats(
   );
   const estimatedWordsRead = totalMinutesRead * 220;
 
-  // Ranked #1-#5 Top Publishers
   const sortedSources = Array.from(sourceAgg.values())
     .sort((a, b) => b.storyCount - a.storyCount || b.minutes - a.minutes)
     .slice(0, 5);
@@ -846,7 +838,6 @@ export function computeSpotifyReadingStats(
     sharePercent: Math.round((s.storyCount / totalSourceStories) * 100),
   }));
 
-  // Ranked #1-#4 Top Beats / Genres
   const sortedTags = Array.from(tagAgg.values())
     .sort((a, b) => b.storyCount - a.storyCount)
     .slice(0, 4);
@@ -866,7 +857,6 @@ export function computeSpotifyReadingStats(
     };
   });
 
-  // Recent stories ready to share as Spotify Song cards
   const recentMerged: ReadHistoryEntry[] = [];
   const seenRecent = new Set<string>();
   for (const h of history) {
@@ -900,7 +890,6 @@ export function computeSpotifyReadingStats(
       tags: art.tags || [],
     });
   }
-  // If user hasn't read anything yet, offer latest unread feed stories for Song Share preview
   if (recentMerged.length === 0 && articles.length > 0) {
     for (const art of articles.slice(0, 4)) {
       recentMerged.push({
@@ -917,7 +906,6 @@ export function computeSpotifyReadingStats(
     }
   }
 
-  // Determine Reader Aura persona
   const leadBeat = topGenres[0]?.tagId || '';
   let readerAura: SpotifyReaderAura = {
     title: 'Signal Seeker',
@@ -970,34 +958,75 @@ export function computeSpotifyReadingStats(
 }
 
 /**
- * Produces a canonical article link key (strips tracking query params and trailing slashes)
+ * Produces a canonical article link key (normalizes http->https, strips www., strips tracking query params & trailing slashes)
  */
 export function canonicalizeArticleLink(rawLink?: string): string {
   if (!rawLink) return '';
   const trimmed = rawLink.trim();
   if (!trimmed) return '';
   try {
-    const parsed = new URL(trimmed);
+    const stripped = stripTrackingParams(trimmed);
+    const parsed = new URL(stripped);
     const trackingParams = [
       'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-      'fbclid', 'gclid', 'ref', 'mc_cid', 'mc_eid',
+      'fbclid', 'gclid', 'ref', 'mc_cid', 'mc_eid', 'guccounter', 'cmpid', 'taid',
+      'ns_mchannel', 'ns_source', 'ocid', 'at_medium', 'at_campaign',
     ];
     for (const key of trackingParams) {
       parsed.searchParams.delete(key);
     }
+    parsed.searchParams.sort();
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const proto = parsed.protocol === 'http:' ? 'https:' : parsed.protocol.toLowerCase();
     const cleanPath = parsed.pathname.replace(/\/+$/, '') || '/';
     const search = parsed.searchParams.toString();
-    return `${parsed.origin.toLowerCase()}${cleanPath}${search ? `?${search}` : ''}`;
+    return `${proto}//${host}${cleanPath}${search ? `?${search}` : ''}`;
   } catch {
-    return trimmed.replace(/\/+$/, '').toLowerCase();
+    return stripTrackingParams(trimmed).replace(/^http:\/\//i, 'https://').replace(/\/+$/, '').toLowerCase();
   }
 }
 
 /**
- * Checks whether an article has already been read using its ID or canonicalized link
+ * Produces a normalized headline signature for duplicate/read matching across URL variants.
+ */
+export function normalizeHeadlineKey(title?: string): string {
+  if (!title) return '';
+  return title
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\u2018\u2019\u201C\u201D"'`]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const MIN_HEADLINE_DEDUP_CHARS = 18;
+
+/**
+ * Returns all stable identifiers/signatures for an article (id, raw link, canonical link, normalized title).
+ */
+export function getArticleReadSignatures(
+  item: Pick<FeedItem, 'id' | 'link'> & { title?: string }
+): string[] {
+  const sigs: string[] = [];
+  if (item.id) sigs.push(item.id);
+  if (item.link) {
+    sigs.push(item.link);
+    const canon = canonicalizeArticleLink(item.link);
+    if (canon) sigs.push(canon);
+  }
+  const titleKey = normalizeHeadlineKey(item.title);
+  if (titleKey.length >= MIN_HEADLINE_DEDUP_CHARS) {
+    sigs.push(`title:${titleKey}`);
+  }
+  return Array.from(new Set(sigs));
+}
+
+/**
+ * Checks whether an article has already been read using its ID, canonicalized link, or normalized headline.
  */
 export function isArticleInReadKeys(
-  item: Pick<FeedItem, 'id' | 'link'>,
+  item: Pick<FeedItem, 'id' | 'link'> & { title?: string },
   readKeys: Set<string>
 ): boolean {
   if (!readKeys || readKeys.size === 0) return false;
@@ -1006,6 +1035,10 @@ export function isArticleInReadKeys(
     if (readKeys.has(item.link)) return true;
     const canonical = canonicalizeArticleLink(item.link);
     if (canonical && readKeys.has(canonical)) return true;
+  }
+  const titleKey = normalizeHeadlineKey(item.title);
+  if (titleKey.length >= MIN_HEADLINE_DEDUP_CHARS && readKeys.has(`title:${titleKey}`)) {
+    return true;
   }
   return false;
 }
@@ -1022,8 +1055,153 @@ export function filterOutAlreadyReadIncoming(
 }
 
 /**
+ * Deduplicates feed items by id, canonical link, and normalized headline while merging rich fields.
+ */
+export function deduplicateFeedItems(items: FeedItem[]): FeedItem[] {
+  if (items.length <= 1) return items;
+
+  const unique: FeedItem[] = [];
+  const byId = new Map<string, number>();
+  const byLink = new Map<string, number>();
+  const byTitle = new Map<string, number>();
+
+  const registerIndex = (item: FeedItem, idx: number) => {
+    if (item.id) byId.set(item.id, idx);
+    const canon = canonicalizeArticleLink(item.link);
+    if (canon) byLink.set(canon, idx);
+    const titleKey = normalizeHeadlineKey(item.title);
+    if (titleKey.length >= MIN_HEADLINE_DEDUP_CHARS) {
+      byTitle.set(titleKey, idx);
+    }
+  };
+
+  for (const raw of items) {
+    if (!raw) continue;
+    const canon = canonicalizeArticleLink(raw.link);
+    const titleKey = normalizeHeadlineKey(raw.title);
+
+    let matchIdx: number | undefined;
+    if (raw.id && byId.has(raw.id)) {
+      matchIdx = byId.get(raw.id);
+    } else if (canon && byLink.has(canon)) {
+      matchIdx = byLink.get(canon);
+    } else if (titleKey.length >= MIN_HEADLINE_DEDUP_CHARS && byTitle.has(titleKey)) {
+      matchIdx = byTitle.get(titleKey);
+    }
+
+    if (matchIdx === undefined) {
+      const idx = unique.length;
+      unique.push(raw);
+      registerIndex(raw, idx);
+      continue;
+    }
+
+    const existing = unique[matchIdx];
+    const existingBodyLen = (existing.contentClean || '').length + (existing.summary || '').length;
+    const rawBodyLen = (raw.contentClean || '').length + (raw.summary || '').length;
+    const rawHasBetterBody = rawBodyLen > existingBodyLen + 30 || (!existing.imageUrl && Boolean(raw.imageUrl));
+
+    const merged: FeedItem = {
+      ...(rawHasBetterBody ? raw : existing),
+      id: existing.id,
+      isRead: existing.isRead || raw.isRead,
+      isBookmarked: existing.isBookmarked || raw.isBookmarked,
+      hiddenFromFeed: existing.hiddenFromFeed ?? raw.hiddenFromFeed,
+      isOfflineCached: existing.isOfflineCached || raw.isOfflineCached,
+      imageUrl: existing.imageUrl || raw.imageUrl,
+      author: existing.author || raw.author,
+      summary:
+        (existing.summary || '').length >= (raw.summary || '').length
+          ? existing.summary
+          : raw.summary,
+      contentClean:
+        (existing.contentClean || '').length >= (raw.contentClean || '').length
+          ? existing.contentClean
+          : raw.contentClean,
+      contentHtml:
+        (existing.contentHtml || '').length >= (raw.contentHtml || '').length
+          ? existing.contentHtml
+          : raw.contentHtml,
+      timestamp: Math.max(existing.timestamp || 0, raw.timestamp || 0),
+      pubDate: (raw.timestamp || 0) > (existing.timestamp || 0) ? raw.pubDate || existing.pubDate : existing.pubDate || raw.pubDate,
+      fetchedBatchTs: Math.max(existing.fetchedBatchTs || 0, raw.fetchedBatchTs || 0) || undefined,
+      tags: existing.tags.length >= raw.tags.length ? existing.tags : raw.tags,
+    };
+
+    unique[matchIdx] = merged;
+    registerIndex(merged, matchIdx);
+  }
+
+  return unique;
+}
+
+/**
+ * Ranks & interleaves articles like a newsfeed:
+ * - Newly fetched refresh waves stay surfaced at top
+ * - Unread stories rank ahead of read items
+ * - Diversifies consecutive sources
+ */
+export function rankAndInterleaveFeedItems(items: FeedItem[]): FeedItem[] {
+  if (items.length <= 1) return items;
+
+  const sorted = [...items].sort((a, b) => {
+    if (a.isRead !== b.isRead) return a.isRead ? 1 : -1;
+
+    const batchA = Math.floor((a.fetchedBatchTs || 0) / 1000);
+    const batchB = Math.floor((b.fetchedBatchTs || 0) / 1000);
+    if (batchA !== batchB) return batchB - batchA;
+
+    return (b.timestamp || 0) - (a.timestamp || 0);
+  });
+
+  const result: FeedItem[] = [];
+  let i = 0;
+  while (i < sorted.length) {
+    const baseRead = sorted[i].isRead;
+    const baseBatch = Math.floor((sorted[i].fetchedBatchTs || 0) / 1000);
+    const bucket: FeedItem[] = [];
+    while (
+      i < sorted.length &&
+      sorted[i].isRead === baseRead &&
+      Math.floor((sorted[i].fetchedBatchTs || 0) / 1000) === baseBatch
+    ) {
+      bucket.push(sorted[i]);
+      i += 1;
+    }
+
+    const distinctFeeds = new Set(bucket.map((b) => b.feedId)).size;
+    if (distinctFeeds <= 1 || bucket.length <= 3) {
+      result.push(...bucket);
+      continue;
+    }
+
+    const queue = [...bucket];
+    let lastFeedId = '';
+    let streak = 0;
+    while (queue.length > 0) {
+      let pickIdx = 0;
+      if (streak >= 2) {
+        const altIdx = queue.findIndex((item) => item.feedId !== lastFeedId);
+        if (altIdx !== -1 && altIdx <= 12) {
+          pickIdx = altIdx;
+        }
+      }
+      const [picked] = queue.splice(pickIdx, 1);
+      if (picked.feedId === lastFeedId) {
+        streak += 1;
+      } else {
+        lastFeedId = picked.feedId;
+        streak = 1;
+      }
+      result.push(picked);
+    }
+  }
+
+  return result;
+}
+
+/**
  * Clears read articles from the refreshed scope while recording their keys so they never come back.
- * Bookmarked read stories are preserved with hiddenFromFeed=true so Saved tab keeps them intact.
  */
 export function clearReadArticlesForRefresh(
   articles: FeedItem[],
@@ -1035,11 +1213,8 @@ export function clearReadArticlesForRefresh(
   for (const item of articles) {
     const inScope = !scopePredicate || scopePredicate(item);
     if (item.isRead) {
-      if (item.id) keys.add(item.id);
-      if (item.link) {
-        keys.add(item.link);
-        const canonical = canonicalizeArticleLink(item.link);
-        if (canonical) keys.add(canonical);
+      for (const sig of getArticleReadSignatures(item)) {
+        keys.add(sig);
       }
       if (inScope) {
         if (item.isBookmarked) {
@@ -1058,7 +1233,8 @@ export function clearReadArticlesForRefresh(
 }
 
 /**
- * Filters incoming articles to find genuinely new unread ones not yet present in currentArticles or readKeys
+ * Filters incoming articles to find genuinely new unread ones not yet present in currentArticles or readKeys.
+ * Compares stripped link versions to match cleanly across tracker parameter variations.
  */
 export function findNewIncomingArticles(
   currentArticles: FeedItem[],
@@ -1067,17 +1243,46 @@ export function findNewIncomingArticles(
 ): FeedItem[] {
   const existingIds = new Set(currentArticles.map((a) => a.id));
   const existingLinks = new Set(
-    currentArticles.flatMap((a) => [a.link, canonicalizeArticleLink(a.link)].filter(Boolean))
+    currentArticles.flatMap((a) => [
+      a.link,
+      stripTrackingParams(a.link || ''),
+      canonicalizeArticleLink(a.link),
+    ].filter(Boolean))
+  );
+  const existingTitles = new Set(
+    currentArticles
+      .map((a) => normalizeHeadlineKey(a.title))
+      .filter((t) => t.length >= MIN_HEADLINE_DEDUP_CHARS)
   );
 
-  return incomingArticles.filter((item) => {
-    if (readKeys && isArticleInReadKeys(item, readKeys)) return false;
-    if (existingIds.has(item.id)) return false;
-    if (item.link) {
-      if (existingLinks.has(item.link)) return false;
-      const canonical = canonicalizeArticleLink(item.link);
-      if (canonical && existingLinks.has(canonical)) return false;
+  const uniqueNew: FeedItem[] = [];
+  for (const item of incomingArticles) {
+    if (readKeys && isArticleInReadKeys(item, readKeys)) continue;
+    if (existingIds.has(item.id)) continue;
+
+    const strippedLink = stripTrackingParams(item.link || '');
+    const canonLink = canonicalizeArticleLink(item.link);
+    if (
+      item.link &&
+      (existingLinks.has(item.link) ||
+        (strippedLink && existingLinks.has(strippedLink)) ||
+        (canonLink && existingLinks.has(canonLink)))
+    ) {
+      continue;
     }
-    return true;
-  });
+
+    const titleKey = normalizeHeadlineKey(item.title);
+    if (titleKey.length >= MIN_HEADLINE_DEDUP_CHARS && existingTitles.has(titleKey)) {
+      continue;
+    }
+
+    existingIds.add(item.id);
+    if (item.link) existingLinks.add(item.link);
+    if (strippedLink) existingLinks.add(strippedLink);
+    if (canonLink) existingLinks.add(canonLink);
+    if (titleKey.length >= MIN_HEADLINE_DEDUP_CHARS) existingTitles.add(titleKey);
+    uniqueNew.push(item);
+  }
+
+  return uniqueNew;
 }

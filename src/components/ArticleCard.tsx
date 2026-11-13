@@ -10,8 +10,9 @@ import {
   ChevronUp,
   Layers,
   Loader2,
+  Image as ImageIcon,
 } from 'lucide-react';
-import type { FeedItem } from '../types';
+import type { FeedItem, PrivacyPreferences } from '../types';
 import { formatRelativeTime } from '../utils/feedParser';
 import { SourceAvatar } from './SourceAvatar';
 import { PerspectiveLogo } from './PerspectiveLogo';
@@ -21,7 +22,9 @@ import {
   triggerHapticDisarm,
   triggerHapticComplete,
 } from '../utils/haptics';
-import { isPlaceholderSummary } from '../utils/storage';
+import { isPlaceholderSummary, loadPrivacyPreferencesFromStorage } from '../utils/storage';
+import { isAllowedPublisherMediaUrl, stripTrackingParams } from '../utils/urlSecurity';
+import { resolveImageThroughPrivacyRelay } from '../utils/nativeFetcher';
 import {
   computeSwipeActionState,
   computeReleaseVelocity,
@@ -41,6 +44,7 @@ interface ArticleCardProps {
   viewMode?: 'magazine' | 'compact';
   isLoadingArticleId?: string | null;
   readingSpeedProfile?: ReadingSpeedProfile;
+  privacyPreferences?: PrivacyPreferences;
   onSelect: (article: FeedItem) => void;
   onToggleBookmark: (id: string, e?: React.MouseEvent) => void;
   onToggleRead: (id: string, e?: React.MouseEvent) => void;
@@ -64,6 +68,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   viewMode = 'magazine',
   isLoadingArticleId = null,
   readingSpeedProfile,
+  privacyPreferences,
   onSelect,
   onToggleBookmark,
   onToggleRead,
@@ -75,6 +80,10 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     ? estimateArticleReadTime(article, readingSpeedProfile).minutes
     : article.readTimeMin || 3;
   const isLoadingThis = isLoadingArticleId === article.id;
+
+  const activePrivacy = privacyPreferences || loadPrivacyPreferencesFromStorage();
+  const blockThirdPartyMedia = activePrivacy.blockThirdPartyMedia ?? true;
+  const strictTextOnlyMode = activePrivacy.strictTextOnlyMode ?? false;
 
   const pseudoCount = (seed: string, min: number, max: number) => {
     let hash = 0;
@@ -92,6 +101,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
   const [isCopied, setIsCopied] = useState(false);
   const [cardPressed, setCardPressed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
+  const [imageManuallyLoaded, setImageManuallyLoaded] = useState(false);
   const [showPerspectives, setShowPerspectives] = useState(false);
 
   // Horizontal Swipe-Action State (Right swipe = Save/Bookmark, Left swipe = Mark Read/Unread)
@@ -244,7 +254,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     }
   };
 
-  // Zero-latency single-tap on headline/card body opens the article immediately!
+  // Zero-latency single-tap on headline/card body opens the article immediately
   const handleCardClick = () => {
     if (suppressNextClickRef.current) {
       suppressNextClickRef.current = false;
@@ -280,12 +290,13 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       onShareArticle(article);
       return;
     }
+    const cleanShareLink = stripTrackingParams(article.link);
     if (navigator.share) {
       try {
         await navigator.share({
           title: article.title,
           text: article.summary,
-          url: article.link,
+          url: cleanShareLink,
         });
         return;
       } catch {
@@ -293,7 +304,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
       }
     }
     if (navigator.clipboard) {
-      await navigator.clipboard.writeText(article.link);
+      await navigator.clipboard.writeText(cleanShareLink);
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
     }
@@ -424,7 +435,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                   onOpenPerspective(article);
                 }}
                 aria-label={`Perspectives for ${article.title}`}
-                title="Perspectives — Search same news across all sources"
+                title="Perspectives - Search same news across all sources"
                 className="p-2 rounded-full text-stone-400 hover:text-[#FF6719] transition-colors active:scale-90 flex items-center gap-1"
               >
                 <Layers className="w-4 h-4 text-[#FF6719]" />
@@ -480,8 +491,19 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
     );
   }
 
-  const coverUrl = article.imageUrl || extractedImage;
+  const rawCoverUrl = article.imageUrl || extractedImage;
+  const publisherOriginUrl =
+    article.link && /^https?:\/\//i.test(article.link) ? article.link : article.feedUrl;
+  const isCoverAllowedByPrivacy = Boolean(
+    rawCoverUrl &&
+      isAllowedPublisherMediaUrl(rawCoverUrl, publisherOriginUrl, blockThirdPartyMedia)
+  );
+  const coverUrl = isCoverAllowedByPrivacy
+    ? resolveImageThroughPrivacyRelay(rawCoverUrl, activePrivacy.privacyRelayUrl)
+    : undefined;
   const hasCover = Boolean(coverUrl && !imageFailed);
+  const shouldGateCoverBehindTap = hasCover && strictTextOnlyMode && !imageManuallyLoaded;
+
   const displaySummary =
     article.summary && !isPlaceholderSummary(article.summary)
       ? article.summary
@@ -582,22 +604,45 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
           </p>
         )}
 
-        {/* 4. Large Featured Cover Image (16:9 Aspect Ratio — Double-tap to Like, Single-tap to Read) */}
+        {/* 4. Large Featured Cover Image (16:9 Aspect Ratio or Tap-to-Load Privacy Placeholder) */}
         {hasCover && (
-          <div
-            onClick={handleCoverClick}
-            className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 shadow-xs"
-          >
-            <img
-              src={coverUrl}
-              alt={article.title}
-              referrerPolicy="no-referrer"
-              loading="lazy"
-              decoding="async"
-              className="w-full h-full object-cover"
-              onError={() => setImageFailed(true)}
-            />
-          </div>
+          shouldGateCoverBehindTap ? (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full py-5 px-4 rounded-2xl bg-stone-100 dark:bg-stone-900/80 border border-stone-200/70 dark:border-white/[0.08] mb-3 flex items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-2.5 text-xs text-stone-600 dark:text-stone-400">
+                <ImageIcon className="w-4 h-4 text-stone-400 shrink-0" />
+                <span>Remote publisher image hidden for IP privacy</span>
+              </div>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  triggerHapticSelection();
+                  setImageManuallyLoaded(true);
+                }}
+                className="px-3 py-1.5 rounded-full text-xs font-semibold bg-[#FF6719]/15 text-[#FF6719] hover:bg-[#FF6719]/25 transition-colors shrink-0"
+              >
+                Load Image
+              </button>
+            </div>
+          ) : (
+            <div
+              onClick={handleCoverClick}
+              className="relative w-full aspect-[16/9] rounded-2xl overflow-hidden bg-stone-100 dark:bg-stone-900 border border-stone-200/60 dark:border-white/[0.08] mb-3 shadow-xs"
+            >
+              <img
+                src={coverUrl}
+                alt={article.title}
+                referrerPolicy="no-referrer"
+                loading="lazy"
+                decoding="async"
+                className="w-full h-full object-cover"
+                onError={() => setImageFailed(true)}
+              />
+            </div>
+          )
         )}
 
         {/* 4b. Multi-Source Perspective Cluster (when related coverage exists) */}
@@ -727,7 +772,7 @@ export const ArticleCard: React.FC<ArticleCardProps> = ({
                   onOpenPerspective(article);
                 }}
                 aria-label={`Perspectives for ${article.title}`}
-                title="Perspectives — Search all matching news across app sources"
+                title="Perspectives - Search all matching news across app sources"
                 className="flex items-center gap-1.5 py-1 px-1.5 rounded-lg text-stone-600 dark:text-stone-300 hover:text-[#FF6719] dark:hover:text-[#FF6719] transition-colors whitespace-nowrap active:scale-95"
               >
                 <Layers className="w-3.5 h-3.5 text-[#FF6719]" />

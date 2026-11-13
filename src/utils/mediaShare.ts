@@ -92,13 +92,30 @@ export function sanitizePhotoFilename(
 
 /**
  * Builds the SSRF-checked backend image proxy URL for safe untainted canvas & gallery saving.
+ * Resolves to the user relay URL when configured.
  */
 export function buildImageProxyUrl(targetUrl: string): string {
   const clean = (targetUrl || '').trim();
   if (!clean || (!clean.startsWith('http://') && !clean.startsWith('https://'))) {
     return '';
   }
-  return `/api/image-proxy?url=${encodeURIComponent(clean)}`;
+
+  let relayBase = '';
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('chinta_privacy_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const url = String(parsed.relayUrl || '').trim();
+        if (/^https:\/\//i.test(url) || /^http:\/\/localhost(?::\d+)?/i.test(url)) {
+          relayBase = url.replace(/\/+$/, '');
+        }
+      }
+    } catch {}
+  }
+
+  const base = relayBase || '';
+  return `${base}/api/image-proxy?url=${encodeURIComponent(clean)}`;
 }
 
 export interface StoryCardTransform {
@@ -138,8 +155,7 @@ export function clampStoryCardTransform(
 }
 
 /**
- * Computes independent foreground card transform (pinch scale, two-finger rotation with angle-wrap
- * safety & subtle 0-deg detent snap, and midpoint pan) without altering the background gradient.
+ * Computes independent foreground card transform without altering the background gradient.
  */
 export function computeTwoFingerTransform(params: {
   startP1: TouchPoint2D;
@@ -185,7 +201,7 @@ export function computeTwoFingerTransform(params: {
   const deltaDeg = (deltaRad * 180) / Math.PI;
 
   let nextRotation = baseTransform.rotationDeg + deltaDeg;
-  // Apple-style subtle magnetic snap to 0° when within ±2.2°
+  // Apple-style subtle magnetic snap to 0 deg when within 2.2 deg
   if (Math.abs(nextRotation) < 2.2) {
     nextRotation = 0;
   }

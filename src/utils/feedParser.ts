@@ -1,5 +1,7 @@
 import { XMLParser } from 'fast-xml-parser';
 import type { FeedItem } from '../types';
+import { stripTrackingParams, isTrackerUrl } from './urlSecurity';
+import { sanitizeArticleHtml, isTrackingPixelImgTag } from './sanitize';
 
 export function calculateReadTime(text: string): number {
   if (!text) return 1;
@@ -16,16 +18,16 @@ export function decodeHtmlEntities(text: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#x27;/gi, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/&#039;/g, "'")
+    .replace(/&#39;/gi, "'")
+    .replace(/&#039;/gi, "'")
     .replace(/&apos;/gi, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&ndash;/gi, '–')
-    .replace(/&mdash;/gi, '—')
-    .replace(/&lsquo;/gi, '‘')
-    .replace(/&rsquo;/gi, '’')
-    .replace(/&ldquo;/gi, '“')
-    .replace(/&rdquo;/gi, '”')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&ndash;/gi, '\u2013')
+    .replace(/&mdash;/gi, '\u2014')
+    .replace(/&lsquo;/gi, '\u2018')
+    .replace(/&rsquo;/gi, '\u2019')
+    .replace(/&ldquo;/gi, '\u201C')
+    .replace(/&rdquo;/gi, '\u201D')
     .replace(/&#(\d+);/g, (_, dec) => {
       try {
         return String.fromCharCode(parseInt(dec, 10));
@@ -105,27 +107,60 @@ export function resolveUrl(relativeOrAbsolute: string, baseUrl?: string): string
   }
 
   if (trimmed.startsWith('//')) {
-    return 'https:' + trimmed;
+    return stripTrackingParams('https:' + trimmed);
   }
 
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return trimmed;
+    return stripTrackingParams(trimmed);
   }
-  if (!baseUrl) return trimmed;
+  if (!baseUrl) return stripTrackingParams(trimmed);
   try {
-    return new URL(trimmed, baseUrl).href;
+    return stripTrackingParams(new URL(trimmed, baseUrl).href);
   } catch {
-    return trimmed;
+    return stripTrackingParams(trimmed);
   }
 }
 
+function sanitizeAndCleanInlineFeedHtml(rawHtml: string, baseUrl?: string): string {
+  if (!rawHtml) return '';
+  const withResolvedLinks = rawHtml
+    .replace(/<a\b([^>]*?)\bhref\s*=\s*(["'])([^"']+)\2([^>]*)>/gi, (full, before, quote, href, after) => {
+      const trimmedHref = String(href || '').trim();
+      if (!trimmedHref || trimmedHref.startsWith('#') || /^javascript:|^mailto:|^tel:/i.test(trimmedHref)) {
+        return full;
+      }
+      const cleanHref = stripTrackingParams(resolveUrl(trimmedHref, baseUrl));
+      return `<a${before}href=${quote}${cleanHref}${quote}${after}>`;
+    })
+    .replace(/<img\b([^>]*?)\bsrc\s*=\s*(["'])([^"']+)\2([^>]*)>/gi, (full, before, quote, src, after) => {
+      if (isTrackingPixelImgTag(full)) return '';
+      const trimmedSrc = String(src || '').trim();
+      if (!trimmedSrc || trimmedSrc.startsWith('data:')) return full;
+      const cleanSrc = stripTrackingParams(resolveUrl(trimmedSrc, baseUrl));
+      if (isTrackerUrl(cleanSrc)) return '';
+      return `<img${before}src=${quote}${cleanSrc}${quote}${after}>`;
+    });
+
+  return sanitizeArticleHtml(withResolvedLinks);
+}
+
 export function extractHeroImage(rawItem: any, contentHtml: string, baseUrl?: string): string | undefined {
-  const isValidImage = (url: string) => {
+  const isValidImage = (url: string, metaObj?: any) => {
     if (!url) return false;
+    if (isTrackerUrl(url)) return false;
+    if (metaObj && typeof metaObj === 'object') {
+      const w = String(metaObj['@_width'] ?? metaObj.width ?? '').trim();
+      const h = String(metaObj['@_height'] ?? metaObj.height ?? '').trim();
+      if (w === '1' || w === '0' || w === '1px' || w === '0px' || h === '1' || h === '0' || h === '1px' || h === '0px') {
+        return false;
+      }
+    }
     const lower = url.toLowerCase();
     if (
       lower.includes('feedburner') ||
       lower.includes('tracking') ||
+      lower.includes('beacon') ||
+      lower.includes('pixel') ||
       lower.includes('google_preferred_source') ||
       lower.includes('badge') ||
       lower.includes('logo') ||
@@ -148,42 +183,47 @@ export function extractHeroImage(rawItem: any, contentHtml: string, baseUrl?: st
     if (rawItem['News:Image']) {
       const ni = rawItem['News:Image'];
       const url = typeof ni === 'string' ? ni : ni?.['#text'] || ni?.['@_url'];
-      if (url && isValidImage(url)) return resolveUrl(url, baseUrl);
+      if (url && isValidImage(url, ni)) return stripTrackingParams(resolveUrl(url, baseUrl));
     }
 
     if (rawItem['media:content']) {
       const mc = rawItem['media:content'];
       if (typeof mc === 'object') {
-        const url = mc['@_url'] || (Array.isArray(mc) && mc[0]?.['@_url']);
-        if (url && isValidImage(url)) return resolveUrl(url, baseUrl);
+        const firstMc = Array.isArray(mc) ? mc[0] : mc;
+        const url = firstMc?.['@_url'];
+        if (url && isValidImage(url, firstMc)) return stripTrackingParams(resolveUrl(url, baseUrl));
       }
     }
 
     if (rawItem['media:thumbnail']) {
       const mt = rawItem['media:thumbnail'];
       if (typeof mt === 'object') {
-        const url = mt['@_url'] || (Array.isArray(mt) && mt[0]?.['@_url']);
-        if (url && isValidImage(url)) return resolveUrl(url, baseUrl);
+        const firstMt = Array.isArray(mt) ? mt[0] : mt;
+        const url = firstMt?.['@_url'];
+        if (url && isValidImage(url, firstMt)) return stripTrackingParams(resolveUrl(url, baseUrl));
       }
     }
 
     // 2. enclosure with image type
     if (rawItem.enclosure) {
-      const enc = rawItem.enclosure;
-      const url = enc['@_url'];
-      if (url && isValidImage(url)) {
-        return resolveUrl(url, baseUrl);
+      const enc = Array.isArray(rawItem.enclosure) ? rawItem.enclosure[0] : rawItem.enclosure;
+      const url = enc?.['@_url'];
+      if (url && isValidImage(url, enc)) {
+        return stripTrackingParams(resolveUrl(url, baseUrl));
       }
     }
   }
 
   // 3. <img> in content or description
   if (contentHtml) {
-    const matches = [...contentHtml.matchAll(/<img[^>]+(?:src|data-src|data-lazy-src)=["']([^"']+)["']/gi)];
-    for (const m of matches) {
-      const src = m[1];
+    const imgTags = [...contentHtml.matchAll(/<img\b[^>]*>/gi)];
+    for (const tagMatch of imgTags) {
+      const tag = tagMatch[0];
+      if (isTrackingPixelImgTag(tag)) continue;
+      const srcMatch = tag.match(/(?:src|data-src|data-lazy-src)=["']([^"']+)["']/i);
+      const src = srcMatch?.[1];
       if (src && isValidImage(src)) {
-        return resolveUrl(src, baseUrl);
+        return stripTrackingParams(resolveUrl(src, baseUrl));
       }
     }
   }
@@ -249,6 +289,7 @@ function parseXmlWithRegexFallback(
   xmlString: string,
   feedInfo: { id: string; title: string; url: string; defaultTags?: string[] }
 ): { feedTitle: string; items: FeedItem[] } {
+  const cleanFeedUrl = stripTrackingParams(feedInfo.url);
   const channelTitleMatch =
     xmlString.match(/<channel[\s>][\s\S]*?<title[^>]*>([\s\S]*?)<\/title>/i) ||
     xmlString.match(/<feed[\s>][\s\S]*?<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -279,7 +320,7 @@ function parseXmlWithRegexFallback(
       const urlMatch = block.match(/https?:\/\/[^\s<"']+/i);
       if (urlMatch) link = urlMatch[0];
     }
-    link = resolveUrl(link.trim(), feedInfo.url);
+    link = stripTrackingParams(resolveUrl(link.trim(), cleanFeedUrl));
 
     // Date
     const dateMatch = block.match(
@@ -297,12 +338,15 @@ function parseXmlWithRegexFallback(
     const contentMatch = block.match(/<content[^>]*>([\s\S]*?)<\/content>/i);
     const descMatch = block.match(/<description[^>]*>([\s\S]*?)<\/description>/i);
 
-    const contentHtml = cleanCdata(contentEncodedMatch?.[1] || contentMatch?.[1] || descMatch?.[1] || '');
+    const rawContentHtml = cleanCdata(contentEncodedMatch?.[1] || contentMatch?.[1] || descMatch?.[1] || '');
+    const contentHtml = sanitizeAndCleanInlineFeedHtml(rawContentHtml, cleanFeedUrl);
     const cleanBody = stripHtml(contentHtml);
     const summary = cleanBody.slice(0, 240);
 
-    // Hero image
-    const imageUrl = extractHeroImage({}, contentHtml, feedInfo.url);
+    // Hero image (also check enclosure tag in raw XML block)
+    const enclosureMatch = block.match(/<enclosure[^>]+url=["']([^"']+)["'][^>]*>/i);
+    const enclosureObj = enclosureMatch?.[1] ? { enclosure: { '@_url': enclosureMatch[1] } } : {};
+    const imageUrl = extractHeroImage(enclosureObj, rawContentHtml, cleanFeedUrl);
 
     const guidMatch = block.match(/<(?:guid|id)[^>]*>([\s\S]*?)<\/(?:guid|id)>/i);
     const guid = guidMatch ? cleanCdata(guidMatch[1]) : link || title;
@@ -314,7 +358,7 @@ function parseXmlWithRegexFallback(
       id,
       feedId: feedInfo.id,
       feedTitle,
-      feedUrl: feedInfo.url,
+      feedUrl: cleanFeedUrl,
       title,
       link,
       pubDate,
@@ -346,6 +390,7 @@ export function parseHtmlPortalToFeed(
   htmlString: string,
   feedInfo: { id: string; title: string; url: string; defaultTags?: string[] }
 ): { feedTitle: string; items: FeedItem[] } {
+  const cleanFeedUrl = stripTrackingParams(feedInfo.url);
   let feedTitle = feedInfo.title;
   const ogSiteMatch =
     htmlString.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i) ||
@@ -356,13 +401,13 @@ export function parseHtmlPortalToFeed(
     if (ogSiteMatch?.[1]) {
       feedTitle = stripHtml(ogSiteMatch[1]);
     } else if (titleTagMatch?.[1]) {
-      feedTitle = stripHtml(titleTagMatch[1]).split(/[|\-–—]/)[0].trim() || feedInfo.title;
+      feedTitle = stripHtml(titleTagMatch[1]).split(/[|\-\u2013\u2014]/)[0].trim() || feedInfo.title;
     }
   }
 
   let baseHostname = '';
   try {
-    baseHostname = new URL(feedInfo.url).hostname.replace(/^www\./, '');
+    baseHostname = new URL(cleanFeedUrl).hostname.replace(/^www\./, '');
   } catch {}
 
   const seenUrls = new Set<string>();
@@ -394,12 +439,13 @@ export function parseHtmlPortalToFeed(
       rawHref.startsWith('javascript:') ||
       rawHref.startsWith('mailto:') ||
       rawHref.startsWith('tel:') ||
-      rawHref.includes('/cdn-cgi/')
+      rawHref.includes('/cdn-cgi/') ||
+      isTrackerUrl(rawHref)
     ) {
       continue;
     }
 
-    const fullUrl = resolveUrl(rawHref, feedInfo.url);
+    const fullUrl = stripTrackingParams(resolveUrl(rawHref, cleanFeedUrl));
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(fullUrl);
@@ -473,8 +519,8 @@ export function parseHtmlPortalToFeed(
 
     // Extract image if inside the anchor or immediately preceding in the same card
     const imageUrl =
-      extractHeroImage({}, innerHtml, feedInfo.url) ||
-      extractHeroImage({}, beforeWindow.split(/<article\b|<li\b/i).pop() || '', feedInfo.url);
+      extractHeroImage({}, innerHtml, cleanFeedUrl) ||
+      extractHeroImage({}, beforeWindow.split(/<article\b|<li\b/i).pop() || '', cleanFeedUrl);
 
     // Extract real news summary from inner paragraph or sibling paragraph/excerpt right after </a>
     const pMatch =
@@ -497,13 +543,13 @@ export function parseHtmlPortalToFeed(
       id,
       feedId: feedInfo.id,
       feedTitle,
-      feedUrl: feedInfo.url,
+      feedUrl: cleanFeedUrl,
       title,
       link: fullUrl,
       pubDate,
       timestamp,
       summary,
-      // Keep contentClean short so ReaderView automatically triggers /api/extract on open!
+      // Keep contentClean short so ReaderView automatically triggers article extraction on open
       contentHtml: summary ? `<p>${summary}</p>` : '',
       contentClean: '',
       imageUrl,
@@ -525,6 +571,7 @@ export function parseXmlFeed(
   feedTitle: string;
   items: FeedItem[];
 } {
+  const cleanFeedUrl = stripTrackingParams(feedInfo.url);
   const rawItemCount = (xmlString.match(/<(?:item|entry)[\s>]/gi) || []).length;
 
   try {
@@ -548,7 +595,7 @@ export function parseXmlFeed(
     const itemsList = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
 
     if (itemsList.length < rawItemCount && rawItemCount > 1) {
-      return parseXmlWithRegexFallback(xmlString, feedInfo);
+      return parseXmlWithRegexFallback(xmlString, { ...feedInfo, url: cleanFeedUrl });
     }
 
     const items: FeedItem[] = [];
@@ -571,7 +618,7 @@ export function parseXmlFeed(
       } else if (typeof link === 'object') {
         link = link['@_href'] || link['#text'] || '';
       }
-      link = resolveUrl(String(link || '').trim(), feedInfo.url);
+      link = stripTrackingParams(resolveUrl(String(link || '').trim(), cleanFeedUrl));
 
       // Date
       const rawDate = raw.pubDate ?? raw['dc:date'] ?? raw.published ?? raw.updated;
@@ -598,15 +645,19 @@ export function parseXmlFeed(
         : '';
       const content = raw.content ? (typeof raw.content === 'object' ? raw.content['#text'] : raw.content) : '';
 
-      const contentHtml = cleanCdata(contentEncoded || content || description || '');
+      const rawContentHtml = cleanCdata(contentEncoded || content || description || '');
+      const contentHtml = sanitizeAndCleanInlineFeedHtml(rawContentHtml, cleanFeedUrl);
       const cleanBody = stripHtml(contentHtml);
-      const summary = stripHtml(description || cleanBody).slice(0, 240);
+      const summary = stripHtml(sanitizeAndCleanInlineFeedHtml(cleanCdata(String(description || '')), cleanFeedUrl) || cleanBody).slice(0, 240);
 
       // Hero image
-      const imageUrl = extractHeroImage(raw, contentHtml, feedInfo.url);
+      const imageUrl = extractHeroImage(raw, rawContentHtml, cleanFeedUrl);
 
       // Unique ID
-      const guid = raw.guid ? (typeof raw.guid === 'object' ? raw.guid['#text'] : raw.guid) : raw.id;
+      const guidRaw = raw.guid ? (typeof raw.guid === 'object' ? raw.guid['#text'] : raw.guid) : raw.id;
+      const guid = typeof guidRaw === 'string' && /^https?:\/\//i.test(guidRaw.trim())
+        ? stripTrackingParams(guidRaw.trim())
+        : guidRaw;
       const id = `${feedInfo.id}_${encodeURIComponent(String(guid || link || title).slice(0, 80))}`;
 
       const readTimeMin = calculateReadTime(cleanBody || summary);
@@ -615,7 +666,7 @@ export function parseXmlFeed(
         id,
         feedId: feedInfo.id,
         feedTitle,
-        feedUrl: feedInfo.url,
+        feedUrl: cleanFeedUrl,
         title,
         link,
         pubDate,
@@ -639,12 +690,12 @@ export function parseXmlFeed(
     }
 
     if (rawItemCount > 0) {
-      return parseXmlWithRegexFallback(xmlString, feedInfo);
+      return parseXmlWithRegexFallback(xmlString, { ...feedInfo, url: cleanFeedUrl });
     }
 
     return { feedTitle, items: [] };
   } catch {
-    return parseXmlWithRegexFallback(xmlString, feedInfo);
+    return parseXmlWithRegexFallback(xmlString, { ...feedInfo, url: cleanFeedUrl });
   }
 }
 
@@ -728,7 +779,7 @@ export function buildRssDiscoveryCandidates(rawUrl: string, html?: string): stri
   const candidates: string[] = [];
   const addCandidate = (u?: string) => {
     if (!u) return;
-    const resolved = resolveUrl(u, rawUrl);
+    const resolved = stripTrackingParams(resolveUrl(u, rawUrl));
     if (resolved && /^https?:\/\//i.test(resolved) && !candidates.includes(resolved)) {
       candidates.push(resolved);
     }
@@ -777,7 +828,7 @@ export function buildRssDiscoveryCandidates(rawUrl: string, html?: string): stri
   }
 
   // 2. Standard path combinations for blogs & newspapers
-  const cleanBase = parsedUrl.href.replace(/\/+$/, '');
+  const cleanBase = stripTrackingParams(parsedUrl.href).replace(/\/+$/, '');
   const origin = parsedUrl.origin;
   const pathClean = parsedUrl.pathname.replace(/\/+$/, '');
 
@@ -874,10 +925,15 @@ function extractFromEmbeddedJsonScripts(html: string): {
     if (!image) {
       const img = node.image || node['hero-image-s3-key'] ? node.image : null;
       const firstImg = Array.isArray(img) ? img[0] : img;
-      if (typeof firstImg === 'string' && firstImg.startsWith('http')) {
-        image = firstImg;
-      } else if (firstImg && typeof firstImg.url === 'string' && firstImg.url.startsWith('http')) {
-        image = firstImg.url;
+      if (typeof firstImg === 'string' && firstImg.startsWith('http') && !isTrackerUrl(firstImg)) {
+        image = stripTrackingParams(firstImg);
+      } else if (
+        firstImg &&
+        typeof firstImg.url === 'string' &&
+        firstImg.url.startsWith('http') &&
+        !isTrackerUrl(firstImg.url)
+      ) {
+        image = stripTrackingParams(firstImg.url);
       }
     }
 
@@ -954,6 +1010,7 @@ export function extractReadableArticleFromHtml(
   paragraphCount: number;
   blocks: Array<{ type: 'p' | 'h2' | 'h3' | 'blockquote' | 'img'; text?: string; src?: string }>;
 } {
+  const cleanUrl = stripTrackingParams(url);
   const embedded = extractFromEmbeddedJsonScripts(html);
 
   const readMeta = (pattern: RegExp): string => {
@@ -983,12 +1040,10 @@ export function extractReadableArticleFromHtml(
     readMeta(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) ||
     readMeta(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
 
-  // Strip script, style, noscript, nav, header, footer, aside, form, button, svg, iframe BEFORE scanning DOM blocks
+  // Strip script, style, noscript, nav, header, footer, aside, form, button, svg, iframe, object, embed, input, link, meta BEFORE scanning DOM blocks
   const cleanedHtml = html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ' ')
-    .replace(/<(?:nav|header|footer|aside|form|button|svg|iframe)\b[^>]*>[\s\S]*?<\/(?:nav|header|footer|aside|form|button|svg|iframe)>/gi, ' ');
+    .replace(/<(script|style|noscript|nav|header|footer|aside|form|button|svg|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<(input|link|meta|base|embed|object|iframe|script|style)\b[^>]*\/?>/gi, ' ');
 
   const h1Match = cleanedHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
   const titleTagMatch = cleanedHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -1003,12 +1058,13 @@ export function extractReadableArticleFromHtml(
   const title = isBoilerplateOrJsWarning(rawTitle) ? 'Newspaper Story' : rawTitle;
   const author = embedded.author || metaAuthor || undefined;
   const leadImageRaw = embedded.image || ogImage || '';
-  const leadImage = leadImageRaw ? resolveUrl(leadImageRaw, url) : undefined;
+  const resolvedLeadImage = leadImageRaw ? stripTrackingParams(resolveUrl(leadImageRaw, cleanUrl)) : undefined;
+  const leadImage = resolvedLeadImage && !isTrackerUrl(resolvedLeadImage) ? resolvedLeadImage : undefined;
 
   let siteName = ogSiteName;
   if (!siteName) {
     try {
-      siteName = new URL(url).hostname.replace(/^www\./, '');
+      siteName = new URL(cleanUrl).hostname.replace(/^www\./, '');
     } catch {
       siteName = '';
     }
@@ -1085,4 +1141,3 @@ export function extractReadableArticleFromHtml(
     blocks: finalBlocks,
   };
 }
-

@@ -15,7 +15,7 @@ import type { FeedItem } from '../types';
 test('calculateReadTime returns accurate minutes based on word count', () => {
   assert.equal(calculateReadTime(''), 1);
   assert.equal(calculateReadTime('short title with six words here'), 1);
-  
+
   // 440 words should be 2 minutes
   const words440 = Array(440).fill('word').join(' ');
   assert.equal(calculateReadTime(words440), 2);
@@ -369,3 +369,161 @@ test('parseFeedDate does not fall back to Date.now() for unparseable dates and b
   }
 });
 
+test('stripTrackingParams removes utm_*, fbclid, gclid, mc_eid, _hsenc, and other fingerprinting parameters while preserving clean query params', async () => {
+  const { stripTrackingParams } = await import('./urlSecurity');
+
+  const dirtyUrl =
+    'https://www.thedailystar.net/business/economy/news/export-surge-378912?page=2&utm_source=newsletter&utm_medium=email&utm_campaign=morning_brief&fbclid=IwAR123456&gclid=EAIaIQobChMI&mc_cid=abc&mc_eid=def&_hsenc=p2ANqtz&mkt_tok=xyz123&lang=en#section-1';
+  const cleaned = stripTrackingParams(dirtyUrl);
+  assert.equal(
+    cleaned,
+    'https://www.thedailystar.net/business/economy/news/export-surge-378912?page=2&lang=en#section-1'
+  );
+
+  // Relative or all-tracker query strings should strip cleanly
+  const allTrackerUrl =
+    'https://example.com/story/42?utm_term=rss&twclid=tw123&igshid=ig456&vero_id=v1&oly_enc_id=o1&oly_anon_id=o2&rb_clickid=r1&s_kwcid=s1';
+  assert.equal(stripTrackingParams(allTrackerUrl), 'https://example.com/story/42');
+});
+
+test('sanitizeArticleHtml strips 1x1 pixels, hidden style beacons, <script>, <iframe>, and tracker hosts while enforcing no-referrer', async () => {
+  const { sanitizeArticleHtml } = await import('./sanitize');
+
+  const dirtyHtml = `
+    <div>
+      <script>window.evilTracker = true;</script>
+      <iframe src="https://evil.example.com/frame"></iframe>
+      <object data="https://evil.example.com/flash.swf"></object>
+      <embed src="https://evil.example.com/plugin" />
+      <style>body { background: url('https://tracker.example.com/bg.gif'); }</style>
+      <link rel="stylesheet" href="https://tracker.example.com/track.css" />
+      <meta http-equiv="refresh" content="0;url=https://evil.example.com" />
+      <form action="https://evil.example.com/steal"><input type="text" value="secret" /></form>
+      <p onclick="stealData()" onmouseover="pingTracker()">Clean editorial paragraph with <a href="https://example.com/deep-dive?utm_source=rss&amp;fbclid=999&amp;id=7">an inline link</a>.</p>
+      <img src="https://example.com/pixel-1x1.gif" width="1" height="1" />
+      <img src="https://example.com/pixel-0x0.gif" width="0" height="0" />
+      <img src="https://example.com/hidden-display.gif" style="display: none;" />
+      <img src="https://example.com/hidden-vis.gif" style="visibility:hidden" />
+      <img src="https://example.com/hidden-opacity.gif" style="opacity:0; position:absolute" />
+      <img src="https://example.com/hidden-width1px.gif" style="width: 1px; height: 1px;" />
+      <img src="https://feeds.feedburner.com/~r/example/~4/abcd" />
+      <img src="https://substack.com/o/12345/beacon.gif" />
+      <img src="https://us1.list-manage.com/track/open.php?u=123" />
+      <img src="https://ad.doubleclick.net/ddm/trackimp/123" />
+      <img src="https://www.google-analytics.com/collect?v=1&amp;tid=UA-123" />
+      <img src="https://pixel.wp.com/g.gif?v=wpcom" />
+      <img src="https://open.convertkit-mail.com/abc123" />
+      <img src="https://example.com/valid-hero.jpg?utm_campaign=feed&amp;w=1200" alt="Hero photo" onerror="alert(1)" />
+      <video src="https://example.com/clip.mp4?fbclid=abc"></video>
+    </div>
+  `;
+
+  const sanitized = sanitizeArticleHtml(dirtyHtml);
+
+  // Forbidden tags and event handlers must be completely removed
+  assert.equal(/<script/i.test(sanitized), false);
+  assert.equal(/<iframe/i.test(sanitized), false);
+  assert.equal(/<object/i.test(sanitized), false);
+  assert.equal(/<embed/i.test(sanitized), false);
+  assert.equal(/<style/i.test(sanitized), false);
+  assert.equal(/<link/i.test(sanitized), false);
+  assert.equal(/<meta/i.test(sanitized), false);
+  assert.equal(/<form/i.test(sanitized), false);
+  assert.equal(/<input/i.test(sanitized), false);
+  assert.equal(/onclick|onmouseover|onerror/i.test(sanitized), false);
+
+  // 1x1, 0x0, hidden style pixels, and tracker domains must be removed
+  assert.equal(sanitized.includes('pixel-1x1.gif'), false);
+  assert.equal(sanitized.includes('pixel-0x0.gif'), false);
+  assert.equal(sanitized.includes('hidden-display.gif'), false);
+  assert.equal(sanitized.includes('hidden-vis.gif'), false);
+  assert.equal(sanitized.includes('hidden-opacity.gif'), false);
+  assert.equal(sanitized.includes('hidden-width1px.gif'), false);
+  assert.equal(sanitized.includes('feeds.feedburner.com/~r/'), false);
+  assert.equal(sanitized.includes('substack.com/o/'), false);
+  assert.equal(sanitized.includes('list-manage.com/track/'), false);
+  assert.equal(sanitized.includes('doubleclick.net'), false);
+  assert.equal(sanitized.includes('google-analytics.com'), false);
+  assert.equal(sanitized.includes('pixel.wp.com'), false);
+  assert.equal(sanitized.includes('convertkit-mail.com'), false);
+
+  // Legitimate image and link must remain, with tracking params stripped and privacy attributes enforced
+  assert.equal(sanitized.includes('https://example.com/valid-hero.jpg?w=1200'), true);
+  assert.equal(sanitized.includes('utm_campaign'), false);
+  assert.equal(sanitized.includes('https://example.com/deep-dive?id=7'), true);
+  assert.equal(sanitized.includes('fbclid'), false);
+  assert.equal(sanitized.includes('rel="noopener noreferrer"'), true);
+  assert.equal(sanitized.includes('referrerpolicy="no-referrer"'), true);
+});
+
+test('parseXmlFeed strips tracking params from feed URLs, permalinks, enclosures, and inline links and blocks third-party tracker domains', async () => {
+  const { isTrackerUrl, isAllowedPublisherMediaUrl } = await import('./urlSecurity');
+
+  const trackedRss = `<?xml version="1.0" encoding="UTF-8"?>
+  <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+    <channel>
+      <title>Privacy Weekly</title>
+      <link>https://privacyweekly.org/?utm_source=rss</link>
+      <item>
+        <guid>item-guid-001</guid>
+        <title>Zero Telemetry Architecture</title>
+        <link>https://privacyweekly.org/posts/zero-telemetry?utm_source=rss&amp;utm_medium=feed&amp;fbclid=IwAR999&amp;ref=main</link>
+        <pubDate>Mon, 10 Nov 2026 12:00:00 GMT</pubDate>
+        <enclosure url="https://cdn.privacyweekly.org/images/cover.jpg?utm_campaign=rss_enclosure&amp;quality=90" type="image/jpeg" />
+        <content:encoded><![CDATA[
+          <p>Read the <a href="https://privacyweekly.org/spec?utm_content=inline_link&amp;gclid=12345&amp;v=2">full specification</a>.</p>
+          <img src="https://pixel.wp.com/t.gif" width="1" height="1" />
+          <img src="https://cdn.privacyweekly.org/images/diagram.png?mc_eid=track1" alt="Architecture diagram" />
+        ]]></content:encoded>
+      </item>
+    </channel>
+  </rss>`;
+
+  const parsed = parseXmlFeed(trackedRss, {
+    id: 'feed_priv',
+    title: 'Privacy Weekly',
+    url: 'https://privacyweekly.org/feed.xml?utm_source=opml',
+  });
+
+  assert.equal(parsed.items.length, 1);
+  const item = parsed.items[0];
+  const contentHtml = item.contentHtml || '';
+  // Verify article id creation formula is untouched (feedId + '_' + itemGuidOrLink)
+  assert.equal(item.id, 'feed_priv_item-guid-001');
+  assert.equal(item.feedUrl, 'https://privacyweekly.org/feed.xml');
+  assert.equal(item.link, 'https://privacyweekly.org/posts/zero-telemetry?ref=main');
+  assert.equal(item.imageUrl, 'https://cdn.privacyweekly.org/images/cover.jpg?quality=90');
+  assert.equal(contentHtml.includes('https://cdn.privacyweekly.org/images/diagram.png'), true);
+  assert.equal(contentHtml.includes('mc_eid'), false);
+  assert.equal(contentHtml.includes('https://privacyweekly.org/spec?v=2'), true);
+  assert.equal(contentHtml.includes('utm_content'), false);
+  assert.equal(contentHtml.includes('gclid'), false);
+  assert.equal(contentHtml.includes('pixel.wp.com'), false);
+
+  // Verify tracker URL detector and third-party media domain blocker
+  assert.equal(isTrackerUrl('https://feeds.feedburner.com/~r/test/~4/123'), true);
+  assert.equal(isTrackerUrl('https://substack.com/o/pixel.gif'), true);
+  assert.equal(isTrackerUrl('https://mail.list-manage.com/track/click?u=1'), true);
+  assert.equal(isTrackerUrl('https://stats.doubleclick.net/r/collect'), true);
+  assert.equal(isTrackerUrl('https://www.google-analytics.com/g/collect'), true);
+  assert.equal(isTrackerUrl('https://pixel.wp.com/b.gif'), true);
+  assert.equal(isTrackerUrl('https://click.convertkit-mail.com/u123'), true);
+
+  // First-party publisher image should be allowed; unrelated ad-network third-party image should be blocked when blockThirdPartyMedia=true
+  assert.equal(
+    isAllowedPublisherMediaUrl(
+      'https://cdn.privacyweekly.org/images/diagram.png',
+      'https://privacyweekly.org/posts/zero-telemetry',
+      true
+    ),
+    true
+  );
+  assert.equal(
+    isAllowedPublisherMediaUrl(
+      'https://adserver.shadytracker.biz/banner.jpg',
+      'https://privacyweekly.org/posts/zero-telemetry',
+      true
+    ),
+    false
+  );
+});

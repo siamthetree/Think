@@ -15,10 +15,14 @@ import {
   EyeOff,
   HardDriveDownload,
   Download,
+  Shield,
+  Image as ImageIcon,
 } from 'lucide-react';
 import type { FeedItem, Tag, ReaderPreferences, ReaderTheme, ReaderFont, ReaderLineHeight } from '../types';
 import { sanitizeArticleHtml, blocksToHtml, isJavaScriptWarningText } from '../utils/sanitize';
 import { extractArticleWithFallback, summarizeArticleWithFallback, type ArticleSummaryResult } from '../utils/apiClient';
+import { isAllowedPublisherMediaUrl, stripTrackingParams } from '../utils/urlSecurity';
+import { resolveImageThroughPrivacyRelay } from '../utils/nativeFetcher';
 import {
   triggerHapticSelection,
   triggerHapticPull,
@@ -236,9 +240,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [scrollProgress, setScrollProgress] = useState(0);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [faviconError, setFaviconError] = useState(false);
   const [edgeBackOffset, setEdgeBackOffset] = useState(0);
   const [storySwipeOffset, setStorySwipeOffset] = useState(0);
+  const [loadedImageUrls, setLoadedImageUrls] = useState<Record<string, boolean>>({});
   const [extractedBlocks, setExtractedBlocks] = useState<
     { type: string; text?: string; src?: string; caption?: string }[] | null
   >(null);
@@ -252,6 +256,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [summaryData, setSummaryData] = useState<ArticleSummaryResult | null>(null);
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+
+  const blockThirdPartyMedia = preferences.blockThirdPartyMedia ?? true;
+  const strictTextOnlyMode = preferences.strictTextOnlyMode ?? false;
+  const publisherOriginUrl =
+    article.link && /^https?:\/\//i.test(article.link) ? article.link : article.feedUrl;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const articleBodyRef = useRef<HTMLDivElement>(null);
@@ -702,10 +711,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const handleShare = async () => {
     triggerHapticSelection();
+    const cleanShareLink = stripTrackingParams(article.link || window.location.href);
     const shareData = {
       title: extractedMeta.title || article.title,
-      text: `${extractedMeta.title || article.title} – ${article.feedTitle}`,
-      url: article.link || window.location.href,
+      text: `${extractedMeta.title || article.title} - ${article.feedTitle}`,
+      url: cleanShareLink,
     };
 
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -717,9 +727,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       }
     }
 
-    if (navigator.clipboard && article.link) {
+    if (navigator.clipboard && cleanShareLink) {
       try {
-        await navigator.clipboard.writeText(article.link);
+        await navigator.clipboard.writeText(cleanShareLink);
         showToast('Link copied to clipboard');
         return;
       } catch {
@@ -743,9 +753,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setIsLoadingSummary(false);
     setExtractedBlocks(null);
     setActiveSelectionText('');
+    setLoadedImageUrls({});
     setScrollProgress(0);
     setControlsVisible(true);
-    setFaviconError(false);
     lastScrollTopRef.current = initialScrollTop || 0;
     requestAnimationFrame(() => {
       containerRef.current?.scrollTo({ top: initialScrollTop || 0 });
@@ -888,16 +898,16 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
-  // Body font family styles mapping (Headline always stays crisp editorial sans like the reference)
+  // Body font family styles mapping
   const getBodyFontFamilyStyle = (font: ReaderFont) => {
     switch (font) {
       case 'sans':
-        return { fontFamily: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif" };
+        return { fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif" };
       case 'mono':
-        return { fontFamily: "'Space Mono', monospace, Courier" };
+        return { fontFamily: "ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, monospace" };
       case 'serif':
       default:
-        return { fontFamily: "'Lora', Georgia, Cambria, serif" };
+        return { fontFamily: "Georgia, Cambria, 'Times New Roman', Times, serif" };
     }
   };
 
@@ -924,23 +934,21 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const sourceInitial = (article.feedTitle || 'N').trim().charAt(0).toUpperCase();
   const authorInitial = rawAuthor ? rawAuthor.charAt(0).toUpperCase() : null;
 
-  let faviconUrl: string | undefined;
-  if (article.link && article.link.startsWith('http')) {
-    try {
-      const rawHost = new URL(article.link).hostname;
-      const hostname = rawHost
-        .replace(/^(www|feeds|rss|feed|xml)\./i, '')
-        .replace(/^bbci\.co\.uk$/i, 'bbc.co.uk');
-      if (hostname && !hostname.includes('localhost')) {
-        faviconUrl = `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`;
-      }
-    } catch {
-      // ignore
-    }
-  }
-
   // Body font size: default 19px for authentic editorial serif legibility
   const effectiveBodySize = Math.max(16, preferences.fontSize + 1);
+
+  const rawLeadImage = extractedMeta.leadImage || article.imageUrl;
+  const isLeadImageAllowed = Boolean(
+    rawLeadImage && isAllowedPublisherMediaUrl(rawLeadImage, publisherOriginUrl, blockThirdPartyMedia)
+  );
+  const safeLeadImageUrl = isLeadImageAllowed
+    ? resolveImageThroughPrivacyRelay(rawLeadImage, preferences.privacyRelayUrl)
+    : undefined;
+  const isLeadImageGatedBehindTap = Boolean(
+    safeLeadImageUrl && strictTextOnlyMode && !loadedImageUrls[safeLeadImageUrl]
+  );
+
+  const cleanArticlePermalink = article.link ? stripTrackingParams(article.link) : '';
 
   return (
     <div
@@ -978,7 +986,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       )}
 
-      {/* Apple Liquid Glass Typography & Appearance Sheet */}
+      {/* Apple Liquid Glass Typography, Appearance & Privacy Sheet */}
       {showTypographyMenu && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 pb-20 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
@@ -986,11 +994,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="reader-liquid-card rounded-3xl p-5 w-full max-w-sm text-stone-100 shadow-2xl border border-white/20 animate-in zoom-in-95 duration-150"
+            className="reader-liquid-card rounded-3xl p-5 w-full max-w-sm text-stone-100 shadow-2xl border border-white/20 animate-in zoom-in-95 duration-150 max-h-[82vh] overflow-y-auto no-scrollbar"
           >
             <div className="flex items-center justify-between pb-3.5 mb-4 border-b border-white/10">
               <span className="text-xs font-semibold uppercase tracking-wider text-stone-300">
-                Reader Appearance
+                Reader Appearance & Privacy
               </span>
               <button
                 onClick={() => {
@@ -1062,18 +1070,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               <span className="text-[11px] font-medium text-stone-400 block mb-2">Body Font</span>
               <div className="grid grid-cols-3 gap-1.5 p-1 bg-black/40 border border-white/10 rounded-2xl">
                 {[
-                  { id: 'serif', label: 'Serif', sample: 'Lora', style: { fontFamily: "'Lora', serif" } },
+                  { id: 'serif', label: 'Serif', sample: 'Georgia', style: { fontFamily: 'Georgia, serif' } },
                   {
                     id: 'sans',
                     label: 'Sans',
                     sample: 'SF Pro',
-                    style: { fontFamily: "'Plus Jakarta Sans', sans-serif" },
+                    style: { fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' },
                   },
                   {
                     id: 'mono',
                     label: 'Mono',
-                    sample: 'Space',
-                    style: { fontFamily: "'Space Mono', monospace" },
+                    sample: 'SF Mono',
+                    style: { fontFamily: 'ui-monospace, monospace' },
                   },
                 ].map((f) => {
                   const isActive = preferences.font === f.id;
@@ -1163,7 +1171,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </div>
 
             {/* Pure Focus Mode & Offline Cache Toggles */}
-            <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/10">
+            <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/10 mb-3">
               <button
                 type="button"
                 onClick={() => {
@@ -1198,6 +1206,66 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 <span>{article.isOfflineCached ? 'Cached' : 'Cache Story'}</span>
               </button>
             </div>
+
+            {/* Privacy Shield Controls: Block 3P Media & Tap-to-Load Media Mode */}
+            <div className="pt-3 border-t border-white/10 space-y-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400">
+                <Shield className="w-3.5 h-3.5" />
+                <span>IP & Tracker Protection</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHapticSelection();
+                    const next = !blockThirdPartyMedia;
+                    onUpdatePreferences({ ...preferences, blockThirdPartyMedia: next });
+                    showToast(next ? 'Third-party media blocked' : 'Third-party media allowed');
+                  }}
+                  className={`py-2 px-2.5 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+                    blockThirdPartyMedia
+                      ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                      : 'bg-black/35 border-white/10 text-stone-400 hover:text-white'
+                  }`}
+                >
+                  <Shield className="w-3.5 h-3.5 shrink-0" />
+                  <span>Block 3P Media</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    triggerHapticSelection();
+                    const next = !strictTextOnlyMode;
+                    onUpdatePreferences({ ...preferences, strictTextOnlyMode: next });
+                    showToast(next ? 'Tap-to-Load Media on' : 'Tap-to-Load Media off');
+                  }}
+                  className={`py-2 px-2.5 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+                    strictTextOnlyMode
+                      ? 'bg-[#FF6719]/20 border-[#FF6719]/50 text-[#FF6719]'
+                      : 'bg-black/35 border-white/10 text-stone-300 hover:text-white'
+                  }`}
+                >
+                  <ImageIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span>Tap-to-Load Media</span>
+                </button>
+              </div>
+
+              <div className="pt-1">
+                <label className="text-[10px] font-medium text-stone-400 block mb-1">
+                  Stateless Privacy Relay URL (Optional)
+                </label>
+                <input
+                  type="url"
+                  value={preferences.privacyRelayUrl || ''}
+                  onChange={(e) =>
+                    onUpdatePreferences({ ...preferences, privacyRelayUrl: e.target.value })
+                  }
+                  placeholder="https://your-worker.workers.dev/?url="
+                  className="w-full px-2.5 py-1.5 rounded-xl bg-black/40 border border-white/10 text-[11px] text-stone-200 placeholder:text-stone-500 focus:outline-none focus:border-[#FF6719]"
+                />
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1222,7 +1290,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       )}
 
-      {/* Main Scrollable Article Reading Canvas — Clean Top like Reference Screenshot */}
+      {/* Main Scrollable Article Reading Canvas */}
       <main
         ref={containerRef}
         onScroll={handleScroll}
@@ -1298,22 +1366,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               className={`flex items-center justify-between ${subtitle ? 'mt-5' : 'mt-6'} mb-3.5`}
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Left: Overlapping circular avatar stack */}
+              {/* Left: Overlapping circular avatar stack (deterministic local monograms only, zero remote favicon leaks) */}
               <div className="flex items-center -space-x-2">
                 <div
                   className="w-9 h-9 rounded-full bg-[#D92323] text-white flex items-center justify-center font-serif font-bold text-lg overflow-hidden shrink-0 shadow-xs"
                   style={{ boxShadow: '0 0 0 2px var(--reader-bg)' }}
                 >
-                  {faviconUrl && !faviconError ? (
-                    <img
-                      src={faviconUrl}
-                      alt={article.feedTitle}
-                      onError={() => setFaviconError(true)}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <span>{sourceInitial}</span>
-                  )}
+                  <span>{sourceInitial}</span>
                 </div>
 
                 {authorInitial && (
@@ -1342,7 +1401,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       triggerHapticSelection();
                       onOpenPerspective(article);
                     }}
-                    title="Perspective — View all sources covering this story"
+                    title="Perspective - View all sources covering this story"
                     style={{
                       backgroundColor: 'var(--reader-surface)',
                       borderColor: 'var(--reader-border)',
@@ -1357,7 +1416,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
                 <button
                   onClick={handleGenerateSummary}
-                  title="Toggle AI Editorial Summary"
+                  title="Toggle Editorial Summary"
                   style={{ color: 'var(--reader-heading)' }}
                   className="flex items-center gap-1.5 hover:opacity-80 transition-opacity active:scale-95"
                 >
@@ -1407,7 +1466,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           {/* 6. Thin Subtle Horizontal Divider */}
           <div className="border-b my-5" style={{ borderColor: 'var(--reader-border)' }} />
 
-          {/* Optional AI Editorial Summary Card */}
+          {/* Optional Editorial Summary Card */}
           {showSummary && (
             <aside
               onClick={(e) => e.stopPropagation()}
@@ -1479,41 +1538,63 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </aside>
           )}
 
-          {/* 7. Lead / Hero Image */}
-          {(extractedMeta.leadImage || article.imageUrl) && (
-            <figure
-              className="my-6 overflow-hidden rounded-[2px] relative group"
-              style={{ backgroundColor: 'var(--reader-surface)' }}
-            >
-              <img
-                src={extractedMeta.leadImage || article.imageUrl}
-                alt={extractedMeta.title || article.title}
-                referrerPolicy="no-referrer"
-                draggable={false}
-                loading="eager"
-                className="w-full h-auto object-cover block"
-                onError={(e) => {
-                  (e.target as HTMLElement).style.display = 'none';
+          {/* 7. Lead / Hero Image (respects Block Third-Party Media & Tap-to-Load Media Mode) */}
+          {safeLeadImageUrl && (
+            isLeadImageGatedBehindTap ? (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="my-6 p-4 rounded-2xl border flex items-center justify-between gap-3 font-sans"
+                style={{
+                  backgroundColor: 'var(--reader-surface)',
+                  borderColor: 'var(--reader-border)',
                 }}
-              />
-              {!preferences.distractionFree && (
+              >
+                <div className="flex items-center gap-2.5 text-xs" style={{ color: 'var(--reader-muted)' }}>
+                  <ImageIcon className="w-4 h-4 text-[#FF6719] shrink-0" />
+                  <span>Lead image blocked until requested to protect your IP address</span>
+                </div>
                 <button
                   type="button"
-                  onClick={(e) =>
-                    handleSaveArticlePhoto(
-                      (extractedMeta.leadImage || article.imageUrl) as string,
-                      e
-                    )
-                  }
-                  aria-label="Save photo to gallery"
-                  title="Save photo to gallery"
-                  className="absolute bottom-2.5 right-2.5 liquid-glass-dock px-2.5 py-1 rounded-full text-[10px] font-sans font-semibold text-white/95 flex items-center gap-1 border border-white/20 shadow-lg opacity-85 hover:opacity-100 active:scale-95 transition-all"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    triggerHapticSelection();
+                    setLoadedImageUrls((prev) => ({ ...prev, [safeLeadImageUrl]: true }));
+                  }}
+                  className="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#FF6719] text-white active:scale-95 transition-transform shrink-0"
                 >
-                  <Download className="w-3 h-3" />
-                  <span>Save</span>
+                  Load Image
                 </button>
-              )}
-            </figure>
+              </div>
+            ) : (
+              <figure
+                className="my-6 overflow-hidden rounded-[2px] relative group"
+                style={{ backgroundColor: 'var(--reader-surface)' }}
+              >
+                <img
+                  src={safeLeadImageUrl}
+                  alt={extractedMeta.title || article.title}
+                  referrerPolicy="no-referrer"
+                  draggable={false}
+                  loading="eager"
+                  className="w-full h-auto object-cover block"
+                  onError={(e) => {
+                    (e.target as HTMLElement).style.display = 'none';
+                  }}
+                />
+                {!preferences.distractionFree && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleSaveArticlePhoto(safeLeadImageUrl, e)}
+                    aria-label="Save photo to gallery"
+                    title="Save photo to gallery"
+                    className="absolute bottom-2.5 right-2.5 liquid-glass-dock px-2.5 py-1 rounded-full text-[10px] font-sans font-semibold text-white/95 flex items-center gap-1 border border-white/20 shadow-lg opacity-85 hover:opacity-100 active:scale-95 transition-all"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>Save</span>
+                  </button>
+                )}
+              </figure>
+            )
           )}
 
           {/* Author Credit Attribution Line */}
@@ -1578,7 +1659,41 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   );
                 }
                 if (block.type === 'img' && block.src) {
-                  const imgSrc = block.src;
+                  if (!isAllowedPublisherMediaUrl(block.src, publisherOriginUrl, blockThirdPartyMedia)) {
+                    return null;
+                  }
+                  const imgSrc =
+                    resolveImageThroughPrivacyRelay(block.src, preferences.privacyRelayUrl) ||
+                    block.src;
+                  if (strictTextOnlyMode && !loadedImageUrls[imgSrc]) {
+                    return (
+                      <div
+                        key={idx}
+                        onClick={(e) => e.stopPropagation()}
+                        className="my-5 p-4 rounded-2xl border flex items-center justify-between gap-3 font-sans"
+                        style={{
+                          backgroundColor: 'var(--reader-surface)',
+                          borderColor: 'var(--reader-border)',
+                        }}
+                      >
+                        <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--reader-muted)' }}>
+                          <ImageIcon className="w-4 h-4 text-[#FF6719] shrink-0" />
+                          <span>Article image hidden in Tap-to-Load Mode</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            triggerHapticSelection();
+                            setLoadedImageUrls((prev) => ({ ...prev, [imgSrc]: true }));
+                          }}
+                          className="px-3 py-1.5 rounded-full text-xs font-semibold bg-[#FF6719] text-white shrink-0"
+                        >
+                          Load Image
+                        </button>
+                      </div>
+                    );
+                  }
                   return (
                     <figure
                       key={idx}
@@ -1622,7 +1737,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             ) : article.contentHtml ? (
               <div
                 className="article-prose max-w-none"
-                dangerouslySetInnerHTML={{ __html: sanitizeArticleHtml(article.contentHtml) }}
+                dangerouslySetInnerHTML={{
+                  __html: sanitizeArticleHtml(article.contentHtml, {
+                    articleUrl: publisherOriginUrl,
+                    blockThirdPartyMedia,
+                    strictTextOnlyMode,
+                  }),
+                }}
               />
             ) : article.contentClean ? (
               <div className="space-y-5">
@@ -1725,11 +1846,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 </button>
               </div>
 
-              {article.link && article.link.startsWith('http') && (
+              {cleanArticlePermalink && cleanArticlePermalink.startsWith('http') && (
                 <a
-                  href={article.link}
+                  href={cleanArticlePermalink}
                   target="_blank"
                   rel="noopener noreferrer"
+                  referrerPolicy="no-referrer"
                   className="inline-flex items-center gap-1 text-[11px] underline underline-offset-4 transition-opacity hover:opacity-80"
                   style={{ color: 'var(--reader-muted)' }}
                 >
@@ -1793,10 +1915,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
           <div className="w-px h-4 bg-white/15 mx-0.5" />
 
-          {/* AI Summary */}
+          {/* Summary */}
           <button
             onClick={handleGenerateSummary}
-            aria-label="AI Summary"
+            aria-label="Editorial Summary"
             title="Editorial Summary"
             className={`p-2 rounded-full transition-all active:scale-90 ${
               showSummary
@@ -1809,7 +1931,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             />
           </button>
 
-          {/* Typography Settings (Aa) */}
+          {/* Typography & Privacy Settings (Aa) */}
           <button
             onClick={() => {
               triggerHapticSelection();
@@ -1921,7 +2043,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           ...article,
           title: extractedMeta.title || article.title,
           author: extractedMeta.author || article.author,
-          imageUrl: extractedMeta.leadImage || article.imageUrl,
+          imageUrl: safeLeadImageUrl,
         }}
         initialQuoteText={selectedQuoteText}
         articleText={fullReadableText}

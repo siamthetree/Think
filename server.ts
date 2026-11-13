@@ -20,6 +20,12 @@ import {
   isPrivateOrReservedIp,
   checkSafeExternalUrl,
 } from './src/utils/urlSecurity';
+import {
+  canonicalizeArticleLink,
+  deduplicateFeedItems,
+  isArticleInReadKeys,
+  normalizeHeadlineKey,
+} from './src/utils/feedIntelligence';
 
 export interface FeedItem {
   id: string;
@@ -41,6 +47,7 @@ export interface FeedItem {
   isOfflineCached: boolean;
   cachedAt?: number;
   readTimeMin: number;
+  fetchedBatchTs?: number;
 }
 
 function escapeHtmlServer(raw: string): string {
@@ -394,7 +401,7 @@ function parseHtmlPortalToFeed(
     if (ogSiteMatch?.[1]) {
       feedTitle = stripHtml(ogSiteMatch[1]);
     } else if (titleTagMatch?.[1]) {
-      feedTitle = stripHtml(titleTagMatch[1]).split(/[|\-–—]/)[0].trim() || feedInfo.title;
+      feedTitle = stripHtml(titleTagMatch[1]).split(/[|\-\u2013\u2014]/)[0].trim() || feedInfo.title;
     }
   }
 
@@ -406,12 +413,13 @@ function parseHtmlPortalToFeed(
   const seenUrls = new Set<string>();
   const seenTitles = new Set<string>();
   const items: FeedItem[] = [];
-  const now = Date.now();
 
-  const anchorMatches = [...htmlString.matchAll(/<a\s+([^>]+)>([\s\S]*?)<\/a>/gi)];
+  const scannableHtml =
+    htmlString.length > 700000 ? htmlString.slice(0, 700000) : htmlString;
+  const anchorMatches = [...scannableHtml.matchAll(/<a\s+([^>]+)>([\s\S]*?)<\/a>/gi)];
 
   for (const match of anchorMatches) {
-    if (items.length >= 30) break;
+    if (items.length >= 80) break;
     const attrs = match[1];
     const innerHtml = match[2];
 
@@ -445,7 +453,7 @@ function parseHtmlPortalToFeed(
     const pathname = parsedUrl.pathname.replace(/\/+$/, '');
     const segments = pathname.split('/').filter(Boolean);
 
-    if (pathname.length < 14 || segments.length === 0) continue;
+    if (pathname.length < 10 || segments.length === 0) continue;
     if (
       /\/(login|signin|signup|register|privacy|terms|contact|about|advertise|archive|search|author|tag|topic|category|collection|section|video|videos|photo|photos|gallery|live|poll|weather|epaper|todays-paper)$/i.test(
         pathname
@@ -480,21 +488,24 @@ function parseHtmlPortalToFeed(
 
     title = title.replace(/\s+/g, ' ').trim();
     const wordCount = title.split(/\s+/).length;
-    if (!title || title.length < 22 || title.length > 240 || wordCount < 4) continue;
+    if (!title || title.length < 18 || title.length > 260 || wordCount < 3) continue;
     if (title.includes('@') || /^(read more|view more|click here|subscribe|follow us)/i.test(title)) {
       continue;
     }
 
-    if (seenUrls.has(fullUrl) || seenTitles.has(title.toLowerCase())) continue;
-    seenUrls.add(fullUrl);
-    seenTitles.add(title.toLowerCase());
+    const canonUrl = canonicalizeArticleLink(fullUrl) || fullUrl;
+    const titleKey = normalizeHeadlineKey(title) || title.toLowerCase();
+    if (seenUrls.has(canonUrl) || seenTitles.has(titleKey)) continue;
+    seenUrls.add(canonUrl);
+    seenTitles.add(titleKey);
 
     const matchIndex = match.index ?? 0;
     const matchEnd = matchIndex + match[0].length;
-    const beforeWindow = htmlString.slice(Math.max(0, matchIndex - 500), matchIndex);
-    const afterWindow = htmlString
-      .slice(matchEnd, matchEnd + 900)
-      .split(/<\/article>|<article\b|<h[1-4]\b/i)[0] || '';
+    const beforeWindow = scannableHtml.slice(Math.max(0, matchIndex - 500), matchIndex);
+    const afterWindow =
+      scannableHtml
+        .slice(matchEnd, matchEnd + 900)
+        .split(/<\/article>|<article\b|<h[1-4]\b/i)[0] || '';
 
     const imageUrl =
       extractHeroImage({}, innerHtml, feedInfo.url) ||
@@ -510,9 +521,17 @@ function parseHtmlPortalToFeed(
         ? pText.slice(0, 260)
         : '';
 
-    // Portal anchor items have no explicit date in anchor markup; use deterministic past epoch so undated items do not masquerade as breaking news
-    const timestamp = UNDATED_FALLBACK_EPOCH - items.length * 60 * 1000;
-    const id = `${feedInfo.id}_${encodeURIComponent(fullUrl.slice(-70))}`;
+    const timeMatch =
+      afterWindow.match(/<time[^>]+datetime=["']([^"']+)["']/i) ||
+      beforeWindow.split(/<article\b|<li\b/i).pop()?.match(/<time[^>]+datetime=["']([^"']+)["']/i);
+    const parsedTime = timeMatch?.[1] ? parseFeedDate(timeMatch[1], items.length) : null;
+    const timestamp =
+      parsedTime && parsedTime.hasValidDate
+        ? parsedTime.timestamp
+        : UNDATED_FALLBACK_EPOCH - items.length * 60 * 1000;
+    const pubDate =
+      parsedTime && parsedTime.hasValidDate ? parsedTime.pubDate : new Date(timestamp).toISOString();
+    const id = `${feedInfo.id}_${encodeURIComponent(canonUrl.slice(-70))}`;
 
     items.push({
       id,
@@ -521,7 +540,7 @@ function parseHtmlPortalToFeed(
       feedUrl: feedInfo.url,
       title,
       link: fullUrl,
-      pubDate: new Date(timestamp).toISOString(),
+      pubDate,
       timestamp,
       summary,
       contentHtml: summary ? `<p>${summary}</p>` : '',
@@ -543,7 +562,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '512kb' }));
 
 const ALLOWED_ORIGINS = new Set<string>([
   'capacitor://localhost',
@@ -906,16 +925,13 @@ function isXmlFeedContent(text: string): boolean {
   return sample.includes('<rss') || sample.includes('<feed') || sample.includes('<rdf:RDF');
 }
 
-/**
- * Resolves any URL — whether an XML RSS feed, a newspaper homepage with a hidden RSS link,
- * OR a Bangladeshi news portal that has NO RSS feed at all (via direct HTML scraping or domain index).
- */
 async function loadPortalOrRssFeed(
   rawUrl: string,
-  feedInfo: { id: string; title: string; defaultTags: string[] }
+  feedInfo: { id: string; title: string; defaultTags: string[] },
+  options: { minItems?: number; excludeKeys?: Set<string> } = {}
 ): Promise<{
   feedTitle: string;
-  items: any[];
+  items: FeedItem[];
   resolvedUrl: string;
   sourceMode: 'rss' | 'direct_html' | 'domain_index';
 }> {
@@ -925,122 +941,189 @@ async function loadPortalOrRssFeed(
   }
   await assertSafeUrlAndResolve(url);
 
+  const minItems = Math.max(10, Math.min(120, options.minItems ?? 50));
+  const excludeKeys = options.excludeKeys;
+
   let fetchedHtml = '';
   let fetchedUrl = url;
   const htmlDiscoveredCandidates: string[] = [];
 
-  // Step 1: Try fetching the given URL directly
+  let collectedItems: FeedItem[] = [];
+  let resolvedTitle = feedInfo.title;
+  let resolvedFeedUrl = url;
+  let sourceMode: 'rss' | 'direct_html' | 'domain_index' = 'rss';
+  let hasRssFeed = false;
+
+  const absorb = (
+    items: FeedItem[],
+    mode: 'rss' | 'direct_html' | 'domain_index',
+    candidateTitle?: string,
+    candidateFeedUrl?: string
+  ) => {
+    const unread = excludeKeys
+      ? items.filter((item) => !isArticleInReadKeys(item, excludeKeys))
+      : items;
+    if (unread.length === 0) return collectedItems.length;
+
+    collectedItems = deduplicateFeedItems([...collectedItems, ...unread]);
+    if (
+      candidateTitle &&
+      candidateTitle !== 'RSS Feed' &&
+      candidateTitle !== 'Newspaper Feed' &&
+      (resolvedTitle === 'Newspaper Feed' || resolvedTitle === 'RSS Feed' || !resolvedTitle)
+    ) {
+      resolvedTitle = candidateTitle;
+    }
+    if (mode === 'rss') {
+      if (!hasRssFeed && candidateFeedUrl) {
+        resolvedFeedUrl = candidateFeedUrl;
+      }
+      hasRssFeed = true;
+      sourceMode = 'rss';
+    } else if (!hasRssFeed) {
+      sourceMode = mode;
+    }
+    return collectedItems.length;
+  };
+
+  const inspectHtmlForFeeds = (html: string, baseUrl: string) => {
+    const $ = cheerio.load(html);
+
+    $('link[type*="rss"], link[type*="atom"], link[type*="xml"], link[rel="alternate"]').each(
+      (_, el) => {
+        const href = $(el).attr('href');
+        const type = ($(el).attr('type') || '').toLowerCase();
+        if (
+          href &&
+          (type.includes('rss') ||
+            type.includes('atom') ||
+            type.includes('xml') ||
+            /(rss|feed|atom|\.xml)/i.test(href))
+        ) {
+          try {
+            const resolved = new URL(href, baseUrl).href;
+            if (!htmlDiscoveredCandidates.includes(resolved) && htmlDiscoveredCandidates.length < 10) {
+              htmlDiscoveredCandidates.push(resolved);
+            }
+          } catch {}
+        }
+      }
+    );
+
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href') || '';
+      if (/(\/rss\b|\/feed\b|\.rss\b|rss\.xml|feed\.xml|atom\.xml|index\.xml|\?feed=rss)/i.test(href)) {
+        try {
+          const resolved = new URL(href, baseUrl).href;
+          if (!htmlDiscoveredCandidates.includes(resolved) && htmlDiscoveredCandidates.length < 10) {
+            htmlDiscoveredCandidates.push(resolved);
+          }
+        } catch {}
+      }
+    });
+  };
+
+  // Step 1: Fetch the given URL directly
   try {
     const { text, contentType, finalUrl } = await fetchWithUserAgent(url, 6000);
     fetchedUrl = finalUrl;
 
     if (isXmlFeedContent(text)) {
       const parsed = parseXmlFeed(text, { ...feedInfo, url: fetchedUrl });
-      if (parsed.items.length > 0) {
-        return { ...parsed, resolvedUrl: fetchedUrl, sourceMode: 'rss' };
+      absorb(parsed.items, 'rss', parsed.feedTitle, fetchedUrl);
+      if (collectedItems.length >= minItems) {
+        return {
+          feedTitle: resolvedTitle,
+          items: collectedItems,
+          resolvedUrl: resolvedFeedUrl,
+          sourceMode: 'rss',
+        };
       }
-    }
-
-    // If HTML, inspect <link> and <a> tags for RSS/Atom feeds and save HTML for direct fallback
-    if (contentType.includes('html') || text.includes('<html') || text.includes('<!DOCTYPE')) {
+    } else if (contentType.includes('html') || text.includes('<html') || text.includes('<!DOCTYPE')) {
       fetchedHtml = text;
-      const $ = cheerio.load(text);
-
-      $('link[type*="rss"], link[type*="atom"], link[type*="xml"], link[rel="alternate"]').each(
-        (_, el) => {
-          const href = $(el).attr('href');
-          const type = ($(el).attr('type') || '').toLowerCase();
-          if (
-            href &&
-            (type.includes('rss') ||
-              type.includes('atom') ||
-              type.includes('xml') ||
-              /(rss|feed|atom|\.xml)/i.test(href))
-          ) {
-            try {
-              const resolved = new URL(href, fetchedUrl).href;
-              if (!htmlDiscoveredCandidates.includes(resolved) && htmlDiscoveredCandidates.length < 4) {
-                htmlDiscoveredCandidates.push(resolved);
-              }
-            } catch {}
-          }
-        }
-      );
-
-      $('a[href]').each((_, el) => {
-        const href = $(el).attr('href') || '';
-        if (/(\/rss\b|\/feed\b|\.rss\b|rss\.xml|feed\.xml|atom\.xml|index\.xml|\?feed=rss)/i.test(href)) {
-          try {
-            const resolved = new URL(href, fetchedUrl).href;
-            if (!htmlDiscoveredCandidates.includes(resolved) && htmlDiscoveredCandidates.length < 4) {
-              htmlDiscoveredCandidates.push(resolved);
-            }
-          } catch {}
-        }
-      });
-
-      for (const candidate of htmlDiscoveredCandidates) {
-        try {
-          const { text: feedText } = await fetchWithUserAgent(candidate, 3000);
-          if (isXmlFeedContent(feedText)) {
-            const parsed = parseXmlFeed(feedText, { ...feedInfo, url: candidate });
-            if (parsed.items.length > 0) {
-              return { ...parsed, resolvedUrl: candidate, sourceMode: 'rss' };
-            }
-          }
-        } catch {}
-      }
+      inspectHtmlForFeeds(text, fetchedUrl);
     }
   } catch {
-    // Will continue to candidate paths and domain fallback
+    // Continue to origin / candidate paths / fallback
   }
 
-  // Step 2: Search for an RSS feed link first (from <link>/<a> tags in HTML + common RSS path combinations)
-  // BEFORE falling back to website HTML scraping!
-  const allRssCandidates = buildRssDiscoveryCandidates(url, fetchedHtml).filter(
-    (c) => !htmlDiscoveredCandidates.includes(c) && c !== url && c !== fetchedUrl
-  );
+  // If primary RSS returned fewer than minItems and we don't have homepage HTML yet, fetch homepage HTML to find section feeds & extra stories
+  if (!fetchedHtml && collectedItems.length < minItems) {
+    try {
+      const origin = new URL(fetchedUrl).origin;
+      if (origin && origin !== fetchedUrl) {
+        const { text: homeText, finalUrl: homeFinal } = await fetchWithUserAgent(origin, 4500);
+        if (!isXmlFeedContent(homeText) && (homeText.includes('<html') || homeText.includes('<!DOCTYPE'))) {
+          fetchedHtml = homeText;
+          fetchedUrl = homeFinal;
+          inspectHtmlForFeeds(homeText, homeFinal);
+        }
+      }
+    } catch {}
+  }
 
-  const candidateList = allRssCandidates.slice(0, 8);
+  // Step 2: Fetch discovered <link>/<a> RSS feeds and common RSS candidate paths in batches until minItems unread items are collected
+  const allRssCandidates = Array.from(
+    new Set([
+      ...htmlDiscoveredCandidates,
+      ...buildRssDiscoveryCandidates(fetchedUrl, fetchedHtml),
+    ])
+  ).filter((c) => c !== url && c !== fetchedUrl);
+
+  const candidateList = allRssCandidates.slice(0, 10);
   const batchSize = 4;
   for (let i = 0; i < candidateList.length; i += batchSize) {
+    if (collectedItems.length >= minItems) break;
     const batch = candidateList.slice(i, i + batchSize);
-    const found = await Promise.all(
+    const batchResults = await Promise.all(
       batch.map(async (candidate) => {
         try {
-          const { text } = await fetchWithUserAgent(candidate, 3000);
+          const { text } = await fetchWithUserAgent(candidate, 3200);
           if (isXmlFeedContent(text)) {
             const parsed = parseXmlFeed(text, { ...feedInfo, url: candidate });
             if (parsed.items.length > 0) {
-              return { ...parsed, resolvedUrl: candidate, sourceMode: 'rss' as const };
+              return { parsed, candidate };
             }
           }
         } catch {}
         return null;
       })
     );
-    const match = found.find(Boolean);
-    if (match) {
-      return match;
+    for (const hit of batchResults) {
+      if (hit) {
+        absorb(hit.parsed.items, 'rss', hit.parsed.feedTitle, hit.candidate);
+      }
     }
   }
 
-  // Step 3: If no RSS link is available, keep the website link and parse articles directly from the website HTML!
+  if (collectedItems.length >= minItems) {
+    return {
+      feedTitle: resolvedTitle,
+      items: collectedItems,
+      resolvedUrl: resolvedFeedUrl,
+      sourceMode,
+    };
+  }
+
+  // Step 3: Supplement from direct website HTML portal anchors if still below minItems
   if (fetchedHtml) {
     const htmlParsedFallback = parseHtmlPortalToFeed(fetchedHtml, {
       ...feedInfo,
       url: fetchedUrl,
     });
-    if (htmlParsedFallback.items.length > 0) {
-      return {
-        ...htmlParsedFallback,
-        resolvedUrl: url,
-        sourceMode: 'direct_html',
-      };
-    }
+    absorb(htmlParsedFallback.items, 'direct_html', htmlParsedFallback.feedTitle, url);
   }
 
-  // Step 4: Fallback for Cloudflare-protected websites (uses Bing News RSS with unwrapped direct links first, then Google News RSS)
+  if (collectedItems.length >= minItems) {
+    return {
+      feedTitle: resolvedTitle,
+      items: collectedItems,
+      resolvedUrl: resolvedFeedUrl,
+      sourceMode,
+    };
+  }
+
+  // Step 4: Supplement from Bing News & Google News domain index RSS if still below minItems
   let parsedTarget: URL | null = null;
   try {
     parsedTarget = new URL(url);
@@ -1048,7 +1131,7 @@ async function loadPortalOrRssFeed(
 
   if (parsedTarget) {
     const hostname = parsedTarget.hostname.replace(/^www\./, '');
-    const isBanglaDomain = /jugantor|kalerkantho|samakal|ittefaq|banglatribune|manabzamin|bonikbarta|somoynews|jamuna|deshrupantor/i.test(
+    const isBanglaDomain = /jugantor|kalerkantho|samakal|ittefaq|banglatribune|manabzamin|bonikbarta|somoynews|jamuna|deshrupantor|prothomalo/i.test(
       hostname
     );
     const indexQueryUrls = [
@@ -1059,6 +1142,7 @@ async function loadPortalOrRssFeed(
     ];
 
     for (const queryUrl of indexQueryUrls) {
+      if (collectedItems.length >= minItems) break;
       try {
         const { text } = await fetchWithUserAgent(queryUrl, 6000);
         if (isXmlFeedContent(text)) {
@@ -1085,48 +1169,60 @@ async function loadPortalOrRssFeed(
               link: resolveUrl(item.link, url),
               summary: hasDistinctSummary ? rawSum : '',
               contentHtml: hasDistinctSummary ? `<p>${rawSum}</p>` : '',
-              contentClean: '', // Trigger full extraction when opened
+              contentClean: '',
             };
           });
-
-          if (cleanedItems.length > 0) {
-            return {
-              feedTitle: cleanFeedTitle,
-              items: cleanedItems,
-              resolvedUrl: url,
-              sourceMode: 'domain_index',
-            };
-          }
+          absorb(cleanedItems, 'domain_index', cleanFeedTitle, url);
         }
       } catch {}
     }
   }
 
+  if (collectedItems.length > 0) {
+    return {
+      feedTitle: resolvedTitle,
+      items: collectedItems,
+      resolvedUrl: resolvedFeedUrl,
+      sourceMode,
+    };
+  }
+
   throw new Error(`Could not load articles from "${rawUrl}". Please check the URL and try again.`);
 }
 
-// 1. Fetch and parse RSS or Direct HTML Portal
-app.get('/api/rss', requireApiAccess, rssRateLimiter, async (req: Request, res: Response) => {
-  const feedUrl = String(req.query.url || '').trim();
-  const feedId = String(req.query.feedId || req.query.id || `feed_${Date.now()}`).slice(0, 120);
-  const feedTitle = String(req.query.title || 'Newspaper Feed').slice(0, 180);
-  const defaultTags = req.query.tags
-    ? String(req.query.tags)
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean)
-        .slice(0, 12)
-    : [];
+// 1. Fetch and parse RSS or Direct HTML Portal (supports GET and POST with excludeKeys)
+async function handleRssRequest(req: Request, res: Response) {
+  const body = req.method === 'POST' && req.body && typeof req.body === 'object' ? req.body : {};
+  const feedUrl = String(body.url ?? req.query.url ?? '').trim();
+  const feedId = String(body.feedId ?? req.query.feedId ?? req.query.id ?? `feed_${Date.now()}`).slice(0, 120);
+  const feedTitle = String(body.title ?? req.query.title ?? 'Newspaper Feed').slice(0, 180);
+
+  const rawTags = body.tags ?? req.query.tags;
+  const defaultTags: string[] = Array.isArray(rawTags)
+    ? rawTags.map((t) => String(t).trim()).filter(Boolean).slice(0, 12)
+    : typeof rawTags === 'string' && rawTags
+      ? rawTags.split(',').map((t) => t.trim()).filter(Boolean).slice(0, 12)
+      : [];
+
+  const rawMinItems = Number(body.minItems ?? req.query.minItems ?? 50);
+  const minItems = Number.isFinite(rawMinItems) ? Math.max(10, Math.min(120, rawMinItems)) : 50;
+
+  const rawExclude = Array.isArray(body.excludeKeys) ? body.excludeKeys : [];
+  const excludeKeys = new Set<string>(
+    rawExclude
+      .filter((k: unknown): k is string => typeof k === 'string' && k.length > 0 && k.length <= 260)
+      .slice(-2500)
+  );
 
   if (!feedUrl || feedUrl.length > 2048) {
-    return res.status(400).json({ error: 'Missing or invalid url query parameter' });
+    return res.status(400).json({ error: 'Missing or invalid url parameter' });
   }
 
   // Handle Community Travel Blogs Feed directly from database
   if (feedUrl === '/api/blogs' || feedUrl.endsWith('/api/blogs') || feedId === 'travel_blogs_bd') {
     try {
       const blogs = await readBlogsFromDisk();
-      const items = blogs.map((b) => {
+      const rawItems: FeedItem[] = blogs.map((b) => {
         const safeGroup = escapeHtmlServer(b.groupName || 'Travel Group');
         const safeAuthor = escapeHtmlServer(b.author || 'Traveler');
         const safeLocation = b.location ? escapeHtmlServer(b.location) : '';
@@ -1168,10 +1264,14 @@ app.get('/api/rss', requireApiAccess, rssRateLimiter, async (req: Request, res: 
         };
       });
 
+      const unreadItems = excludeKeys.size > 0
+        ? rawItems.filter((item) => !isArticleInReadKeys(item, excludeKeys))
+        : rawItems;
+
       return res.json({
         success: true,
         feedTitle: 'Bangladeshi Travel Groups & Dispatches',
-        items,
+        items: deduplicateFeedItems(unreadItems),
         resolvedUrl: '/api/blogs',
         sourceMode: 'travel_community_database',
       });
@@ -1192,11 +1292,15 @@ app.get('/api/rss', requireApiAccess, rssRateLimiter, async (req: Request, res: 
   }
 
   try {
-    const result = await loadPortalOrRssFeed(feedUrl, {
-      id: feedId,
-      title: feedTitle,
-      defaultTags,
-    });
+    const result = await loadPortalOrRssFeed(
+      feedUrl,
+      {
+        id: feedId,
+        title: feedTitle,
+        defaultTags,
+      },
+      { minItems, excludeKeys: excludeKeys.size > 0 ? excludeKeys : undefined }
+    );
 
     res.json({
       success: true,
@@ -1213,7 +1317,10 @@ app.get('/api/rss', requireApiAccess, rssRateLimiter, async (req: Request, res: 
       error: `Failed to load source: ${err.message}`,
     });
   }
-});
+}
+
+app.get('/api/rss', requireApiAccess, rssRateLimiter, handleRssRequest);
+app.post('/api/rss', requireApiAccess, rssRateLimiter, handleRssRequest);
 
 // In-memory extraction cache to provide instant reader rendering
 const EXTRACTED_ARTICLE_CACHE = new Map<string, any>();
@@ -1479,8 +1586,8 @@ app.get('/api/extract', requireApiAccess, extractRateLimiter, async (req: Reques
   }
 });
 
-// 2b. SSRF-Safe Image Proxy for Canvas Story Cards & Save-to-Gallery
-app.get('/api/image-proxy', requireApiAccess, extractRateLimiter, async (req: Request, res: Response) => {
+// 2b. SSRF-Safe Image Proxy for Canvas Story Cards, Save-to-Gallery & Media Proxy
+app.get(['/api/image-proxy', '/api/image'], requireApiAccess, extractRateLimiter, async (req: Request, res: Response) => {
   let imageUrl = resolveUrl(String(req.query.url || '').trim());
   if (!imageUrl || imageUrl.length > 2048) {
     return res.status(400).json({ error: 'Missing or invalid url query parameter' });
@@ -1502,8 +1609,7 @@ app.get('/api/image-proxy', requireApiAccess, extractRateLimiter, async (req: Re
       signal: controller.signal,
       redirect: 'follow',
       headers: {
-        'User-Agent':
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1',
+        'User-Agent': 'ChintaReader/2.0',
         Accept: 'image/avif,image/webp,image/apng,image/png,image/jpeg,image/*,*/*;q=0.8',
       },
     });

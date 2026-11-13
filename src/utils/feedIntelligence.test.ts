@@ -15,6 +15,10 @@ import {
   computeSpotifyReadingStats,
   findNewIncomingArticles,
   canonicalizeArticleLink,
+  getArticleReadSignatures,
+  isArticleInReadKeys,
+  deduplicateFeedItems,
+  rankAndInterleaveFeedItems,
   filterOutAlreadyReadIncoming,
   clearReadArticlesForRefresh,
   type ReadingHabitState,
@@ -346,4 +350,76 @@ test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read 
     canonicalizeArticleLink('https://example.com/news/story-1/?utm_source=rss'),
     'https://example.com/news/story-1'
   );
+});
+
+test('deduplicateFeedItems eliminates duplicates across ID, http/https www URL variants, and matching headlines while preserving richer copy', () => {
+  const teaser = makeArticle({
+    id: 'feed1_story',
+    feedId: 'f1',
+    title: 'Dhaka Elevated Expressway Opens New Ramp',
+    link: 'http://www.thedailystar.net/news/expressway?fbclid=123',
+    summary: 'Short teaser',
+    isRead: false,
+    isBookmarked: false,
+  });
+  const duplicateFromSectionFeed = makeArticle({
+    id: 'feed1_alt_guid',
+    feedId: 'f1',
+    title: 'Dhaka Elevated Expressway Opens New Ramp!',
+    link: 'https://thedailystar.net/news/expressway?utm_medium=rss',
+    summary: 'Rich full summary from alternate section feed explaining traffic relief.',
+    imageUrl: 'https://thedailystar.net/img/expressway.jpg',
+    isRead: true,
+    isBookmarked: true,
+  });
+
+  const deduped = deduplicateFeedItems([teaser, duplicateFromSectionFeed]);
+  assert.equal(deduped.length, 1);
+  assert.equal(deduped[0].imageUrl, 'https://thedailystar.net/img/expressway.jpg');
+  assert.equal(deduped[0].isRead, true);
+  assert.equal(deduped[0].isBookmarked, true);
+
+  const sigs = new Set(getArticleReadSignatures(teaser));
+  assert.equal(isArticleInReadKeys(duplicateFromSectionFeed, sigs), true);
+});
+
+test('rankAndInterleaveFeedItems places unread & newest refresh batch stories at top while interleaving sources FB/IG-style', () => {
+  const now = 1_770_000_000_000;
+  const oldRead = makeArticle({
+    id: 'old_read',
+    feedId: 'f1',
+    title: 'Old read story',
+    timestamp: now - 10_000,
+    isRead: true,
+  });
+  const staleUnread = makeArticle({
+    id: 'stale_unread',
+    feedId: 'f2',
+    title: 'Yesterday unread story',
+    timestamp: now - 86_400_000,
+    isRead: false,
+  });
+  // Four newly fetched stories from the same source + 2 from another source in latest batch
+  const items = [
+    oldRead,
+    staleUnread,
+    makeArticle({ id: 'a1', feedId: 'f1', title: 'F1 story 1', timestamp: now - 1000, fetchedBatchTs: now }),
+    makeArticle({ id: 'a2', feedId: 'f1', title: 'F1 story 2', timestamp: now - 2000, fetchedBatchTs: now }),
+    makeArticle({ id: 'a3', feedId: 'f1', title: 'F1 story 3', timestamp: now - 3000, fetchedBatchTs: now }),
+    makeArticle({ id: 'a4', feedId: 'f1', title: 'F1 story 4', timestamp: now - 4000, fetchedBatchTs: now }),
+    makeArticle({ id: 'b1', feedId: 'f3', title: 'F3 story 1', timestamp: now - 5000, fetchedBatchTs: now }),
+    makeArticle({ id: 'b2', feedId: 'f3', title: 'F3 story 2', timestamp: now - 6000, fetchedBatchTs: now }),
+  ];
+
+  const ranked = rankAndInterleaveFeedItems(items);
+  // Read item goes to the bottom
+  assert.equal(ranked[ranked.length - 1].id, 'old_read');
+  // Fresh batch items come before older stale unread item
+  const staleIdx = ranked.findIndex((i) => i.id === 'stale_unread');
+  assert.equal(staleIdx, 6);
+  // Consecutive streak of feed f1 in top slice should never exceed 2
+  for (let i = 0; i < ranked.length - 2; i += 1) {
+    const allSame = ranked[i].feedId === ranked[i + 1].feedId && ranked[i + 1].feedId === ranked[i + 2].feedId;
+    assert.equal(allSame, false);
+  }
 });

@@ -2,15 +2,15 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ─────────────────────────────────────────────────────────────
-   SYSTEM FONTS & CSS CUSTOM PROPERTIES
+   SYSTEM FONTS & CSS CUSTOM PROPERTIES (100% SELF-CONTAINED)
 ───────────────────────────────────────────────────────────── */
 @layer base {
   :root {
-    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-    --font-serif: 'Lora', 'Source Serif 4', Georgia, Cambria, serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, "Noto Sans Bengali", sans-serif;
+    --font-serif: "New York", "Iowan Old Style", "Apple Garamond", Baskerville, Georgia, Cambria, "Times New Roman", "Noto Serif Bengali", serif;
     --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
 
-    /* Apple iOS Spring easing — matches UIKit spring(response:dampingFraction:) */
+    /* Apple iOS Spring easing - matches UIKit spring(response:dampingFraction:) */
     --spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
     --spring-soft: cubic-bezier(0.22, 1, 0.36, 1);
     --decelerate: cubic-bezier(0, 0, 0.2, 1);
@@ -67,8 +67,8 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   STARTUP BANNER  — Apple-quality launch experience
-   Phase flow:  mount → animate-in (700ms spring) → hold 3s → animate-out (540ms)
+   STARTUP BANNER - Apple-quality launch experience
+   Phase flow: mount -> animate-in (700ms spring) -> hold 3s -> animate-out (540ms)
 ───────────────────────────────────────────────────────────── */
 
 /* The full-screen launch banner that sits above everything */
@@ -82,13 +82,13 @@
   justify-content: center;
   background: #090A0C;
   overflow: hidden;
-  /* GPU composited layer — no jank */
+  /* GPU composited layer - no jank */
   transform: translateZ(0);
   will-change: opacity, transform;
   -webkit-backface-visibility: hidden;
 }
 
-/* Entry: scale from 1.06 → 1 with a beautiful spring */
+/* Entry: scale from 1.06 -> 1 with a beautiful spring */
 .splash-enter {
   animation: splashEnter 680ms var(--spring-soft) both;
 }
@@ -104,7 +104,7 @@
   }
 }
 
-/* Exit: gentle blur + scale up + fade — exactly like iOS app launch reversal */
+/* Exit: gentle blur + scale up + fade - exactly like iOS app launch reversal */
 .splash-exit {
   animation: splashExit 240ms var(--decelerate) both;
   pointer-events: none;
@@ -121,9 +121,9 @@
   }
 }
 
-/* ── Splash interior elements ── */
+/* -- Splash interior elements -- */
 
-/* Ambient radial glow — the "breathing" background halo */
+/* Ambient radial glow - the "breathing" background halo */
 .splash-glow {
   position: absolute;
   inset: 0;
@@ -225,7 +225,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   APP SHELL — the content beneath the splash
+   APP SHELL - the content beneath the splash
 ───────────────────────────────────────────────────────────── */
 
 /* When the splash exits, the app content zooms in naturally */
@@ -243,7 +243,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   APPLE iOS 26 LIQUID GLASS — Refractive 3D Curved Lens Surfaces
+   APPLE iOS 26 LIQUID GLASS - Refractive 3D Curved Lens Surfaces
    Matches the translucent refractive capsule & orb aesthetic
 ───────────────────────────────────────────────────────────── */
 .liquid-glass {
@@ -322,8 +322,6 @@
     0 2px 10px rgba(0, 0, 0, 0.45);
 }
 
-
-
 /* Progressive top atmospheric blur mask (no hard border) */
 .top-progressive-blur {
   backdrop-filter: blur(20px) saturate(180%);
@@ -392,7 +390,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   NAVIGATION — Tab Bar (Floating iOS 26 Capsule)
+   NAVIGATION - Tab Bar (Floating iOS 26 Capsule)
 ───────────────────────────────────────────────────────────── */
 .tab-bar {
   position: relative;
@@ -455,7 +453,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   FEED HEADER — Scroll-reactive frosted glass
+   FEED HEADER - Scroll-reactive frosted glass
 ───────────────────────────────────────────────────────────── */
 .feed-header {
   position: absolute;
@@ -496,7 +494,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   ARTICLE CARDS — Press feedback & smooth hover
+   ARTICLE CARDS - Press feedback & smooth hover
 ───────────────────────────────────────────────────────────── */
 .article-card {
   transition:
@@ -524,7 +522,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   READER VIEW — Premium reading experience
+   READER VIEW - Premium reading experience
 ───────────────────────────────────────────────────────────── */
 
 /* Reader sliding in from right (like iOS push navigation) */
@@ -581,7 +579,7 @@
   font-weight: 700;
   margin-right: 0.1em;
   margin-top: 0.07em;
-  font-family: 'Lora', Georgia, serif;
+  font-family: var(--font-serif);
   color: var(--accent);
 }
 
@@ -615,7 +613,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   PULL TO REFRESH — Elastic overscroll indicator
+   PULL TO REFRESH - Elastic overscroll indicator
 ───────────────────────────────────────────────────────────── */
 .ptr-spinner {
   animation: ptrSpin 800ms linear infinite;
@@ -627,7 +625,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   MODALS & SHEETS — Bottom sheet entrance
+   MODALS & SHEETS - Bottom sheet entrance
 ───────────────────────────────────────────────────────────── */
 .sheet-backdrop {
   animation: sheetBackdropIn 300ms var(--standard) both;
@@ -663,7 +661,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   FEED CHIPS & FILTER TABS — Smooth segment indicator
+   FEED CHIPS & FILTER TABS - Smooth segment indicator
 ───────────────────────────────────────────────────────────── */
 .segment-tab {
   position: relative;
@@ -689,7 +687,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   SOURCE AVATAR / FAVICON — Shimmer skeleton
+   SOURCE AVATAR / FAVICON - Shimmer skeleton
 ───────────────────────────────────────────────────────────── */
 .skeleton-shimmer {
   background: linear-gradient(
@@ -845,7 +843,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   ICON BUTTON PRESS STATES  (native iOS feel — 44pt target)
+   ICON BUTTON PRESS STATES (native iOS feel - 44pt target)
 ───────────────────────────────────────────────────────────── */
 .icon-btn {
   display: inline-flex;
@@ -866,7 +864,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   HEART LIKE BUTTON — spring pop
+   HEART LIKE BUTTON - spring pop
 ───────────────────────────────────────────────────────────── */
 .like-pop {
   animation: likePop 350ms var(--spring) both;
@@ -949,7 +947,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   SEARCH INPUT — smooth reveal animation
+   SEARCH INPUT - smooth reveal animation
 ───────────────────────────────────────────────────────────── */
 .search-reveal {
   animation: searchReveal 220ms var(--spring-soft) both;
@@ -961,7 +959,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   REDUCED MOTION — always respect accessibility prefs
+   REDUCED MOTION - always respect accessibility prefs
 ───────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -974,7 +972,7 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   MOBILE — disable min-width constraint
+   MOBILE - disable min-width constraint
 ───────────────────────────────────────────────────────────── */
 @media (max-width: 450px) {
   body { min-width: 0; }
