@@ -66,6 +66,7 @@ import {
   rankAndInterleaveFeedItems,
   filterOutAlreadyReadIncoming,
   clearReadArticlesForRefresh,
+  reshuffleUnreadFeedItems,
   toDateKey,
   type ReadingHabitState,
   type ReadingProgressItem,
@@ -104,7 +105,24 @@ export default function App() {
     let cancelled = false;
     hydrateArticlesFromIndexedDb().then((idbItems) => {
       if (cancelled || !idbItems || idbItems.length === 0) return;
-      setArticles((prev) => mergeFeedItems(prev, idbItems));
+      const sanitizedIdbItems = idbItems
+        .filter((a) => {
+          if (!a) return false;
+          const alreadyRead = Boolean(
+            a.isRead || (readKeysRef.current && filterOutAlreadyReadIncoming([a], readKeysRef.current).length === 0)
+          );
+          if (alreadyRead && !a.isBookmarked) return false;
+          return true;
+        })
+        .map((a) => {
+          const alreadyRead = Boolean(
+            a.isRead || (readKeysRef.current && filterOutAlreadyReadIncoming([a], readKeysRef.current).length === 0)
+          );
+          return alreadyRead ? { ...a, isRead: true, hiddenFromFeed: true } : a;
+        });
+      if (sanitizedIdbItems.length > 0) {
+        setArticles((prev) => mergeFeedItems(prev, sanitizedIdbItems, true));
+      }
     });
     return () => {
       cancelled = true;
@@ -740,31 +758,46 @@ export default function App() {
     setIsHeaderVisible(true);
     setVisibleCount(25);
 
+    clearScopeReadArticles((item) => item.feedId === feed.id);
+
     if (isOffline) {
-      notify(`Offline mode: Showing cached stories for ${feed.title}`);
+      notify(`Offline mode: Showing unread cached stories for ${feed.title}`);
       return;
     }
 
-    clearScopeReadArticles((item) => item.feedId === feed.id);
     pendingNewArticlesRef.current = pendingNewArticlesRef.current.filter((a) => a.feedId !== feed.id);
     setPendingNewArticles(pendingNewArticlesRef.current);
     setRefreshFailed(false);
     setIsRefreshing(true);
     const refreshBatchTs = Date.now();
+    const baselineArticles = articlesRef.current;
     try {
       const incomingItems = await syncFeed(feed);
       if (incomingItems === null) {
         setRefreshFailed(true);
-        notify(`Could not reach ${feed.title}. Showing cached stories.`);
+        setArticles((prev) =>
+          reshuffleUnreadFeedItems(prev, (item) => item.feedId === feed.id, refreshBatchTs)
+        );
+        notify(`Could not reach ${feed.title}. Showing unread stories.`);
       } else {
         const unreadOnly = readKeysRef.current
           ? filterOutAlreadyReadIncoming(incomingItems, readKeysRef.current)
           : incomingItems;
-        if (unreadOnly.length > 0) {
+        const genuinelyNew = findNewIncomingArticles(
+          baselineArticles,
+          unreadOnly,
+          readKeysRef.current || undefined
+        );
+        if (genuinelyNew.length > 0) {
           setArticles((prev) => mergeFeedItems(prev, unreadOnly, true, refreshBatchTs));
-          const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
-          scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          setArticles((prev) => {
+            const merged = unreadOnly.length > 0 ? mergeFeedItems(prev, unreadOnly, true) : prev;
+            return reshuffleUnreadFeedItems(merged, (item) => item.feedId === feed.id, refreshBatchTs);
+          });
         }
+        const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
+        scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
       }
     } finally {
       setIsRefreshing(false);
@@ -784,19 +817,22 @@ export default function App() {
     setVisibleCount(25);
 
     const folderFeeds = feeds.filter((f) => (f.category?.trim() || '') === folderName);
+    const folderFeedIdSet = new Set(folderFeeds.map((f) => f.id));
+    clearScopeReadArticles((item) => folderFeedIdSet.has(item.feedId));
+
     if (isOffline || folderFeeds.length === 0) {
-      if (isOffline) notify(`Offline mode: Showing cached stories in ${folderName}`);
+      if (isOffline) notify(`Offline mode: Showing unread cached stories in ${folderName}`);
       return;
     }
 
-    const folderFeedIdSet = new Set(folderFeeds.map((f) => f.id));
-    clearScopeReadArticles((item) => folderFeedIdSet.has(item.feedId));
     pendingNewArticlesRef.current = pendingNewArticlesRef.current.filter((a) => !folderFeedIdSet.has(a.feedId));
     setPendingNewArticles(pendingNewArticlesRef.current);
 
     setRefreshFailed(false);
     setIsRefreshing(true);
     const refreshBatchTs = Date.now();
+    const baselineArticles = articlesRef.current;
+    let addedNewCount = 0;
     try {
       let failedCount = 0;
       await runPool(folderFeeds, 4, async (f) => {
@@ -808,10 +844,21 @@ export default function App() {
             ? filterOutAlreadyReadIncoming(result, readKeysRef.current)
             : result;
           if (unreadOnly.length > 0) {
+            const genuinelyNew = findNewIncomingArticles(
+              baselineArticles,
+              unreadOnly,
+              readKeysRef.current || undefined
+            );
+            addedNewCount += genuinelyNew.length;
             setArticles((prev) => mergeFeedItems(prev, unreadOnly, true, refreshBatchTs));
           }
         }
       });
+      if (addedNewCount === 0) {
+        setArticles((prev) =>
+          reshuffleUnreadFeedItems(prev, (item) => folderFeedIdSet.has(item.feedId), refreshBatchTs)
+        );
+      }
       if (failedCount === folderFeeds.length) {
         setRefreshFailed(true);
       } else {
@@ -845,10 +892,14 @@ export default function App() {
     );
   };
 
-  // Refresh active source, active folder, or all sources — brings only new unread content at the top, never already-read items
+  // Refresh active source, active folder, or all sources - brings new unread content at the top, or reshuffles unread stories if no new items arrived
   const handleRefreshActive = async () => {
+    clearScopeReadArticles();
+
     if (isOffline) {
-      notify('Offline mode active. Using locally cached articles.');
+      const refreshBatchTs = Date.now();
+      setArticles((prev) => reshuffleUnreadFeedItems(prev, undefined, refreshBatchTs));
+      notify('Offline mode active. Showing unread cached stories.');
       return;
     }
 
@@ -868,7 +919,6 @@ export default function App() {
       return;
     }
 
-    clearScopeReadArticles();
     pendingNewArticlesRef.current = [];
     setPendingNewArticles([]);
     setShowNewStoriesPill(false);
@@ -882,7 +932,7 @@ export default function App() {
     let addedNewCount = 0;
     try {
       let failedCount = 0;
-      await runPool(feeds, 4, async (f) => {
+      await runPool(feeds, 5, async (f) => {
         const result = await syncFeed(f);
         if (result === null) {
           failedCount += 1;
@@ -907,22 +957,27 @@ export default function App() {
         }
       });
 
+      if (addedNewCount === 0) {
+        setArticles((prev) => reshuffleUnreadFeedItems(prev, undefined, refreshBatchTs));
+      }
+
       const scrollEl = document.querySelector('[data-testid="pull-to-refresh-container"]');
       scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
       setIsHeaderVisible(true);
 
       // Error feedback only when nothing could be refreshed; a partial refresh still counts as done
       if (failedCount === feeds.length) setRefreshFailed(true);
-      if (failedCount > 0) {
-        notify(
-          failedCount === feeds.length
-            ? 'Could not refresh any source. Check your connection.'
-            : `${failedCount} of ${feeds.length} sources could not be refreshed`
-        );
+      if (failedCount === feeds.length) {
+        notify('Could not refresh sources. Showing unread stories.');
       } else if (addedNewCount > 0) {
         notify(`Refreshed · ${addedNewCount} new ${addedNewCount === 1 ? 'story' : 'stories'}`);
       } else {
-        notify('All caught up · No new unread stories');
+        const unreadRemaining = articlesRef.current.filter((a) => !a.isRead && !a.hiddenFromFeed).length;
+        notify(
+          unreadRemaining > 0
+            ? `Feed updated · ${unreadRemaining} unread ${unreadRemaining === 1 ? 'story' : 'stories'}`
+            : 'All caught up · No unread stories'
+        );
       }
     } catch {
       setRefreshFailed(true);
@@ -1755,7 +1810,7 @@ export default function App() {
       isRefreshing={isRefreshing}
       onOpenIosModal={() => setIsIosModalOpen(true)}
     >
-      {/* Toast Notification — spring in from top */}
+      {/* Toast Notification - spring in from top */}
       {statusMessage && (
         <div
           className="absolute top-[max(env(safe-area-inset-top,12px),12px)] left-1/2 -translate-x-1/2 px-4 py-2.5 bg-stone-900/96 dark:bg-stone-100/96 text-white dark:text-stone-900 text-xs font-semibold rounded-full shadow-xl backdrop-blur-xl z-50 toast-enter whitespace-nowrap"
@@ -1987,7 +2042,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* Articles Feed with Pull to Refresh — scrolls directly under top & bottom Liquid Glass */}
+              {/* Articles Feed with Pull to Refresh - scrolls directly under top & bottom Liquid Glass */}
               <PullToRefresh
                 className="h-full pt-[calc(max(env(safe-area-inset-top,0px),0.75rem)+3.75rem)] pb-32"
                 onScroll={handleFeedScroll}
@@ -2194,6 +2249,7 @@ export default function App() {
                     <div
                       key={tag.id}
                       onClick={() => {
+                        clearScopeReadArticles();
                         setSelectedFeedId(null);
                         setSelectedFolder(null);
                         setSelectedTagId(tag.id);
@@ -2344,6 +2400,7 @@ export default function App() {
               }
             }}
             onSelectTab={(tab) => {
+              clearScopeReadArticles();
               setCurrentTab(tab);
               setIsHeaderVisible(true);
               setIsFeedActivelyScrolling(false);
@@ -2371,7 +2428,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Reader View — iOS push navigation slide-in */}
+          {/* Reader View - iOS push navigation slide-in */}
           {activeArticle && (
             <div className="absolute inset-0 z-50 overflow-hidden" style={{ background: 'inherit' }}>
               <ReaderView

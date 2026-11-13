@@ -17,8 +17,10 @@ import {
   canonicalizeArticleLink,
   filterOutAlreadyReadIncoming,
   clearReadArticlesForRefresh,
+  reshuffleUnreadFeedItems,
   type ReadingHabitState,
 } from './feedIntelligence';
+import { INITIAL_FEEDS } from './storage';
 
 function makeArticle(overrides: Partial<FeedItem> & { id: string; title: string }): FeedItem {
   return {
@@ -347,3 +349,34 @@ test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read 
     'https://thedailystar.net/news/story-1'
   );
 });
+
+test('reshuffleUnreadFeedItems rotates unread stories, hides read stories, keeps saved read items for Saved tab, and INITIAL_FEEDS is populated', () => {
+  assert.ok(INITIAL_FEEDS.length >= 10);
+
+  const items: FeedItem[] = [
+    makeArticle({ id: 'u1', feedId: 'f1', title: 'Unread 1', isRead: false }),
+    makeArticle({ id: 'u2', feedId: 'f2', title: 'Unread 2', isRead: false }),
+    makeArticle({ id: 'u3', feedId: 'f3', title: 'Unread 3', isRead: false }),
+    makeArticle({ id: 'u4', feedId: 'f1', title: 'Unread 4', isRead: false }),
+    makeArticle({ id: 'r1', feedId: 'f2', title: 'Read Unsaved', isRead: true, isBookmarked: false }),
+    makeArticle({ id: 'r2', feedId: 'f3', title: 'Read Saved', isRead: true, isBookmarked: true }),
+  ];
+
+  const reshuffled = reshuffleUnreadFeedItems(items, undefined, 1763000000000);
+  // Unsaved read article is purged
+  assert.equal(reshuffled.some((a) => a.id === 'r1'), false);
+  // Saved read article is retained with hiddenFromFeed = true for Saved tab
+  const savedRead = reshuffled.find((a) => a.id === 'r2');
+  assert.ok(savedRead);
+  assert.equal(savedRead.hiddenFromFeed, true);
+
+  // Unread items are rotated so u1 is no longer the first item
+  const visibleUnread = reshuffled.filter((a) => !a.isRead && !a.hiddenFromFeed);
+  assert.equal(visibleUnread.length, 4);
+  assert.notEqual(visibleUnread[0].id, 'u1');
+
+  // Daily briefing excludes read stories
+  const briefing = buildDailyBriefing(items);
+  assert.equal(briefing.stories.every((s) => !s.isRead && !s.hiddenFromFeed), true);
+});
+

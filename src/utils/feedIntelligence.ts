@@ -442,10 +442,8 @@ export function buildDailyBriefing(
     subtitle = 'Late-hour wrap of the day’s most significant reporting';
   }
 
-  const sorted = [...articles].sort((a, b) => {
-    if (a.isRead !== b.isRead) return a.isRead ? 1 : -1;
-    return b.timestamp - a.timestamp;
-  });
+  const unreadPool = articles.filter((a) => !a.isRead && !a.hiddenFromFeed);
+  const sorted = [...unreadPool].sort((a, b) => b.timestamp - a.timestamp);
 
   const selected: FeedItem[] = [];
   const usedFeeds = new Set<string>();
@@ -1230,6 +1228,76 @@ export function clearReadArticlesForRefresh(
     nextArticles,
     newlyRecordedKeys: Array.from(keys),
   };
+}
+
+/**
+ * Reshuffles and rotates unread articles in the refreshed scope like a Facebook/Instagram feed
+ * when no brand-new stories were published since the last check:
+ * - Purges read unbookmarked stories and hides read bookmarked stories from the feed
+ * - Rotates past the top-most unread stories so fresh unread picks from diverse sources surface first
+ * - Interleaves publishers so consecutive cards come from different outlets
+ */
+export function reshuffleUnreadFeedItems(
+  articles: FeedItem[],
+  scopePredicate?: (item: FeedItem) => boolean,
+  refreshBatchTs: number = Date.now()
+): FeedItem[] {
+  const inScopeUnread: FeedItem[] = [];
+  const preservedOthers: FeedItem[] = [];
+
+  for (const item of articles) {
+    const inScope = !scopePredicate || scopePredicate(item);
+    if (!inScope) {
+      preservedOthers.push(item);
+      continue;
+    }
+    if (item.isRead || item.hiddenFromFeed) {
+      if (item.isBookmarked) {
+        preservedOthers.push({ ...item, isRead: true, hiddenFromFeed: true });
+      }
+      continue;
+    }
+    inScopeUnread.push(item);
+  }
+
+  if (inScopeUnread.length <= 1) {
+    return [...inScopeUnread, ...preservedOthers];
+  }
+
+  // Rotate the top slice of unread items to the back so fresh unread picks surface at the top
+  const pivot = Math.min(6, Math.max(1, Math.floor(inScopeUnread.length / 3)));
+  const rotated = [...inScopeUnread.slice(pivot), ...inScopeUnread.slice(0, pivot)];
+
+  // Group by feedId and interleave round-robin across publishers for maximum feed variety
+  const byFeed = new Map<string, FeedItem[]>();
+  for (const item of rotated) {
+    const list = byFeed.get(item.feedId) || [];
+    list.push(item);
+    byFeed.set(item.feedId, list);
+  }
+
+  const interleaved: FeedItem[] = [];
+  const feedQueues = Array.from(byFeed.values());
+  let added = true;
+  while (added) {
+    added = false;
+    for (const queue of feedQueues) {
+      const next = queue.shift();
+      if (next) {
+        interleaved.push(next);
+        added = true;
+      }
+    }
+  }
+
+  // Stamp decreasing synthetic batch timestamps so rankAndInterleaveFeedItems preserves the fresh rotation
+  const total = interleaved.length;
+  const restamped = interleaved.map((item, idx) => ({
+    ...item,
+    fetchedBatchTs: refreshBatchTs + (total - idx) * 1000,
+  }));
+
+  return [...restamped, ...preservedOthers];
 }
 
 /**

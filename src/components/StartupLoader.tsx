@@ -3,7 +3,7 @@ import type { Feed, FeedItem } from '../types';
 import { fetchFeedWithFallback } from '../utils/apiClient';
 import { loadFeedsFromStorage } from '../utils/storage';
 
-// ─── Constants ──────────────────────────────────────────────
+// --- Constants ----------------------------------------------
 /**
  * Pre-segmented Bengali grapheme clusters for Line 1 & Line 2 of:
  * "চলুন দেশটা ঘুরি শেয়ারে, চিন্তা করি একসাথে।"
@@ -32,8 +32,8 @@ const SUBTITLE_GRAPHEMES = ['চি', 'ন্তা', '-', 'T', 'h', 'i', 'n', '
 const INITIAL_START_DELAY_MS = 60;
 /**
  * Two-stage typewriter + 2-second reading hold:
- * - Main statement (26 graphemes × 48ms = ~1,248ms)
- * - "চিন্তা-Think" (8 graphemes × 75ms = ~600ms)
+ * - Main statement (26 graphemes x 48ms = ~1,248ms)
+ * - "চিন্তা-Think" (8 graphemes x 75ms = ~600ms)
  * - Hold after all text is shown = 2,000ms (2 full seconds so user can read what is written)
  * Meanwhile, the first priority news sources load in parallel during this ~3.85s window.
  */
@@ -44,9 +44,9 @@ const BANNER_HOLD_AFTER_TEXT_MS = 2000;
 /** Duration of the exit animation (must match CSS .splash-exit keyframe duration) */
 const BANNER_EXIT_ANIM_MS = 220;
 /** Calm settle window after the home page opens before background feeds resume fetching */
-const POST_OPEN_CALM_WINDOW_MS = 2500;
+const POST_OPEN_CALM_WINDOW_MS = 800;
 /** Pause between individual background feed fetches so the main thread stays completely smooth */
-const BACKGROUND_FEED_STEP_DELAY_MS = 800;
+const BACKGROUND_FEED_STEP_DELAY_MS = 200;
 /** Minimum re-open interval before we silently refresh in background */
 const RESUME_DEBOUNCE_MS = 120_000; // 120 s
 /**
@@ -127,10 +127,11 @@ async function fetchSingleFeedItems(feed: Feed): Promise<{
   resolvedFeed?: { id: string; url: string };
 }> {
   const data = await fetchFeedWithFallback({
-    url:    feed.url,
-    feedId: feed.id,
-    title:  feed.title,
-    tags:   feed.defaultTags || [],
+    url:      feed.url,
+    feedId:   feed.id,
+    title:    feed.title,
+    tags:     feed.defaultTags || [],
+    minItems: 50,
   });
   const items = data.items.map((item) => ({
     ...item,
@@ -146,11 +147,11 @@ async function fetchSingleFeedItems(feed: Feed): Promise<{
 
 /**
  * Two-phase memory-safe news loader:
- * - Phase 1 (During Banner): Fetches the first 3 fast XML/RSS feeds in parallel while the banner is
+ * - Phase 1 (During Banner): Fetches the first 5 fast XML/RSS feeds in parallel while the banner is
  *   typing and holding for 2 seconds. Buffers the articles in memory and flushes them in a SINGLE
  *   in-memory event right before the banner exits so the home page opens with loaded news and zero re-render storm.
- * - Phase 2 (Background): Waits 2.5 seconds after the home page opens so iOS WebKit finishes compositing,
- *   then fetches remaining sources gently one-by-one (800ms apart).
+ * - Phase 2 (Background): Waits briefly after the home page opens so iOS WebKit finishes compositing,
+ *   then fetches remaining sources gently in the background.
  */
 function startPhasedStartupSync(waitForBannerOpenPromise?: Promise<void>): {
   flushPriorityBatch: () => void;
@@ -158,15 +159,15 @@ function startPhasedStartupSync(waitForBannerOpenPromise?: Promise<void>): {
 } {
   const feeds = loadFeedsFromStorage();
 
-  // Prioritize fast XML/RSS feeds first so initial stories load within 1–2 seconds during the banner
+  // Prioritize fast XML/RSS feeds first so initial stories load within 1-2 seconds during the banner
   const sortedFeeds = [...feeds].sort((a, b) => {
     const aFast = /(\.xml|\/feed|\/rss)/i.test(a.url) ? 0 : 1;
     const bFast = /(\.xml|\/feed|\/rss)/i.test(b.url) ? 0 : 1;
     return aFast - bFast;
   });
 
-  const priorityFeeds = sortedFeeds.slice(0, 3);
-  const backgroundFeeds = sortedFeeds.slice(3);
+  const priorityFeeds = sortedFeeds.slice(0, 5);
+  const backgroundFeeds = sortedFeeds.slice(5);
 
   let bufferedItems: FeedItem[] = [];
   let bufferedResolved: Array<{ id: string; url: string }> = [];
@@ -228,7 +229,7 @@ function startPhasedStartupSync(waitForBannerOpenPromise?: Promise<void>): {
   return { flushPriorityBatch, fullSyncDone };
 }
 
-// ─── SplashScreen component ──────────────────────────────────────────────────
+// --- SplashScreen component --------------------------------------------------
 interface SplashProps {
   /** Number of graphemes typed in the main Bengali statement */
   headlineCount: number;
@@ -304,7 +305,7 @@ const SplashScreen: React.FC<SplashProps> = ({
   );
 };
 
-// ─── StartupLoader ───────────────────────────────────────────────────────────
+// --- StartupLoader -----------------------------------------------------------
 interface StartupLoaderProps {
   children: React.ReactElement;
 }
@@ -420,7 +421,7 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
     }
   }, [startSyncIfIdle]);
 
-  // ── Initial mount ──
+  // -- Initial mount --
   useEffect(() => {
     mountedRef.current = true;
     lastResumeRef.current = Date.now();
@@ -432,7 +433,7 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
       startSyncIfIdle();
     }
 
-    // ── App resume handlers (silent background refresh only — never touches splashPhase) ──
+    // -- App resume handlers (silent background refresh only - never touches splashPhase) --
     const handleResume = () => {
       if (document.visibilityState !== 'visible') return;
       const now = Date.now();
@@ -455,12 +456,12 @@ export const StartupLoader: React.FC<StartupLoaderProps> = ({ children }) => {
 
   return (
     <div className="relative h-full w-full overflow-hidden">
-      {/* App content — always mounted underneath so loaded articles are visible the instant splash exits */}
+      {/* App content - always mounted underneath so loaded articles are visible the instant splash exits */}
       <div className={splashPhase === 'gone' ? 'app-shell-ready h-full' : 'h-full'}>
         {children}
       </div>
 
-      {/* Splash banner — rendered on top; tap anywhere to dismiss immediately */}
+      {/* Splash banner - rendered on top; tap anywhere to dismiss immediately */}
       <SplashScreen
         phase={splashPhase}
         headlineCount={headlineCount}

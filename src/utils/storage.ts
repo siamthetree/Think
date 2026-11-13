@@ -63,7 +63,128 @@ export const DEFAULT_TAGS: Tag[] = [
   { id: 'tag_breaking', name: 'Breaking News', color: '#DC2626' },
 ];
 
-export const INITIAL_FEEDS: Feed[] = [];
+export const INITIAL_FEEDS: Feed[] = [
+  {
+    id: 'daily_star',
+    title: 'The Daily Star',
+    url: 'https://www.thedailystar.net/rss.xml',
+    siteUrl: 'https://www.thedailystar.net',
+    description: 'Leading English-language daily newspaper in Bangladesh',
+    category: 'Bangladesh',
+    defaultTags: ['tag_bd', 'tag_investigative'],
+    unreadCount: 0,
+  },
+  {
+    id: 'prothom_alo_en',
+    title: 'Prothom Alo English',
+    url: 'https://en.prothomalo.com/feed',
+    siteUrl: 'https://en.prothomalo.com',
+    description: 'National and international reporting from Prothom Alo',
+    category: 'Bangladesh',
+    defaultTags: ['tag_bd'],
+    unreadCount: 0,
+  },
+  {
+    id: 'prothom_alo_bn',
+    title: 'প্রথম আলো (Prothom Alo)',
+    url: 'https://www.prothomalo.com/feed',
+    siteUrl: 'https://www.prothomalo.com',
+    description: 'বাংলাদেশের শীর্ষস্থানীয় বাংলা সংবাদপত্র',
+    category: 'Bangladesh',
+    defaultTags: ['tag_bd'],
+    unreadCount: 0,
+  },
+  {
+    id: 'tbs_news',
+    title: 'The Business Standard',
+    url: 'https://www.tbsnews.net/top-news/rss.xml',
+    siteUrl: 'https://www.tbsnews.net',
+    description: 'Economy, policy, business, and market intelligence',
+    category: 'Economy & Business',
+    defaultTags: ['tag_bd', 'tag_markets'],
+    unreadCount: 0,
+  },
+  {
+    id: 'dhaka_tribune',
+    title: 'Dhaka Tribune',
+    url: 'https://www.dhakatribune.com/feed/',
+    siteUrl: 'https://www.dhakatribune.com',
+    description: 'National news, politics, and editorial analysis',
+    category: 'Bangladesh',
+    defaultTags: ['tag_bd', 'tag_opinion'],
+    unreadCount: 0,
+  },
+  {
+    id: 'bdnews24',
+    title: 'bdnews24.com',
+    url: 'https://bdnews24.com',
+    siteUrl: 'https://bdnews24.com',
+    description: 'Breaking news and live updates from across Bangladesh',
+    category: 'Bangladesh',
+    defaultTags: ['tag_bd', 'tag_breaking'],
+    unreadCount: 0,
+  },
+  {
+    id: 'financial_express_bd',
+    title: 'The Financial Express',
+    url: 'https://thefinancialexpress.com.bd',
+    siteUrl: 'https://thefinancialexpress.com.bd',
+    description: 'Financial markets, trade, and macroeconomic news',
+    category: 'Economy & Business',
+    defaultTags: ['tag_bd', 'tag_markets'],
+    unreadCount: 0,
+  },
+  {
+    id: 'bbc_world',
+    title: 'BBC News',
+    url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
+    siteUrl: 'https://www.bbc.com/news',
+    description: 'Global dispatches and breaking international coverage',
+    category: 'World Affairs',
+    defaultTags: ['tag_world', 'tag_breaking'],
+    unreadCount: 0,
+  },
+  {
+    id: 'aljazeera_all',
+    title: 'Al Jazeera',
+    url: 'https://www.aljazeera.com/xml/rss/all.xml',
+    siteUrl: 'https://www.aljazeera.com',
+    description: 'In-depth global reporting and international affairs',
+    category: 'World Affairs',
+    defaultTags: ['tag_world'],
+    unreadCount: 0,
+  },
+  {
+    id: 'guardian_world',
+    title: 'The Guardian',
+    url: 'https://www.theguardian.com/world/rss',
+    siteUrl: 'https://www.theguardian.com',
+    description: 'International journalism, investigations, and commentary',
+    category: 'World Affairs',
+    defaultTags: ['tag_world', 'tag_investigative'],
+    unreadCount: 0,
+  },
+  {
+    id: 'techcrunch_main',
+    title: 'TechCrunch',
+    url: 'https://techcrunch.com/feed/',
+    siteUrl: 'https://techcrunch.com',
+    description: 'Technology, startups, venture capital, and silicon news',
+    category: 'Technology',
+    defaultTags: ['tag_tech'],
+    unreadCount: 0,
+  },
+  {
+    id: 'the_verge',
+    title: 'The Verge',
+    url: 'https://www.theverge.com/rss/index.xml',
+    siteUrl: 'https://www.theverge.com',
+    description: 'Technology, science, hardware, and digital culture',
+    category: 'Technology',
+    defaultTags: ['tag_tech', 'tag_culture'],
+    unreadCount: 0,
+  },
+];
 
 const STORAGE_KEYS = {
   FEEDS: 'paperpress_feeds_v2',
@@ -84,7 +205,7 @@ export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   distractionFree: false,
 };
 
-const MAX_UNSAVED_ARTICLES = 120;
+const MAX_UNSAVED_ARTICLES = 300;
 const MAX_SAVED_HTML_CHARS = 50000;
 const MAX_HTML_CHARS = 20000;
 const FULL_BODY_MIN_CHARS = 800;
@@ -119,11 +240,11 @@ function readArray<T>(key: string): T[] | null {
 
 function pruneArticles(articles: FeedItem[], maxUnsaved = MAX_UNSAVED_ARTICLES): FeedItem[] {
   const saved = articles.filter((a) => a.isBookmarked);
-  const others = articles
-    .filter((a) => !a.isBookmarked)
+  const unreadOthers = articles
+    .filter((a) => !a.isBookmarked && !a.isRead && !a.hiddenFromFeed)
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, maxUnsaved);
-  return [...saved, ...others]
+  return [...saved, ...unreadOthers]
     .map((a) => {
       const charBudget = a.isBookmarked || a.isOfflineCached ? MAX_SAVED_HTML_CHARS : MAX_HTML_CHARS;
       return {
@@ -143,7 +264,7 @@ function pruneArticles(articles: FeedItem[], maxUnsaved = MAX_UNSAVED_ARTICLES):
 
 export function loadFeedsFromStorage(): Feed[] {
   const stored = readArray<Feed>(STORAGE_KEYS.FEEDS);
-  if (!stored) return INITIAL_FEEDS;
+  if (!stored || stored.length === 0) return INITIAL_FEEDS;
   return stored.map((f) => {
     if (f.id === 'prothom_alo_en' && f.url === 'https://en.prothomalo.com') {
       return { ...f, url: 'https://en.prothomalo.com/feed' };
@@ -176,13 +297,22 @@ export function isPlaceholderSummary(text?: string | null): boolean {
 export function loadArticlesFromStorage(): FeedItem[] {
   const stored = readArray<FeedItem>(STORAGE_KEYS.ARTICLES);
   if (!stored) return [];
+  const readKeySet = new Set<string>(loadReadArticleKeysFromStorage());
   return stored
-    .filter((a) => a && typeof a.id === 'string' && !LEGACY_DEMO_ID.test(a.id))
+    .filter((a) => {
+      if (!a || typeof a.id !== 'string' || LEGACY_DEMO_ID.test(a.id)) return false;
+      const alreadyRead = Boolean(a.isRead || readKeySet.has(a.id) || (a.link && readKeySet.has(a.link)));
+      if (alreadyRead && !a.isBookmarked) return false;
+      return true;
+    })
     .map((a) => {
       const cleanSummary = isPlaceholderSummary(a.summary) ? '' : a.summary;
       const cleanHtml = a.contentHtml && isPlaceholderSummary(a.contentHtml) ? '' : a.contentHtml;
+      const alreadyRead = Boolean(a.isRead || readKeySet.has(a.id) || (a.link && readKeySet.has(a.link)));
       return {
         ...a,
+        isRead: alreadyRead,
+        hiddenFromFeed: alreadyRead ? true : Boolean(a.hiddenFromFeed),
         summary: cleanSummary,
         contentHtml: cleanHtml,
         tags: Array.isArray(a.tags) ? a.tags : [],
