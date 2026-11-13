@@ -997,9 +997,15 @@
 /* ─────────────────────────────────────────────────────────────
    ARTICLE PROSE BODY in reader
 ───────────────────────────────────────────────────────────── */
+.article-prose {
+  -webkit-user-select: text;
+  user-select: text;
+}
 .article-prose p {
   margin-bottom: 1.35em;
   color: var(--reader-text);
+  -webkit-user-select: text;
+  user-select: text;
 }
 .article-prose h2 {
   font-family: var(--font-sans);

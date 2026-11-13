@@ -599,7 +599,32 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
     if (e.touches.length !== 1) return;
     pinchStartRef.current = null;
-    beginHorizontalGesture(e.touches[0].clientX, e.touches[0].clientY);
+
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
+      swipeStartRef.current = null;
+      return;
+    }
+
+    const clientX = e.touches[0].clientX;
+    const target = e.target as HTMLElement | null;
+    if (
+      clientX > 28 &&
+      target &&
+      (target.closest('.article-prose') ||
+        target.closest('p') ||
+        target.closest('span') ||
+        target.closest('h1') ||
+        target.closest('h2') ||
+        target.closest('h3') ||
+        target.closest('li') ||
+        target.closest('blockquote'))
+    ) {
+      swipeStartRef.current = null;
+      return;
+    }
+
+    beginHorizontalGesture(clientX, e.touches[0].clientY);
   };
 
   const handleTouchMoveSwipe = (e: React.TouchEvent) => {
@@ -621,6 +646,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
 
     if (e.touches.length !== 1) return;
+    if (!swipeStartRef.current) return;
     updateHorizontalGesture(e.touches[0].clientX, e.touches[0].clientY);
   };
 
@@ -629,6 +655,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       pinchStartRef.current = null;
       return;
     }
+    if (!swipeStartRef.current) return;
 
     if (e.changedTouches.length !== 1) {
       swipeStartRef.current = null;
