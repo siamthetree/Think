@@ -82,20 +82,7 @@ import {
   extractArticleWithFallback,
 } from './utils/apiClient';
 import { blocksToHtml, escapeHtml, isJavaScriptWarningText } from './utils/sanitize';
-import { useFirebase } from './contexts/FirebaseContext';
-import {
-  saveCloudStateToFirestore,
-  syncSourceToFirestore,
-  deleteSourceFromFirestore,
-  syncBookmarkToFirestore,
-  deleteBookmarkFromFirestore,
-  recordReadEntryToFirestore,
-  loadAllCloudUserData,
-  subscribeToCloudMetaState,
-} from './utils/firebaseSync';
-
 export default function App() {
-  const { user, authReady, setCloudSyncStatus, setCloudError } = useFirebase();
 
   // Core Persistent State
   const [feeds, setFeeds] = useState<Feed[]>(loadFeedsFromStorage);
@@ -367,200 +354,7 @@ export default function App() {
     saveReadingSpeedProfileToStorage(readingSpeedProfile);
   }, [readingSpeedProfile]);
 
-  // ------------------------------------------------------------------
-  // Firebase Cloud Sync (Hydrate on login + Debounced meta persistence)
-  // ------------------------------------------------------------------
-  const cloudHydratedUidRef = useRef<string | null>(null);
-  const isApplyingCloudRef = useRef(false);
 
-  const performFullCloudSync = async () => {
-    if (!user || isOffline) return;
-    setCloudSyncStatus('syncing');
-    setCloudError(null);
-    try {
-      const cloud = await loadAllCloudUserData(user);
-      isApplyingCloudRef.current = true;
-
-      if (cloud.metaState) {
-        if (Array.isArray(cloud.metaState.folders) && cloud.metaState.folders.length > 0) {
-          setFolders((prev) => Array.from(new Set([...prev, ...cloud.metaState!.folders!])));
-        }
-        if (cloud.metaState.preferences) {
-          setPreferences((prev) => ({ ...prev, ...cloud.metaState!.preferences }));
-        }
-        if (cloud.metaState.readingHabit) {
-          setReadingHabit((prev) =>
-            normalizeReadingHabitState({
-              ...prev,
-              ...cloud.metaState!.readingHabit,
-              todayReadIds: Array.from(
-                new Set([
-                  ...(prev.todayReadIds || []),
-                  ...(cloud.metaState!.readingHabit?.todayReadIds || []),
-                ])
-              ),
-              totalReadIds: Array.from(
-                new Set([
-                  ...(prev.totalReadIds || []),
-                  ...(cloud.metaState!.readingHabit?.totalReadIds || []),
-                ])
-              ),
-              streakDays: Math.max(
-                prev.streakDays || 0,
-                Number(cloud.metaState!.readingHabit?.streakDays) || 0
-              ),
-              todayMinutes: Math.max(
-                prev.todayMinutes || 0,
-                Number(cloud.metaState!.readingHabit?.todayMinutes) || 0
-              ),
-            })
-          );
-        }
-        if (cloud.metaState.readingSpeedProfile) {
-          const cp = cloud.metaState.readingSpeedProfile;
-          const mergeLangObservations = (
-            localObs: typeof readingSpeedProfile.en.observations,
-            cloudObs: typeof readingSpeedProfile.en.observations | undefined
-          ) => {
-            const byId = new Map(localObs.map((o) => [o.articleId, o]));
-            for (const o of cloudObs || []) {
-              if (o && o.articleId && !byId.has(o.articleId)) {
-                byId.set(o.articleId, o);
-              }
-            }
-            return Array.from(byId.values()).slice(-50);
-          };
-          setReadingSpeedProfile((prev) =>
-            normalizeReadingSpeedProfile({
-              en: {
-                ...prev.en,
-                observedCount: Math.max(prev.en.observedCount, cp.en?.observedCount || 0),
-                observations: mergeLangObservations(prev.en.observations, cp.en?.observations),
-              },
-              bn: {
-                ...prev.bn,
-                observedCount: Math.max(prev.bn.observedCount, cp.bn?.observedCount || 0),
-                observations: mergeLangObservations(prev.bn.observations, cp.bn?.observations),
-              },
-            })
-          );
-        }
-      }
-
-      if (cloud.sources.length > 0) {
-        setFeeds((prev) => {
-          const seenUrls = new Set(prev.map((f) => f.url.toLowerCase()));
-          const extra = cloud.sources.filter((s) => !seenUrls.has(s.url.toLowerCase()));
-          return extra.length > 0 ? [...prev, ...extra] : prev;
-        });
-      }
-
-      if (cloud.readSignatures.length > 0) {
-        if (!readKeysRef.current) readKeysRef.current = new Set();
-        let addedSig = false;
-        for (const sig of cloud.readSignatures) {
-          if (!readKeysRef.current.has(sig)) {
-            readKeysRef.current.add(sig);
-            addedSig = true;
-          }
-        }
-        if (addedSig) persistReadKeys();
-      }
-
-      if (cloud.bookmarks.length > 0) {
-        setArticles((prev) => {
-          const next = mergeFeedItems(prev, cloud.bookmarks, false);
-          const bookmarkedIds = new Set(cloud.bookmarks.map((b) => b.id));
-          const bookmarkedLinks = new Set(cloud.bookmarks.map((b) => b.link));
-          return next.map((a) =>
-            bookmarkedIds.has(a.id) || bookmarkedLinks.has(a.link)
-              ? { ...a, isBookmarked: true }
-              : a
-          );
-        });
-      }
-
-      // Push current local sources, bookmarks, & meta state up to Firestore
-      await saveCloudStateToFirestore({
-        user,
-        folders,
-        preferences,
-        readingHabit,
-        readingSpeedProfile,
-      });
-
-      const localOnlyFeeds = feedsRef.current.slice(0, 40);
-      for (const f of localOnlyFeeds) {
-        await syncSourceToFirestore(user, f);
-      }
-
-      const localBookmarks = articlesRef.current.filter((a) => a.isBookmarked).slice(0, 40);
-      for (const b of localBookmarks) {
-        await syncBookmarkToFirestore(user, b);
-      }
-
-      cloudHydratedUidRef.current = user.uid;
-      setCloudSyncStatus('synced', Date.now());
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setCloudSyncStatus('error');
-      setCloudError(
-        msg.includes('Quota exceeded')
-          ? 'Firestore daily quota exceeded. Cloud sync will resume after quota reset.'
-          : 'Could not complete cloud sync.'
-      );
-    } finally {
-      setTimeout(() => {
-        isApplyingCloudRef.current = false;
-      }, 250);
-    }
-  };
-
-  useEffect(() => {
-    if (!authReady || !user || isOffline) {
-      if (!user) cloudHydratedUidRef.current = null;
-      return;
-    }
-    if (cloudHydratedUidRef.current !== user.uid) {
-      void performFullCloudSync();
-    }
-    const unsub = subscribeToCloudMetaState(user, (meta) => {
-      if (!meta || isApplyingCloudRef.current) return;
-      isApplyingCloudRef.current = true;
-      try {
-        if (meta.preferences) {
-          setPreferences((prev) => ({ ...prev, ...meta.preferences }));
-        }
-        if (Array.isArray(meta.folders)) {
-          setFolders((prev) => Array.from(new Set([...prev, ...meta.folders!])));
-        }
-      } finally {
-        setTimeout(() => {
-          isApplyingCloudRef.current = false;
-        }, 200);
-      }
-    });
-    return () => unsub();
-  }, [authReady, user?.uid, isOffline]);
-
-  useEffect(() => {
-    if (!authReady || !user || isOffline || isApplyingCloudRef.current) return;
-    if (cloudHydratedUidRef.current !== user.uid) return;
-    const timer = setTimeout(() => {
-      void saveCloudStateToFirestore({
-        user,
-        folders,
-        preferences,
-        readingHabit,
-        readingSpeedProfile,
-      })
-        .then(() => setCloudSyncStatus('synced', Date.now()))
-        .catch(() => {
-          setCloudSyncStatus('error');
-        });
-    }, 1200);
-    return () => clearTimeout(timer);
-  }, [authReady, user?.uid, isOffline, folders, preferences, readingHabit, readingSpeedProfile]);
 
   // Temporary status notification
   const notifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -575,6 +369,7 @@ export default function App() {
   // Unique IDs even when many feeds are created in the same millisecond (OPML import)
   const idCounterRef = useRef(0);
   const makeFeedId = () => `feed_${Date.now()}_${idCounterRef.current++}`;
+  const performFullCloudSync = async () => {};
 
   // Run async jobs with a small concurrency limit so refresh-all does not fire every request at once
   const runPool = async <T,>(items: T[], limit: number, job: (item: T) => Promise<void>) => {
@@ -1423,9 +1218,6 @@ export default function App() {
 
     // Mark as read immediately and persist key so refreshing never brings this read story back
     recordReadKeys([latest]);
-    if (user && !isOffline) {
-      void recordReadEntryToFirestore(user, latest).catch(() => {});
-    }
     setArticles((prev) =>
       prev.map((a) => (a.id === latest.id ? { ...a, isRead: true } : a))
     );
@@ -1589,13 +1381,7 @@ export default function App() {
     if (quickPeekArticle && quickPeekArticle.id === id) {
       setQuickPeekArticle((curr) => (curr ? { ...curr, isBookmarked: !curr.isBookmarked } : null));
     }
-    if (user && !isOffline && target && target.id === id) {
-      if (nextBookmarked) {
-        void syncBookmarkToFirestore(user, { ...target, isBookmarked: true }).catch(() => {});
-      } else {
-        void deleteBookmarkFromFirestore(user, target).catch(() => {});
-      }
-    }
+
   };
 
   const handleToggleRead = (id: string, e?: React.MouseEvent) => {
@@ -1621,9 +1407,6 @@ export default function App() {
     if (target) {
       if (markingAsRead) {
         recordReadKeys([target]);
-        if (user && !isOffline) {
-          void recordReadEntryToFirestore(user, target).catch(() => {});
-        }
       } else {
         removeReadKeys(target);
       }
@@ -1781,9 +1564,7 @@ export default function App() {
     };
     setFeeds((prev) => [newFeed, ...prev]);
     notify(`Added ${newFeed.title}`);
-    if (user && !isOffline) {
-      void syncSourceToFirestore(user, newFeed).catch(() => {});
-    }
+
 
     // Select and sync the newly added source immediately
     await handleSelectSource(newFeed);
@@ -1795,9 +1576,7 @@ export default function App() {
     if (selectedFeedId === feedId) {
       setSelectedFeedId(null);
     }
-    if (user && !isOffline && removedFeed) {
-      void deleteSourceFromFirestore(user, removedFeed).catch(() => {});
-    }
+
     notify('Source removed');
   };
 
