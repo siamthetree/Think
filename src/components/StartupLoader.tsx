@@ -62,26 +62,11 @@ function wait(ms: number): Promise<void> {
 }
 
 function shouldSkipSplashFromReloadLoop(): boolean {
-  try {
-    if (typeof window !== 'undefined' && window.location.search.includes('autostart=1')) {
-      return true;
-    }
-    const raw = localStorage.getItem(SPLASH_GUARD_STORAGE_KEY);
-    if (!raw) return false;
-    const lastTs = Number(raw);
-    if (!Number.isFinite(lastTs)) return false;
-    return Date.now() - lastTs < SPLASH_RELOAD_LOOP_WINDOW_MS;
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 function recordSplashStartedTimestamp(): void {
-  try {
-    localStorage.setItem(SPLASH_GUARD_STORAGE_KEY, String(Date.now()));
-  } catch {
-    // ignore storage errors
-  }
+  // no-op to ensure startup banner always shows
 }
 
 /**

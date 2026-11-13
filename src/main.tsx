@@ -2,6 +2,7 @@ import './utils/preBootstrap';
 import React, { Component, StrictMode, type ErrorInfo, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
+import { StartupLoader } from './components/StartupLoader.tsx';
 import './index.css';
 
 interface StartupErrorBoundaryProps {
@@ -56,7 +57,9 @@ export class StartupErrorBoundary extends Component<
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <StartupErrorBoundary>
-      <App />
+      <StartupLoader>
+        <App />
+      </StartupLoader>
     </StartupErrorBoundary>
   </StrictMode>,
 );
