@@ -14,7 +14,7 @@ export const PRIVACY_SETTINGS_KEY = 'chinta_privacy_settings';
 export const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
   connectionMode: 'relay',
   blockThirdPartyMedia: true,
-  tapToLoadMedia: false,
+  tapToLoadMedia: true,
 };
 
 export function loadPrivacySettingsFromStorage(): PrivacySettings {

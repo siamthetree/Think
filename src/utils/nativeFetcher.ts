@@ -68,6 +68,10 @@ async function fetchRawUrlText(targetUrl: string): Promise<{ text: string; final
     // Fall through to standard credential-free fetch
   }
 
+  if (isRunningInNativeIos()) {
+    throw new Error(`Unable to fetch ${safeUrl} via native CapacitorHttp`);
+  }
+
   const res = await fetch(safeUrl, {
     credentials: 'omit',
     referrerPolicy: 'no-referrer',

@@ -1,4 +1,4 @@
-import { CapacitorHttp } from '@capacitor/core';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import type { FeedItem, TravelBlog } from '../types';
 import bundledBlogs from '../../data/blogs.json';
 import {
@@ -379,6 +379,10 @@ export async function fetchImageWithCache(imageUrl: string, timeoutMs = 8000): P
     }
   } catch {
     // Fall through to credential-free fetch
+  }
+
+  if (Capacitor.isNativePlatform()) {
+    throw new Error(`Unable to fetch image ${safeUrl} via native CapacitorHttp`);
   }
 
   // 2. Credential-free standard fetch fallback

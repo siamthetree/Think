@@ -61,6 +61,10 @@ jobs:
           echo "Web build successful. Output size:"
           du -sh dist/
 
+      - name: Verify Hostnames and Privacy Guardrails
+        run: |
+          node scripts/check-hosts.mjs
+
       - name: Setup Capacitor iOS Project
         run: |
           # Add iOS platform if not already initialized

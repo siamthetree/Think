@@ -116,9 +116,7 @@ function sanitizeWithoutDom(dirtyHtml: string, options?: SanitizeArticleOptions)
     }
 
     if (/^https?:\/\//i.test(src)) {
-      const validated = buildImageProxyUrl(src);
-      if (!validated) return '';
-      return `<img src="${escapeHtml(validated)}"${altAttr} referrerpolicy="no-referrer" />`;
+      return `<img src="${TRANSPARENT_PLACEHOLDER}" data-chinta-src="${escapeHtml(src)}"${altAttr} referrerpolicy="no-referrer" />`;
     }
 
     return `<img src="${escapeHtml(src)}"${altAttr} referrerpolicy="no-referrer" />`;
@@ -200,13 +198,9 @@ export function sanitizeArticleHtml(
       }
 
       if (/^https?:\/\//i.test(src)) {
-        const validated = buildImageProxyUrl(src);
-        if (validated) {
-          el.setAttribute('src', validated);
-          el.setAttribute('referrerpolicy', 'no-referrer');
-        } else {
-          el.parentNode?.removeChild(el);
-        }
+        el.setAttribute('data-chinta-src', src);
+        el.setAttribute('src', TRANSPARENT_PLACEHOLDER);
+        el.setAttribute('referrerpolicy', 'no-referrer');
       }
     } else if (tag === 'iframe' || tag === 'script') {
       const src = el.getAttribute('src') || '';

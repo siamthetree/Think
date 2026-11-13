@@ -47,6 +47,7 @@ import { PerspectiveLogo } from './PerspectiveLogo';
 import { generateQuickTldrBullets } from '../utils/feedIntelligence';
 import { savePhotoToGallery } from '../utils/storyCardRenderer';
 import { sanitizeTextSelection } from '../utils/articleLines';
+import { stripTrackingParams } from '../utils/urlSecurity';
 import {
   createDefaultReadingSpeedProfile,
   estimateArticleReadTime,
@@ -760,10 +761,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const handleShare = async () => {
     triggerHapticSelection();
+    const cleanLink = article.link ? stripTrackingParams(article.link) : window.location.href;
     const shareData = {
       title: extractedMeta.title || article.title,
       text: `${extractedMeta.title || article.title} - ${article.feedTitle}`,
-      url: article.link || window.location.href,
+      url: cleanLink,
     };
 
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -775,9 +777,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       }
     }
 
-    if (navigator.clipboard && article.link) {
+    if (navigator.clipboard && cleanLink) {
       try {
-        await navigator.clipboard.writeText(article.link);
+        await navigator.clipboard.writeText(cleanLink);
         showToast('Link copied to clipboard');
         return;
       } catch {
@@ -811,7 +813,33 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     return () => {
       flushReadingSession(false);
     };
-  }, [article.id, flushReadingSession]);
+  }, [article.id]);
+
+  const articleContentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const container = articleContentRef.current;
+    if (!container) return;
+    const imgs = container.querySelectorAll('img[data-chinta-src]');
+    for (const img of imgs) {
+      const src = img.getAttribute('data-chinta-src');
+      if (!src) continue;
+      const syncHit = getCachedImageSync(src);
+      if (syncHit) {
+        img.setAttribute('src', syncHit);
+        img.removeAttribute('data-chinta-blocked');
+      } else {
+        fetchImageWithCache(src)
+          .then((dataUrl) => {
+            if (dataUrl) {
+              img.setAttribute('src', dataUrl);
+              img.removeAttribute('data-chinta-blocked');
+            }
+          })
+          .catch(() => {});
+      }
+    }
+  }, [article.contentHtml, extractedBlocks]);
+
 
   // Foreground active-reading timer (high-precision delta, pauses when backgrounded or idle >45s)
   useEffect(() => {
@@ -1640,6 +1668,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               })
             ) : article.contentHtml ? (
               <div
+                ref={articleContentRef}
                 className="article-prose max-w-none"
                 dangerouslySetInnerHTML={{ __html: sanitizeArticleHtml(article.contentHtml) }}
               />
@@ -1746,9 +1775,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
               {article.link && article.link.startsWith('http') && (
                 <a
-                  href={article.link}
+                  href={stripTrackingParams(article.link)}
                   target="_blank"
                   rel="noopener noreferrer"
+                  referrerPolicy="no-referrer"
                   className="inline-flex items-center gap-1 text-[11px] underline underline-offset-4 transition-opacity hover:opacity-80"
                   style={{ color: 'var(--reader-muted)' }}
                 >

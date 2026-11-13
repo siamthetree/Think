@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { fetchImageWithCache, getCachedImageSync } from '../utils/apiClient';
 
 export interface SourceAvatarProps {
   name: string;
@@ -40,13 +41,32 @@ function getGradientForName(name: string): string {
 }
 
 export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, iconUrl, size = 'sm' }) => {
+  const [cachedIcon, setCachedIcon] = useState<string | null>(() => getCachedImageSync(iconUrl));
   const [imgError, setImgError] = useState(false);
   const initials = name.trim().slice(0, 1).toUpperCase() || '?';
 
-  const localIconUrl =
-    iconUrl && (iconUrl.startsWith('data:') || iconUrl.startsWith('blob:') || iconUrl.startsWith('/'))
-      ? iconUrl
-      : undefined;
+  useEffect(() => {
+    let cancelled = false;
+    if (!iconUrl) {
+      setCachedIcon(null);
+      return;
+    }
+    const syncHit = getCachedImageSync(iconUrl);
+    if (syncHit) {
+      setCachedIcon(syncHit);
+      return;
+    }
+    fetchImageWithCache(iconUrl)
+      .then((dataUrl) => {
+        if (!cancelled && dataUrl) setCachedIcon(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setImgError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [iconUrl]);
 
   const sizeClass =
     size === 'lg'
@@ -62,11 +82,12 @@ export const SourceAvatar: React.FC<SourceAvatarProps> = ({ name, iconUrl, size 
       className={`source-avatar relative inline-flex shrink-0 items-center justify-center overflow-hidden bg-gradient-to-br ${gradient} font-bold font-serif select-none ring-1 ring-white/20 ${sizeClass}`}
       aria-hidden="true"
     >
-      {localIconUrl && !imgError ? (
+      {cachedIcon && !imgError ? (
         <img
-          src={localIconUrl}
+          src={cachedIcon}
           alt=""
           onError={() => setImgError(true)}
+          referrerPolicy="no-referrer"
           className="h-full w-full object-cover p-1 bg-white dark:bg-stone-900 rounded-[inherit]"
           loading="lazy"
         />
