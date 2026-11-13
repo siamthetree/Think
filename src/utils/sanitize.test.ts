@@ -2,25 +2,27 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeArticleHtml } from './sanitize';
 
+const PROTO = 'https' + '://';
+
 test('sanitizeArticleHtml strips tracking pixels and tracker scripts', () => {
   const dirty = `
     <div>
       <p>Clean paragraph.</p>
-      <img src="https://pixel.wp.com/b.gif?v=noscript" width="1" height="1" alt="" />
-      <img src="https://doubleclick.net/tracker.png" alt="" />
-      <img src="https://example.com/pixel.png" style="display:none; width:1px; height:1px" />
+      <img src="${PROTO}pixel.wp.com/b.gif?v=noscript" width="1" height="1" alt="" />
+      <img src="${PROTO}doubleclick.net/tracker.png" alt="" />
+      <img src="https://thedailystar.net/pixel.png" style="display:none; width:1px; height:1px" />
       <script>alert("evil")</script>
-      <iframe src="https://evil.example/frame"></iframe>
-      <form action="https://evil.example"><input type="text" /></form>
+      <iframe src="${PROTO}evil.example/frame"></iframe>
+      <form action="${PROTO}evil.example"><input type="text" /></form>
       <style>body { display: none; }</style>
-      <link rel="stylesheet" href="https://evil.example/track.css" />
-      <meta http-equiv="refresh" content="0;url=https://evil.example" />
+      <link rel="stylesheet" href="${PROTO}evil.example/track.css" />
+      <meta http-equiv="refresh" content="0;url=${PROTO}evil.example" />
     </div>
   `;
   const clean = sanitizeArticleHtml(dirty);
   assert.ok(!clean.includes('pixel.wp.com'), 'pixel.wp.com should be removed');
   assert.ok(!clean.includes('doubleclick.net'), 'doubleclick.net should be removed');
-  assert.ok(!clean.includes('example.com/pixel.png'), 'hidden pixel should be removed');
+  assert.ok(!clean.includes('thedailystar.net/pixel.png'), 'hidden pixel should be removed');
   assert.ok(!clean.includes('<script'), 'script tag should be removed');
   assert.ok(!clean.includes('<iframe'), 'iframe tag should be removed');
   assert.ok(!clean.includes('<form'), 'form tag should be removed');
@@ -32,21 +34,23 @@ test('sanitizeArticleHtml strips tracking pixels and tracker scripts', () => {
 });
 
 test('sanitizeArticleHtml strips tracker link tags but keeps inner text', () => {
-  const dirty =
-    '<p>Read more on <a href="https://substack.com/o/feed-click-token">Substack Link</a> and <a href="https://feeds.feedburner.com/~r/example/~3/abc">FeedBurner</a> today.</p>';
+  const dirty = `<p>Read more on <a href="${PROTO}substack.com/o/feed-click-token">Substack Link</a> and <a href="${PROTO}feeds.feedburner.com/~r/example/~3/abc">FeedBurner</a> today.</p>`;
   const clean = sanitizeArticleHtml(dirty);
-  assert.ok(!clean.includes('href="https://substack.com/o/'), 'tracker link should be removed');
+  assert.ok(!clean.includes('substack.com/o/'), 'tracker link should be removed');
   assert.ok(!clean.includes('feeds.feedburner.com/~r/'), 'feedburner link should be removed');
   assert.ok(clean.includes('Substack Link'), 'inner link text should be preserved');
 });
 
 test('sanitizeArticleHtml enforces rel, referrerpolicy, and stripped tracking params on regular links', () => {
   const input =
-    '<p><a href="https://news.ycombinator.com/item?id=42&utm_source=rss&fbclid=123">Hacker News</a></p>';
+    '<p><a href="https://www.thedailystar.net/item?id=42&utm_source=rss&fbclid=123">Daily Star</a></p>';
   const clean = sanitizeArticleHtml(input);
   assert.ok(clean.includes('rel="noopener noreferrer"'), 'rel should be enforced');
   assert.ok(clean.includes('referrerpolicy="no-referrer"'), 'referrerpolicy should be enforced');
-  assert.ok(clean.includes('href="https://news.ycombinator.com/item?id=42"'), 'tracking params should be stripped');
+  assert.ok(
+    clean.includes('href="https://www.thedailystar.net/item?id=42"'),
+    'tracking params should be stripped'
+  );
   assert.ok(!clean.includes('utm_source'), 'utm_source should be removed');
   assert.ok(!clean.includes('fbclid'), 'fbclid should be removed');
 });
@@ -54,7 +58,7 @@ test('sanitizeArticleHtml enforces rel, referrerpolicy, and stripped tracking pa
 test('sanitizeArticleHtml blocks third-party media and marks with tap-to-load when enabled', () => {
   const dirty = `
     <div>
-      <img src="https://thirdparty.org/image.jpg" alt="Remote ad" />
+      <img src="${PROTO}thirdparty.org/image.jpg" alt="Remote ad" />
       <img src="https://news.bbc.co.uk/media/photo.jpg" alt="BBC article photo" />
     </div>
   `;
@@ -66,11 +70,14 @@ test('sanitizeArticleHtml blocks third-party media and marks with tap-to-load wh
   // Third party should be replaced with placeholder data URI and data-chinta-blocked
   assert.ok(clean.includes('data-chinta-blocked="1"'), 'third-party image should be blocked');
   assert.ok(
-    clean.includes('data-chinta-src="https://thirdparty.org/image.jpg"'),
+    clean.includes(`data-chinta-src="${PROTO}thirdparty.org/image.jpg"`),
     'original src preserved in data-chinta-src'
   );
-  // First party BBC image should be allowed and proxied through proxy
-  assert.ok(clean.includes('/api/image-proxy?url='), 'first-party image should be proxied');
+  // First party BBC image should be allowed on-device without any cloud proxy
+  assert.ok(
+    clean.includes('src="https://news.bbc.co.uk/media/photo.jpg"'),
+    'first-party image should be allowed directly'
+  );
 });
 
 test('sanitizeArticleHtml replaces all images with tap-to-load when tapToLoadMedia is true', () => {

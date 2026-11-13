@@ -17,6 +17,8 @@ export interface Feed {
   unreadCount?: number;
 }
 
+export type FeedSource = Feed;
+
 export interface FeedItem {
   id: string;
   feedId: string;
@@ -37,6 +39,7 @@ export interface FeedItem {
   isOfflineCached: boolean;
   hiddenFromFeed?: boolean;
   cachedAt?: number;
+  fetchedBatchTs?: number;
   readTimeMin: number;
 }
 

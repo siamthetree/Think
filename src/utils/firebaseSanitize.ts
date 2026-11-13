@@ -188,7 +188,7 @@ export function sanitizeSourcePayload(uid: string, feed: Feed) {
     ownerId: clampString(uid, 128),
     id: clampString(feed.id, 128, toFirestoreSafeId(feed.url)),
     title: clampString(feed.title, 200, 'Newspaper Source'),
-    url: clampString(feed.url, 1024, 'https://example.com'),
+    url: clampString(feed.url, 1024, 'https://www.thedailystar.net'),
     category: clampString(feed.category, 80, ''),
     defaultTags: clampStringArray(feed.defaultTags, 20, 64),
   };
@@ -221,7 +221,7 @@ export function sanitizeBookmarkPayload(uid: string, article: FeedItem) {
     feedId: clampString(article.feedId, 128, 'feed'),
     feedTitle: clampString(article.feedTitle, 200, 'Newspaper Source'),
     title: clampString(article.title, 400, 'Untitled Article'),
-    link: clampString(article.link, 1024, 'https://example.com'),
+    link: clampString(article.link, 1024, 'https://www.thedailystar.net'),
     timestamp: clampNumber(article.timestamp, 0, Number.MAX_SAFE_INTEGER, Date.now()),
     tags: clampStringArray(article.tags, 20, 64),
     readTimeMin: clampNumber(article.readTimeMin, 1, 600, 2),

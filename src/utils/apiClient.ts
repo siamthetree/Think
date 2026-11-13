@@ -104,6 +104,8 @@ export async function fetchFeedWithFallback(params: {
   feedId: string;
   title: string;
   tags: string[];
+  minItems?: number;
+  excludeKeys?: string[];
 }): Promise<{ feedTitle: string; items: FeedItem[]; resolvedFeedUrl?: string }> {
   let normalizedUrl = params.url.trim();
   if (normalizedUrl && !/^https?:\/\//i.test(normalizedUrl) && !normalizedUrl.startsWith('/')) {

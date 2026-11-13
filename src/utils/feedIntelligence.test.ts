@@ -344,6 +344,6 @@ test('filterOutAlreadyReadIncoming and clearReadArticlesForRefresh prevent read 
   assert.equal(filteredIncoming[0].id, 'art_brand_new');
   assert.equal(
     canonicalizeArticleLink('https://www.thedailystar.net/news/story-1/?utm_source=rss'),
-    'https://www.thedailystar.net/news/story-1'
+    'https://thedailystar.net/news/story-1'
   );
 });

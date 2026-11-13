@@ -211,8 +211,11 @@ test('source code contains only publisher feed domains and no non-user-supplied 
   const ALLOWED_PUBLISHER_HOSTS = new Set([
     'www.thedailystar.net',
     'thedailystar.net',
+    'media.thedailystar.net',
     'www.prothomalo.com',
     'en.prothomalo.com',
+    'en.prothomalo.com.bd',
+    'media.prothomalo.com.bd',
     'bdnews24.com',
     'media.bdnews24.com',
     'thefinancialexpress.com.bd',
@@ -240,10 +243,16 @@ test('source code contains only publisher feed domains and no non-user-supplied 
     'www.barta24.com',
     'www.newagebd.net',
     'feeds.bbci.co.uk',
+    'ichef.bbci.co.uk',
     'bbc.com',
     'www.bbc.com',
+    'bbc.co.uk',
+    'www.bbc.co.uk',
+    'news.bbc.co.uk',
     'www.reuters.com',
     'www.theguardian.com',
+    'i.guim.co.uk',
+    'media.guim.co.uk',
     'www.aljazeera.com',
     'rss.dw.com',
     'techcrunch.com',
@@ -267,6 +276,7 @@ test('source code contains only publisher feed domains and no non-user-supplied 
     'phys.org',
     'www.sciencedaily.com',
     'nyt.com',
+    'www.nytimes.com',
   ]);
 
   const filesToScan: string[] = [

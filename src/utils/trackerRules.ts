@@ -97,95 +97,102 @@ const TRACKING_PARAM_PREFIXES = [
   'matomo_',
 ];
 
-export const TRACKER_HOST_PATTERNS: string[] = [
-  'doubleclick.net',
-  'google-analytics.com',
-  'googletagmanager.com',
-  'googlesyndication.com',
-  'googleadservices.com',
-  '2mdn.net',
-  'facebook.net',
-  'connect.facebook.net',
-  'analytics.twitter.com',
-  'ads-twitter.com',
-  't.co',
-  'amazon-adsystem.com',
-  'adnxs.com',
-  'rubiconproject.com',
-  'pubmatic.com',
-  'openx.net',
-  'casalemedia.com',
-  'scorecardresearch.com',
-  'sb.scorecardresearch.com',
-  'quantserve.com',
-  'pixel.quantserve.com',
-  'outbrain.com',
-  'taboola.com',
-  'criteo.com',
-  'criteo.net',
-  'chartbeat.com',
-  'chartbeat.net',
-  'parsely.com',
-  'pixel.parsely.com',
-  'hotjar.com',
-  'mixpanel.com',
-  'segment.io',
-  'segment.com',
-  'clarity.ms',
-  'bat.bing.com',
-  'newrelic.com',
-  'nr-data.net',
-  'bugsnag.com',
-  'omtrdc.net',
-  '2o7.net',
-  'demdex.net',
-  'everesttech.net',
-  'krxd.net',
-  'bluekai.com',
-  'exelator.com',
-  'rlcdn.com',
-  'tapad.com',
-  'adsrvr.org',
-  'adform.net',
-  'moatads.com',
-  'doubleverify.com',
-  'iasds01.com',
-  'adsafeprotected.com',
-  'teads.tv',
-  'sharethrough.com',
-  'smartadserver.com',
-  'zemanta.com',
-  'revcontent.com',
-  'mgid.com',
-  'adroll.com',
-  'perfectaudience.com',
-  'liadm.com',
-  'pippio.com',
-  'agkn.com',
-  'mathtag.com',
-  'mookie1.com',
-  'bidswitch.net',
-  'contextweb.com',
-  'indexexchange.com',
-  'spotxchange.com',
-  'tremorhub.com',
-  'serving-sys.com',
-  'flashtalking.com',
-  'celtra.com',
-  'innovid.com',
-  'extreme-dm.com',
-  'statcounter.com',
-  'histats.com',
-  'mc.yandex.ru',
-  'top.mail.ru',
-  'analytics.tiktok.com',
-  'tr.snapchat.com',
-  'ct.pinterest.com',
-  'trk.pinterest.com',
-  'px.ads.linkedin.com',
-  'dc.ads.linkedin.com',
-  'alb.reddit.com',
-  'events.redditmedia.com',
+export interface TrackerHostPattern {
+  host: string;
+  pathPrefix?: string;
+}
+
+export const TRACKER_HOST_PATTERNS: TrackerHostPattern[] = [
+  { host: 'doubleclick.net' },
+  { host: 'google-analytics.com' },
+  { host: 'googletagmanager.com' },
+  { host: 'googlesyndication.com' },
+  { host: 'googleadservices.com' },
+  { host: '2mdn.net' },
+  { host: 'facebook.net' },
+  { host: 'connect.facebook.net' },
+  { host: 'facebook.com', pathPrefix: '/tr' },
+  { host: 'analytics.twitter.com' },
+  { host: 'ads-twitter.com' },
+  { host: 't.co' },
+  { host: 'amazon-adsystem.com' },
+  { host: 'adnxs.com' },
+  { host: 'rubiconproject.com' },
+  { host: 'pubmatic.com' },
+  { host: 'openx.net' },
+  { host: 'casalemedia.com' },
+  { host: 'scorecardresearch.com' },
+  { host: 'quantserve.com' },
+  { host: 'outbrain.com' },
+  { host: 'taboola.com' },
+  { host: 'criteo.com' },
+  { host: 'criteo.net' },
+  { host: 'chartbeat.com' },
+  { host: 'chartbeat.net' },
+  { host: 'parsely.com' },
+  { host: 'pixel.wp.com' },
+  { host: 'feeds.feedburner.com', pathPrefix: '/~r/' },
+  { host: 'substack.com', pathPrefix: '/o/' },
+  { host: 'list-manage.com', pathPrefix: '/track/' },
+  { host: 'hotjar.com' },
+  { host: 'mixpanel.com' },
+  { host: 'segment.io' },
+  { host: 'segment.com' },
+  { host: 'clarity.ms' },
+  { host: 'bat.bing.com' },
+  { host: 'newrelic.com' },
+  { host: 'nr-data.net' },
+  { host: 'bugsnag.com' },
+  { host: 'omtrdc.net' },
+  { host: '2o7.net' },
+  { host: 'demdex.net' },
+  { host: 'everesttech.net' },
+  { host: 'krxd.net' },
+  { host: 'bluekai.com' },
+  { host: 'exelator.com' },
+  { host: 'rlcdn.com' },
+  { host: 'tapad.com' },
+  { host: 'adsrvr.org' },
+  { host: 'adform.net' },
+  { host: 'moatads.com' },
+  { host: 'doubleverify.com' },
+  { host: 'iasds01.com' },
+  { host: 'adsafeprotected.com' },
+  { host: 'teads.tv' },
+  { host: 'sharethrough.com' },
+  { host: 'smartadserver.com' },
+  { host: 'zemanta.com' },
+  { host: 'revcontent.com' },
+  { host: 'mgid.com' },
+  { host: 'adroll.com' },
+  { host: 'perfectaudience.com' },
+  { host: 'liadm.com' },
+  { host: 'pippio.com' },
+  { host: 'agkn.com' },
+  { host: 'mathtag.com' },
+  { host: 'mookie1.com' },
+  { host: 'bidswitch.net' },
+  { host: 'contextweb.com' },
+  { host: 'indexexchange.com' },
+  { host: 'spotxchange.com' },
+  { host: 'tremorhub.com' },
+  { host: 'serving-sys.com' },
+  { host: 'flashtalking.com' },
+  { host: 'celtra.com' },
+  { host: 'innovid.com' },
+  { host: 'extreme-dm.com' },
+  { host: 'statcounter.com' },
+  { host: 'histats.com' },
+  { host: 'mc.yandex.ru' },
+  { host: 'top.mail.ru' },
+  { host: 'analytics.tiktok.com' },
+  { host: 'tr.snapchat.com' },
+  { host: 'ct.pinterest.com' },
+  { host: 'trk.pinterest.com' },
+  { host: 'px.ads.linkedin.com' },
+  { host: 'dc.ads.linkedin.com' },
+  { host: 'alb.reddit.com' },
+  { host: 'events.redditmedia.com' },
 ];
 
 export function stripTrackingParams(rawUrl: string): string {
@@ -209,7 +216,7 @@ export function stripTrackingParams(rawUrl: string): string {
     });
 
     if (keysToDelete.length === 0) {
-      return rawUrl;
+      return trimmed.endsWith('?') ? trimmed.slice(0, -1) : rawUrl;
     }
 
     for (const k of keysToDelete) {
@@ -225,26 +232,30 @@ export function stripTrackingParams(rawUrl: string): string {
 export function isTrackerUrl(rawUrl: string): boolean {
   if (!rawUrl || typeof rawUrl !== 'string') return false;
   try {
-    const parsed = new URL(rawUrl.trim(), 'https://placeholder.invalid');
+    const trimmed = rawUrl.trim();
+    if (!trimmed) return false;
+    const isAbsoluteOrProtoRel = /^https?:\/\//i.test(trimmed) || trimmed.startsWith('//');
+    const parsed = isAbsoluteOrProtoRel
+      ? new URL(trimmed.startsWith('//') ? `https:${trimmed}` : trimmed)
+      : new URL(trimmed, 'https://www.thedailystar.net');
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return false;
     }
-    const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
-    if (!host || host === 'placeholder.invalid') return false;
-
-    for (const pattern of TRACKER_HOST_PATTERNS) {
-      const p = pattern.toLowerCase();
-      if (host === p || host.endsWith(`.${p}`)) {
-        return true;
-      }
-    }
+    const host = isAbsoluteOrProtoRel ? parsed.hostname.toLowerCase().replace(/\.$/, '') : '';
 
     const lowerPath = parsed.pathname.toLowerCase();
-    if (
-      (host === 'facebook.com' || host.endsWith('.facebook.com')) &&
-      (lowerPath === '/tr' || lowerPath.startsWith('/tr/'))
-    ) {
-      return true;
+
+    for (const pattern of TRACKER_HOST_PATTERNS) {
+      const p = pattern.host.toLowerCase();
+      if (host === p || host.endsWith(`.${p}`)) {
+        if (!pattern.pathPrefix) {
+          return true;
+        }
+        const pref = pattern.pathPrefix.toLowerCase();
+        if (lowerPath === pref || lowerPath.startsWith(pref)) {
+          return true;
+        }
+      }
     }
 
     if (
@@ -264,13 +275,29 @@ export function isTrackerUrl(rawUrl: string): boolean {
   }
 }
 
-export function isTrackingPixel(el: {
-  getAttribute(name: string): string | null;
-}): boolean {
-  if (!el || typeof el.getAttribute !== 'function') return false;
+export type TrackingPixelCandidate =
+  | { getAttribute(name: string): string | null }
+  | {
+      width?: string | null;
+      height?: string | null;
+      style?: string | null;
+      src?: string | null;
+      getAttribute?: (name: string) => string | null;
+    };
 
-  const width = (el.getAttribute('width') || '').trim().toLowerCase();
-  const height = (el.getAttribute('height') || '').trim().toLowerCase();
+export function isTrackingPixel(el: TrackingPixelCandidate): boolean {
+  if (!el) return false;
+
+  const readAttr = (name: 'width' | 'height' | 'style' | 'src' | 'data-src'): string => {
+    if (typeof (el as { getAttribute?: unknown }).getAttribute === 'function') {
+      return ((el as { getAttribute(n: string): string | null }).getAttribute(name) || '').trim();
+    }
+    const rec = el as Record<string, string | null | undefined>;
+    return (rec[name] || '').trim();
+  };
+
+  const width = readAttr('width').toLowerCase();
+  const height = readAttr('height').toLowerCase();
 
   const isZeroOrOne = (val: string) =>
     val === '0' || val === '1' || val === '0px' || val === '1px';
@@ -279,7 +306,7 @@ export function isTrackingPixel(el: {
     return true;
   }
 
-  const styleRaw = (el.getAttribute('style') || '').toLowerCase();
+  const styleRaw = readAttr('style').toLowerCase();
   if (styleRaw) {
     const compactStyle = styleRaw.replace(/\s+/g, '');
     if (
@@ -290,14 +317,14 @@ export function isTrackingPixel(el: {
       compactStyle.includes('width:1px') ||
       compactStyle.includes('height:0px') ||
       compactStyle.includes('height:1px') ||
-      /(?:^|;)width:(?:0|1)(?:px)?;/.test(compactStyle) ||
-      /(?:^|;)height:(?:0|1)(?:px)?;/.test(compactStyle)
+      /(?:^|;)width:(?:0|1)(?:px)?(?:;|$)/.test(compactStyle) ||
+      /(?:^|;)height:(?:0|1)(?:px)?(?:;|$)/.test(compactStyle)
     ) {
       return true;
     }
   }
 
-  const src = el.getAttribute('src') || el.getAttribute('data-src') || '';
+  const src = readAttr('src') || readAttr('data-src');
   if (src && isTrackerUrl(src)) {
     return true;
   }

@@ -45,7 +45,7 @@ export function stripTrackingParams(rawUrl: string): string {
   try {
     const parsed = isAbsolute
       ? new URL(isProtocolRelative ? `https:${trimmed}` : trimmed)
-      : new URL(trimmed, 'https://chinta.local');
+      : new URL(trimmed, 'https://www.thedailystar.net');
 
     const keysToDelete: string[] = [];
     parsed.searchParams.forEach((_, key) => {

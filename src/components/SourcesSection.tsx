@@ -1,1043 +1,951 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   Plus,
   Trash2,
-  AlertCircle,
   Globe,
-  ExternalLink,
   Search,
   ChevronRight,
   ChevronDown,
-  Upload,
-  Download,
   RefreshCw,
   FolderPlus,
-  Sparkles,
+  Folder,
+  FolderInput,
   Check,
-  ShieldCheck,
-  Edit3,
   X,
+  LoaderCircle,
 } from 'lucide-react';
-import type { FeedSource } from '../types';
-import { PRESET_FEEDS } from '../constants';
-import { getFaviconUrl } from '../utils/feedParser';
-import { exportToOpml, parseOpml } from '../utils/opml';
+import type { Feed, FeedItem } from '../types';
 import { SourceAvatar } from './SourceAvatar';
-import { getSourceHealthBadge } from '../utils/feedIntelligence';
+import {
+  triggerHapticSelection,
+  triggerHapticPull,
+  triggerHapticDisarm,
+  triggerHapticComplete,
+  triggerHapticError,
+} from '../utils/haptics';
+import {
+  computeSwipeActionState,
+  computeReleaseVelocity,
+  shouldCommitSwipeAction,
+  type SwipeActionState,
+  type GestureAxisLock,
+  type VelocitySample,
+} from '../utils/touchGestures';
 
-interface SourcesSectionProps {
-  sources: FeedSource[];
-  activeSourceId: string | null;
-  onSelectSource: (id: string | null) => void;
-  onAddSource: (url: string) => Promise<void>;
-  onAddPreset: (preset: Omit<FeedSource, 'id'>) => Promise<void>;
-  onRemoveSource: (id: string) => void;
-  onUpdateSourceCategory: (id: string, category: string) => void;
-  onEditSource?: (
-    id: string,
-    updates: { title: string; url: string; category?: string }
-  ) => Promise<void>;
-  onImportSources: (newSources: Omit<FeedSource, 'id'>[]) => Promise<void>;
-  onResetDefaultSources?: () => Promise<void>;
-  isAdding: boolean;
-  error: string | null;
-  onRefreshAll?: () => void;
-  isRefreshing?: boolean;
+export interface SourcesSectionProps {
+  feeds: Feed[];
+  articles: FeedItem[];
+  folders: string[];
+  selectedFeedId: string | null;
+  selectedFolder: string | null;
+  isRefreshing: boolean;
+  isOffline: boolean;
+  onSelectSource: (feed: Feed) => Promise<void> | void;
+  onSelectFolder: (folderName: string) => Promise<void> | void;
+  onCreateFolder: (folderName: string) => void;
+  onMoveFeedToFolder: (feedId: string, folderName: string) => void;
+  onRefreshFeed: (feed: Feed) => Promise<void> | void;
+  onRefreshAll: () => Promise<void> | void;
+  onDeleteFeed: (feedId: string) => void;
+  onAddFeed: (feed: Omit<Feed, 'id'>) => Promise<void> | void;
+  onOpenFeedModal: () => void;
+  onLoadDirectUrl: (url: string) => Promise<void> | void;
+  isLoadingDirectUrl: boolean;
+  onOpenIosModal?: () => void;
+  onSyncNow?: () => Promise<void> | void;
 }
 
+interface QuickAddPreset {
+  title: string;
+  domain: string;
+  url: string;
+  siteUrl: string;
+  defaultTags: string[];
+}
+
+const QUICK_ADD_PRESETS: QuickAddPreset[] = [
+  {
+    title: 'The Daily Star',
+    domain: 'thedailystar.net',
+    url: 'https://www.thedailystar.net/rss.xml',
+    siteUrl: 'https://www.thedailystar.net',
+    defaultTags: ['tag_bd', 'tag_investigative'],
+  },
+  {
+    title: 'Prothom Alo',
+    domain: 'en.prothomalo.com',
+    url: 'https://en.prothomalo.com/feed',
+    siteUrl: 'https://en.prothomalo.com',
+    defaultTags: ['tag_bd'],
+  },
+  {
+    title: 'The Business Standard',
+    domain: 'tbsnews.net',
+    url: 'https://www.tbsnews.net/top-news/rss.xml',
+    siteUrl: 'https://www.tbsnews.net',
+    defaultTags: ['tag_bd', 'tag_markets'],
+  },
+  {
+    title: 'Dhaka Tribune',
+    domain: 'dhakatribune.com',
+    url: 'https://www.dhakatribune.com',
+    siteUrl: 'https://www.dhakatribune.com',
+    defaultTags: ['tag_bd', 'tag_opinion'],
+  },
+  {
+    title: 'bdnews24.com',
+    domain: 'bdnews24.com',
+    url: 'https://bdnews24.com',
+    siteUrl: 'https://bdnews24.com',
+    defaultTags: ['tag_bd', 'tag_breaking'],
+  },
+  {
+    title: 'Financial Express',
+    domain: 'thefinancialexpress.com.bd',
+    url: 'https://thefinancialexpress.com.bd',
+    siteUrl: 'https://thefinancialexpress.com.bd',
+    defaultTags: ['tag_bd', 'tag_markets'],
+  },
+  {
+    title: 'BBC News',
+    domain: 'bbc.com',
+    url: 'https://feeds.bbci.co.uk/news/world/rss.xml',
+    siteUrl: 'https://www.bbc.com/news',
+    defaultTags: ['tag_world', 'tag_breaking'],
+  },
+  {
+    title: 'Al Jazeera',
+    domain: 'aljazeera.com',
+    url: 'https://www.aljazeera.com/xml/rss/all.xml',
+    siteUrl: 'https://www.aljazeera.com',
+    defaultTags: ['tag_world'],
+  },
+  {
+    title: 'Reuters',
+    domain: 'reuters.com',
+    url: 'https://www.reuters.com',
+    siteUrl: 'https://www.reuters.com',
+    defaultTags: ['tag_world', 'tag_markets'],
+  },
+  {
+    title: 'The Guardian',
+    domain: 'theguardian.com',
+    url: 'https://www.theguardian.com/world/rss',
+    siteUrl: 'https://www.theguardian.com',
+    defaultTags: ['tag_world', 'tag_investigative'],
+  },
+  {
+    title: 'TechCrunch',
+    domain: 'techcrunch.com',
+    url: 'https://techcrunch.com/feed/',
+    siteUrl: 'https://techcrunch.com',
+    defaultTags: ['tag_tech'],
+  },
+  {
+    title: 'The Verge',
+    domain: 'theverge.com',
+    url: 'https://www.theverge.com/rss/index.xml',
+    siteUrl: 'https://www.theverge.com',
+    defaultTags: ['tag_tech'],
+  },
+];
+
+const INITIAL_ROW_SWIPE: SwipeActionState = {
+  offsetX: 0,
+  direction: 'none',
+  progress: 0,
+  armed: false,
+  axisLock: 'undecided',
+};
+
 export const SourcesSection: React.FC<SourcesSectionProps> = ({
-  sources,
-  activeSourceId,
-  onSelectSource,
-  onAddSource,
-  onAddPreset,
-  onRemoveSource,
-  onUpdateSourceCategory,
-  onEditSource,
-  onImportSources,
-  onResetDefaultSources,
-  isAdding,
-  error,
-  onRefreshAll,
+  feeds,
+  articles,
+  folders,
+  selectedFeedId,
+  selectedFolder,
   isRefreshing,
+  isOffline,
+  onSelectSource,
+  onSelectFolder,
+  onCreateFolder,
+  onMoveFeedToFolder,
+  onRefreshFeed,
+  onRefreshAll,
+  onDeleteFeed,
+  onAddFeed,
+  onOpenFeedModal,
+  onLoadDirectUrl,
+  isLoadingDirectUrl,
 }) => {
-  const [urlInput, setUrlInput] = useState('');
+  const [omnibarInput, setOmnibarInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [discoverCategory, setDiscoverCategory] = useState<string>('All');
-  const [discoverLang, setDiscoverLang] = useState<'all' | 'bn' | 'en'>('all');
-  const [editingCatId, setEditingCatId] = useState<string | null>(null);
-  const [catInput, setCatInput] = useState('');
-  const [editingSource, setEditingSource] = useState<FeedSource | null>(null);
-  const [editTitleInput, setEditTitleInput] = useState('');
-  const [editUrlInput, setEditUrlInput] = useState('');
-  const [editCategoryInput, setEditCategoryInput] = useState('');
-  const [isSavingEdit, setIsSavingEdit] = useState(false);
-  const [editError, setEditError] = useState<string | null>(null);
-  const [opmlMessage, setOpmlMessage] = useState<string | null>(null);
-  const [isAddingPack, setIsAddingPack] = useState<string | null>(null);
-  const [isResettingDefaults, setIsResettingDefaults] = useState(false);
-  const [confirmDeleteSource, setConfirmDeleteSource] = useState<FeedSource | null>(null);
-  const [confirmResetModal, setConfirmResetModal] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const [showAllSubscribed, setShowAllSubscribed] = useState(false);
-  const [showAllDirectory, setShowAllDirectory] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [activeFolderPill, setActiveFolderPill] = useState<string | null>(null);
+  const [isDirectoryExpanded, setIsDirectoryExpanded] = useState(() => feeds.length === 0);
+  const [isNewFolderOpen, setIsNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null);
+  const [addingPresetDomain, setAddingPresetDomain] = useState<string | null>(null);
+  const [movingFeed, setMovingFeed] = useState<Feed | null>(null);
+  const [moveNewFolderName, setMoveNewFolderName] = useState('');
+  const [isCreatingFolderInMove, setIsCreatingFolderInMove] = useState(false);
+  const [swipingFeedId, setSwipingFeedId] = useState<string | null>(null);
+  const [rowSwipeState, setRowSwipeState] = useState<SwipeActionState>(INITIAL_ROW_SWIPE);
 
-  const toggleGroupCollapse = (groupName: string) => {
-    setCollapsedGroups((prev) => ({
-      ...prev,
-      [groupName]: !prev[groupName],
-    }));
-  };
+  const rowTouchStartRef = useRef<{
+    feedId: string;
+    pointerId: number;
+    x: number;
+    y: number;
+    axisLock: GestureAxisLock;
+    armed: boolean;
+    samples: VelocitySample[];
+  } | null>(null);
+  const didRowSwipeRef = useRef(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!urlInput.trim() || isAdding) return;
-    try {
-      await onAddSource(urlInput.trim());
-      setUrlInput('');
-    } catch {
-      // handled in parent
+  const allFolders = useMemo(() => {
+    const set = new Set<string>();
+    for (const folder of folders) {
+      if (folder && folder.trim()) set.add(folder.trim());
     }
-  };
-
-  const isSourceAdded = (url: string) => {
-    const clean = url.replace(/\/$/, '').toLowerCase();
-    return sources.some((s) => s.url.replace(/\/$/, '').toLowerCase() === clean);
-  };
-
-  const handleExportOpml = () => {
-    const xml = exportToOpml(sources);
-    const blob = new Blob([xml], { type: 'text/xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `chinta-subscriptions-${new Date().toISOString().slice(0, 10)}.opml`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setOpmlMessage(`Exported ${sources.length} feeds to OPML`);
-    setTimeout(() => setOpmlMessage(null), 3500);
-  };
-
-  const handleImportOpmlFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const parsed = parseOpml(text);
-      if (parsed.length === 0) {
-        setOpmlMessage('No valid RSS feeds found in that OPML file.');
-      } else {
-        await onImportSources(parsed);
-        setOpmlMessage(`Imported ${parsed.length} feed(s) from OPML`);
+    for (const f of feeds) {
+      if (f.category && f.category.trim()) {
+        set.add(f.category.trim());
       }
-    } catch {
-      setOpmlMessage('Failed to parse OPML file.');
     }
-    e.target.value = '';
-    setTimeout(() => setOpmlMessage(null), 4000);
-  };
+    return Array.from(set);
+  }, [folders, feeds]);
 
-  const handleAddStarterPack = async (
-    packId: string,
-    filterFn: (preset: Omit<FeedSource, 'id'>) => boolean
-  ) => {
-    setIsAddingPack(packId);
-    try {
-      const matching = PRESET_FEEDS.filter(filterFn).filter((p) => !isSourceAdded(p.url));
-      if (matching.length > 0) {
-        await onImportSources(matching);
-        setOpmlMessage(`Added ${matching.length} sources from starter pack!`);
-      } else {
-        setOpmlMessage('All sources in this pack are already subscribed.');
+  const unreadCountByFeed = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const a of articles) {
+      if (!a.isRead) {
+        counts[a.feedId] = (counts[a.feedId] || 0) + 1;
       }
-    } finally {
-      setIsAddingPack(null);
-      setTimeout(() => setOpmlMessage(null), 3500);
     }
+    return counts;
+  }, [articles]);
+
+  const filteredFeeds = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return feeds.filter((f) => {
+      if (activeFolderPill && (f.category?.trim() || '') !== activeFolderPill) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        f.title.toLowerCase().includes(q) ||
+        f.url.toLowerCase().includes(q) ||
+        Boolean(f.category && f.category.toLowerCase().includes(q))
+      );
+    });
+  }, [feeds, searchQuery, activeFolderPill]);
+
+  const isPresetAdded = (preset: QuickAddPreset) => {
+    const normDomain = preset.domain.toLowerCase();
+    return feeds.some(
+      (f) =>
+        f.url.toLowerCase().includes(normDomain) ||
+        Boolean(f.siteUrl && f.siteUrl.toLowerCase().includes(normDomain)) ||
+        f.title.toLowerCase() === preset.title.toLowerCase()
+    );
   };
 
-  const openEditSourceModal = (source: FeedSource) => {
-    setEditingSource(source);
-    setEditTitleInput(source.title);
-    setEditUrlInput(source.url);
-    setEditCategoryInput(source.category || 'General');
-    setEditError(null);
-  };
-
-  const handleSaveSourceEdit = async (e: React.FormEvent) => {
+  const handleOmnibarSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingSource || !onEditSource) return;
-    const trimmedUrl = editUrlInput.trim();
-    if (!trimmedUrl) {
-      setEditError('Feed or website URL cannot be empty.');
-      return;
-    }
-    setIsSavingEdit(true);
-    setEditError(null);
+    const trimmed = omnibarInput.trim();
+    if (!trimmed) return;
+    triggerHapticSelection();
+    onLoadDirectUrl(trimmed);
+    setOmnibarInput('');
+  };
+
+  const handleQuickAddPreset = async (preset: QuickAddPreset) => {
+    if (isPresetAdded(preset) || addingPresetDomain === preset.domain) return;
+    triggerHapticSelection();
+    setAddingPresetDomain(preset.domain);
     try {
-      await onEditSource(editingSource.id, {
-        title: editTitleInput.trim() || editingSource.title,
-        url: trimmedUrl,
-        category: editCategoryInput.trim() || 'General',
+      await onAddFeed({
+        title: preset.title,
+        url: preset.url,
+        siteUrl: preset.siteUrl,
+        category: activeFolderPill || '',
+        defaultTags: preset.defaultTags,
+        unreadCount: 0,
       });
-      setEditingSource(null);
-      setOpmlMessage(`Updated "${editTitleInput.trim() || editingSource.title}"`);
-      setTimeout(() => setOpmlMessage(null), 3500);
-    } catch (err) {
-      setEditError(err instanceof Error ? err.message : 'Could not update source.');
+      triggerHapticComplete();
     } finally {
-      setIsSavingEdit(false);
+      setAddingPresetDomain(null);
     }
   };
 
-  // Discover categories
-  const allDiscoverCategories = [
-    'All',
-    ...Array.from(new Set(PRESET_FEEDS.map((p) => p.category || 'General'))),
-  ];
+  const handleSingleRefresh = async (e: React.MouseEvent | null, feed: Feed) => {
+    e?.stopPropagation();
+    triggerHapticSelection();
+    setRefreshingFeedId(feed.id);
+    try {
+      await onRefreshFeed(feed);
+      triggerHapticComplete();
+    } catch {
+      triggerHapticError();
+    } finally {
+      setRefreshingFeedId(null);
+    }
+  };
 
-  const filteredPresets = PRESET_FEEDS.filter((p) => {
-    const matchesSearch =
-      !searchQuery.trim() ||
-      p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (p.category || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.url.toLowerCase().includes(searchQuery.toLowerCase());
+  const handleOpenMoveMenu = (e: React.MouseEvent | null, feed: Feed) => {
+    e?.stopPropagation();
+    triggerHapticSelection();
+    setMovingFeed(feed);
+    setIsCreatingFolderInMove(false);
+    setMoveNewFolderName('');
+  };
 
-    const matchesCategory = discoverCategory === 'All' || p.category === discoverCategory;
+  const handleCreateFolderSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newFolderName.trim();
+    if (!trimmed) return;
+    triggerHapticComplete();
+    onCreateFolder(trimmed);
+    setActiveFolderPill(trimmed);
+    setNewFolderName('');
+    setIsNewFolderOpen(false);
+  };
 
-    const isBangla =
-      (p.category || '').toLowerCase().includes('bangla') ||
-      (p.category || '').toLowerCase().includes('bd') ||
-      /[\u0980-\u09FF]/.test(p.title);
+  const renderSourceRow = (feed: Feed) => {
+    const isSelected = selectedFeedId === feed.id;
+    const unread = unreadCountByFeed[feed.id] || 0;
+    const isThisRefreshing = refreshingFeedId === feed.id;
+    const activeSwipe = swipingFeedId === feed.id ? rowSwipeState : null;
 
-    const matchesLang =
-      discoverLang === 'all' ||
-      (discoverLang === 'bn' && isBangla) ||
-      (discoverLang === 'en' && !isBangla);
+    return (
+      <div key={feed.id} className="relative overflow-hidden">
+        {activeSwipe && activeSwipe.offsetX !== 0 && (
+          <div
+            aria-hidden="true"
+            className={`absolute inset-0 flex items-center justify-between px-4 pointer-events-none select-none ${
+              activeSwipe.direction === 'right'
+                ? activeSwipe.armed
+                  ? 'bg-emerald-500/25'
+                  : 'bg-stone-200/60 dark:bg-white/[0.06]'
+                : activeSwipe.armed
+                ? 'bg-[#FF6719]/25'
+                : 'bg-stone-200/60 dark:bg-white/[0.06]'
+            }`}
+          >
+            <div
+              className={`flex items-center gap-1.5 text-xs font-semibold ${
+                activeSwipe.direction === 'right' ? 'opacity-100' : 'opacity-0'
+              } ${activeSwipe.armed ? 'text-emerald-500' : 'text-stone-500'}`}
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Sync Source</span>
+            </div>
+            <div
+              className={`flex items-center gap-1.5 text-xs font-semibold ml-auto ${
+                activeSwipe.direction === 'left' ? 'opacity-100' : 'opacity-0'
+              } ${activeSwipe.armed ? 'text-[#FF6719]' : 'text-stone-500'}`}
+            >
+              <span>Assign Folder</span>
+              <FolderInput className="w-3.5 h-3.5" />
+            </div>
+          </div>
+        )}
 
-    return matchesSearch && matchesCategory && matchesLang;
-  });
+        <div
+          onClick={() => {
+            if (didRowSwipeRef.current) {
+              didRowSwipeRef.current = false;
+              return;
+            }
+            triggerHapticSelection();
+            onSelectSource(feed);
+          }}
+          onPointerDown={(e) => {
+            if (e.button !== 0 && e.pointerType === 'mouse') return;
+            didRowSwipeRef.current = false;
+            const now = performance.now();
+            rowTouchStartRef.current = {
+              feedId: feed.id,
+              pointerId: e.pointerId,
+              x: e.clientX,
+              y: e.clientY,
+              axisLock: 'undecided',
+              armed: false,
+              samples: [{ x: e.clientX, y: e.clientY, t: now }],
+            };
+          }}
+          onPointerMove={(e) => {
+            const session = rowTouchStartRef.current;
+            if (!session || session.feedId !== feed.id || session.pointerId !== e.pointerId) return;
+            if (e.pointerType !== 'touch' && e.buttons !== 1) return;
+            const dx = e.clientX - session.x;
+            const dy = e.clientY - session.y;
+            const now = performance.now();
+            session.samples.push({ x: e.clientX, y: e.clientY, t: now });
+            if (session.samples.length > 8) session.samples.shift();
+            const next = computeSwipeActionState(
+              dx,
+              dy,
+              64,
+              112,
+              session.axisLock,
+              session.armed
+            );
+            session.axisLock = next.axisLock;
+            if (next.axisLock === 'horizontal') {
+              didRowSwipeRef.current = true;
+              try {
+                if (!e.currentTarget.hasPointerCapture(e.pointerId)) {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }
+              } catch {}
+              setSwipingFeedId(feed.id);
+              setRowSwipeState(next);
+            }
+            if (next.armed && !session.armed) {
+              session.armed = true;
+              triggerHapticPull();
+            } else if (!next.armed && session.armed) {
+              session.armed = false;
+              triggerHapticDisarm();
+            }
+          }}
+          onPointerUp={(e) => {
+            const session = rowTouchStartRef.current;
+            rowTouchStartRef.current = null;
+            if (session) {
+              try {
+                if (e.currentTarget.hasPointerCapture(session.pointerId)) {
+                  e.currentTarget.releasePointerCapture(session.pointerId);
+                }
+              } catch {}
+              if (swipingFeedId === feed.id && session.axisLock === 'horizontal') {
+                session.samples.push({ x: e.clientX, y: e.clientY, t: performance.now() });
+                const { vx } = computeReleaseVelocity(session.samples);
+                if (shouldCommitSwipeAction({ state: rowSwipeState, velocityX: vx })) {
+                  triggerHapticComplete();
+                  if (rowSwipeState.direction === 'right') {
+                    handleSingleRefresh(null, feed);
+                  } else if (rowSwipeState.direction === 'left') {
+                    handleOpenMoveMenu(null, feed);
+                  }
+                }
+              }
+            }
+            setSwipingFeedId(null);
+            setRowSwipeState(INITIAL_ROW_SWIPE);
+          }}
+          onPointerCancel={(e) => {
+            const session = rowTouchStartRef.current;
+            rowTouchStartRef.current = null;
+            if (session) {
+              try {
+                if (e.currentTarget.hasPointerCapture(session.pointerId)) {
+                  e.currentTarget.releasePointerCapture(session.pointerId);
+                }
+              } catch {}
+            }
+            setSwipingFeedId(null);
+            setRowSwipeState(INITIAL_ROW_SWIPE);
+          }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              triggerHapticSelection();
+              onSelectSource(feed);
+            }
+          }}
+          style={{
+            touchAction: 'pan-y',
+            transform:
+              activeSwipe && activeSwipe.offsetX !== 0
+                ? `translate3d(${activeSwipe.offsetX}px, 0, 0)`
+                : undefined,
+            transition:
+              activeSwipe && activeSwipe.offsetX !== 0
+                ? 'none'
+                : 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+          }}
+          className={`relative px-3.5 py-3 flex items-center justify-between gap-2.5 cursor-pointer select-none transition-colors ${
+            isSelected
+              ? 'bg-[#FF6719]/8 dark:bg-[#FF6719]/12'
+              : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.02]'
+          }`}
+        >
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <SourceAvatar name={feed.title} url={feed.url} size="sm" />
+            <div className="min-w-0 flex-1">
+              <span className="font-serif font-semibold text-sm text-stone-900 dark:text-stone-100 truncate block">
+                {feed.title}
+              </span>
+              <span className="text-[11px] text-stone-400 dark:text-stone-500 truncate block">
+                {feed.category ? `${feed.category} · ` : ''}
+                {feed.url.replace(/^https?:\/\/(www\.)?/, '').split('/')[0]}
+              </span>
+            </div>
+          </div>
 
-  // Group user's active sources by folder/category
-  const groupedSources = sources.reduce<Record<string, FeedSource[]>>((acc, s) => {
-    const cat = s.category || 'General';
-    if (!acc[cat]) acc[cat] = [];
-    acc[cat].push(s);
-    return acc;
-  }, {});
-
-  // Keep Subscriptions compact on initial open unless user searches or expands
-  const INITIAL_VISIBLE_SUBSCRIPTIONS = 6;
-  const shouldCompactSubscriptions =
-    !showAllSubscribed && !searchQuery.trim() && sources.length > INITIAL_VISIBLE_SUBSCRIPTIONS;
-
-  const displayedSubscriptions = shouldCompactSubscriptions
-    ? sources.slice(0, INITIAL_VISIBLE_SUBSCRIPTIONS)
-    : sources;
-
-  const displayedGroupedSources = displayedSubscriptions.reduce<Record<string, FeedSource[]>>(
-    (acc, s) => {
-      const cat = s.category || 'General';
-      if (!acc[cat]) acc[cat] = [];
-      acc[cat].push(s);
-      return acc;
-    },
-    {}
-  );
-
-  // Keep Curated Directory compact unless user searches, filters, or taps "Show All"
-  const INITIAL_VISIBLE_PRESETS = 6;
-  const isDirectoryFiltered =
-    Boolean(searchQuery.trim()) || discoverCategory !== 'All' || discoverLang !== 'all';
-  const shouldCompactDirectory =
-    !showAllDirectory && !isDirectoryFiltered && filteredPresets.length > INITIAL_VISIBLE_PRESETS;
-  const displayedPresets = shouldCompactDirectory
-    ? filteredPresets.slice(0, INITIAL_VISIBLE_PRESETS)
-    : filteredPresets;
-
-  return (
-    <div className="max-w-3xl mx-auto px-4 py-6 pb-28 space-y-7">
-      {/* Header + OPML Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <h1 className="font-serif text-2xl sm:text-3xl font-bold tracking-tight text-stone-900 dark:text-stone-100">
-            Sources & Discovery
-          </h1>
-          <p className="text-sm text-stone-600 dark:text-stone-400 mt-1">
-            Subscribe to any RSS feed, Atom XML, or newspaper portal. 100% tracker-free & IP-shielded.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0 flex-wrap">
-          {onRefreshAll && (
+          <div
+            className="flex items-center gap-1 shrink-0"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {unread > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-stone-200/70 dark:bg-white/[0.08] text-[11px] font-mono tabular-nums text-stone-600 dark:text-stone-300 mr-0.5">
+                {unread}
+              </span>
+            )}
             <button
               type="button"
-              onClick={onRefreshAll}
-              disabled={isRefreshing}
-              className="px-3 py-2 rounded-xl text-xs font-medium bg-stone-200/70 dark:bg-stone-800/80 text-stone-700 dark:text-stone-300 hover:bg-stone-300/70 dark:hover:bg-stone-700 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              onClick={(e) => handleOpenMoveMenu(e, feed)}
+              title="Assign folder"
+              aria-label={`Assign ${feed.title} to folder`}
+              className="p-1.5 rounded-lg text-stone-400 hover:text-[#FF6719] transition-colors"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-              <span>Refresh All</span>
+              <FolderInput className="w-3.5 h-3.5" />
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="px-3 py-2 rounded-xl text-xs font-medium bg-stone-200/70 dark:bg-stone-800/80 text-stone-700 dark:text-stone-300 hover:bg-stone-300/70 dark:hover:bg-stone-700 flex items-center gap-1.5 transition-colors"
-            title="Import subscriptions from an OPML file"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span>Import OPML</span>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".opml,.xml,text/xml,application/xml"
-            onChange={handleImportOpmlFile}
-            className="hidden"
-          />
-          <button
-            type="button"
-            onClick={handleExportOpml}
-            disabled={sources.length === 0}
-            className="px-3 py-2 rounded-xl text-xs font-medium bg-stone-200/70 dark:bg-stone-800/80 text-stone-700 dark:text-stone-300 hover:bg-stone-300/70 dark:hover:bg-stone-700 flex items-center gap-1.5 transition-colors disabled:opacity-50"
-            title="Export your feeds to a portable OPML file"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export OPML</span>
-          </button>
-          {onResetDefaultSources && (
             <button
               type="button"
-              disabled={isResettingDefaults || isAdding}
-              onClick={() => setConfirmResetModal(true)}
-              className="px-3 py-2 rounded-xl text-xs font-medium bg-stone-200/70 dark:bg-stone-800/80 text-stone-700 dark:text-stone-300 hover:bg-stone-300/70 dark:hover:bg-stone-700 flex items-center gap-1.5 transition-colors disabled:opacity-50"
-              title="Restore default Bangla & International starter sources"
+              onClick={(e) => handleSingleRefresh(e, feed)}
+              disabled={isThisRefreshing || isOffline}
+              title="Sync source"
+              aria-label={`Sync ${feed.title}`}
+              className="p-1.5 rounded-lg text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
             >
-              <Sparkles className="w-3.5 h-3.5 text-[#FF6719]" />
-              <span>{isResettingDefaults ? 'Restoring...' : 'Restore Defaults'}</span>
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${isThisRefreshing ? 'animate-spin text-[#FF6719]' : ''}`}
+              />
             </button>
-          )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                triggerHapticSelection();
+                onDeleteFeed(feed.id);
+              }}
+              title="Remove source"
+              aria-label={`Remove ${feed.title}`}
+              className="p-1.5 rounded-lg text-stone-300 hover:text-red-500 dark:text-stone-600 dark:hover:text-red-400 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+            {isSelected ? (
+              <Check className="w-4 h-4 text-[#FF6719] shrink-0" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-stone-300 dark:text-stone-600 shrink-0" />
+            )}
+          </div>
         </div>
       </div>
+    );
+  };
 
-      {opmlMessage && (
-        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-medium flex items-center gap-2">
-          <Check className="w-4 h-4 shrink-0" />
-          <span>{opmlMessage}</span>
-        </div>
-      )}
-
-      {/* Custom URL Form */}
-      <div className="p-4 sm:p-5 rounded-2xl liquid-glass">
-        <label
-          htmlFor="feed-url-input"
-          className="block text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400 mb-2.5"
-        >
-          Add Any Website or RSS Feed URL
-        </label>
-        <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2.5">
-          <div className="relative flex-1">
-            <Globe className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              id="feed-url-input"
-              type="text"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              placeholder="e.g. prothomalo.com, thedailystar.net, or any RSS link..."
-              className="w-full pl-10 pr-4 py-2.5 bg-stone-50 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 rounded-xl text-sm text-stone-900 dark:text-stone-100 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-600/30 focus:border-amber-600 transition-all"
-            />
+  return (
+    <div className="flex-1 relative flex flex-col h-full overflow-hidden bg-stone-50 dark:bg-[#090A0C]">
+      <div
+        aria-hidden="true"
+        className="top-progressive-blur absolute top-0 left-0 right-0 h-28 z-10 pointer-events-none"
+      />
+      <header className="shrink-0 px-4 pt-[max(env(safe-area-inset-top,0px),0.75rem)] pb-2.5 z-20 space-y-2.5">
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <div className="liquid-glass-pill h-11 px-4 rounded-full flex items-center gap-2.5">
+            <h1 className="font-serif text-lg font-bold tracking-tight text-stone-900 dark:text-white">
+              Sources
+            </h1>
+            <span className="text-xs text-stone-500 dark:text-stone-300 font-mono tabular-nums">
+              {feeds.length}
+            </span>
           </div>
+
+          <div className="liquid-glass-pill h-11 px-2 rounded-full flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                triggerHapticSelection();
+                onRefreshAll();
+              }}
+              disabled={isRefreshing || isOffline || feeds.length === 0}
+              aria-label="Sync all sources"
+              title="Sync all sources"
+              className="w-9 h-9 flex items-center justify-center rounded-full text-stone-800 dark:text-white transition-transform disabled:opacity-40 active:scale-90"
+            >
+              <RefreshCw
+                className={`w-4 h-4 stroke-[2] ${isRefreshing ? 'animate-spin text-[#FF6719]' : ''}`}
+              />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                triggerHapticSelection();
+                onOpenFeedModal();
+              }}
+              aria-label="OPML & Folder Manager"
+              title="OPML Import / Export"
+              className="px-2.5 h-8 rounded-full text-[11px] font-semibold text-stone-700 dark:text-stone-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+            >
+              OPML
+            </button>
+          </div>
+        </div>
+
+        <form
+          onSubmit={handleOmnibarSubmit}
+          className="liquid-glass-pill rounded-2xl p-1.5 pl-3.5 flex items-center gap-2 border border-stone-200/70 dark:border-white/[0.1]"
+        >
+          <Globe className="w-4 h-4 text-[#FF6719] shrink-0 pointer-events-none" />
+          <input
+            type="text"
+            value={omnibarInput}
+            onChange={(e) => setOmnibarInput(e.target.value)}
+            placeholder="Add website or RSS link..."
+            aria-label="Add website or RSS link"
+            className="w-full bg-transparent text-xs text-stone-900 dark:text-white placeholder-stone-500 dark:placeholder-stone-400 focus:outline-none py-1.5"
+          />
           <button
             type="submit"
-            disabled={isAdding || !urlInput.trim()}
-            className="px-5 py-2.5 bg-[#FF6719] hover:bg-[#e55b15] text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50 transition-all cursor-pointer shrink-0 shadow-xs"
+            disabled={!omnibarInput.trim() || isLoadingDirectUrl}
+            className="px-3.5 py-1.5 rounded-xl bg-[#FF6719] hover:bg-[#e85a12] text-white text-xs font-semibold flex items-center gap-1 shrink-0 disabled:opacity-40 active:scale-95 transition-all"
           >
-            {isAdding ? (
-              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            {isLoadingDirectUrl ? (
+              <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
             ) : (
-              <Plus className="w-4 h-4" />
+              <Plus className="w-3.5 h-3.5" />
             )}
-            <span>Add Source</span>
+            <span>{isLoadingDirectUrl ? 'Adding...' : 'Add'}</span>
           </button>
         </form>
 
-        {error && (
-          <div className="mt-3 p-3 rounded-xl bg-red-500/10 border border-red-500/20 flex items-start gap-2.5 text-xs text-red-600 dark:text-red-400">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{error}</span>
-          </div>
-        )}
-      </div>
-
-      {/* Starter Packs (One-Click Bundles) */}
-      <div className="space-y-2.5">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400 px-1 flex items-center gap-1.5">
-          <Sparkles className="w-3.5 h-3.5 text-[#FF6719]" />
-          <span>1-Click Starter Packs</span>
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
           <button
             type="button"
-            disabled={isAddingPack !== null}
-            onClick={() =>
-              handleAddStarterPack('bd-pack', (p) =>
-                (p.category || '').toLowerCase().includes('bangla') ||
-                (p.category || '').toLowerCase().includes('bd')
-              )
-            }
-            className="p-3.5 rounded-2xl liquid-glass text-left hover:border-[#FF6719]/50 transition-all group cursor-pointer"
+            onClick={() => {
+              triggerHapticSelection();
+              setActiveFolderPill(null);
+            }}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all ${
+              activeFolderPill === null
+                ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900 shadow-xs'
+                : 'liquid-glass-pill text-stone-600 dark:text-stone-300'
+            }`}
           >
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-[#FF6719]">
-                Bangladesh Pack
-              </span>
-              <Plus className="w-4 h-4 text-stone-400 group-hover:text-[#FF6719] transition-colors" />
-            </div>
-            <p className="font-serif font-semibold text-sm text-stone-900 dark:text-stone-100 mt-1">
-              Top Bangla & English BD Portals
-            </p>
-            <p className="text-[11px] text-stone-500 dark:text-stone-400 mt-0.5">
-              Prothom Alo, Daily Star, bdnews24, Ittefaq, Jugantor & more
-            </p>
+            All Sources ({feeds.length})
           </button>
 
-          <button
-            type="button"
-            disabled={isAddingPack !== null}
-            onClick={() =>
-              handleAddStarterPack(
-                'world-pack',
-                (p) => (p.category || '').toLowerCase() === 'world'
-              )
-            }
-            className="p-3.5 rounded-2xl liquid-glass text-left hover:border-[#FF6719]/50 transition-all group cursor-pointer"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400">
-                Global Wire
-              </span>
-              <Plus className="w-4 h-4 text-stone-400 group-hover:text-sky-500 transition-colors" />
-            </div>
-            <p className="font-serif font-semibold text-sm text-stone-900 dark:text-stone-100 mt-1">
-              World & Geopolitics
-            </p>
-            <p className="text-[11px] text-stone-500 dark:text-stone-400 mt-0.5">
-              BBC World, Al Jazeera, The Guardian, NYT & DW News
-            </p>
-          </button>
-
-          <button
-            type="button"
-            disabled={isAddingPack !== null}
-            onClick={() =>
-              handleAddStarterPack(
-                'tech-pack',
-                (p) =>
-                  (p.category || '').toLowerCase() === 'tech' ||
-                  (p.category || '').toLowerCase() === 'science'
-              )
-            }
-            className="p-3.5 rounded-2xl liquid-glass text-left hover:border-[#FF6719]/50 transition-all group cursor-pointer"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                Tech & Science
-              </span>
-              <Plus className="w-4 h-4 text-stone-400 group-hover:text-emerald-500 transition-colors" />
-            </div>
-            <p className="font-serif font-semibold text-sm text-stone-900 dark:text-stone-100 mt-1">
-              Builders & Research
-            </p>
-            <p className="text-[11px] text-stone-500 dark:text-stone-400 mt-0.5">
-              Hacker News, Ars Technica, The Verge, TechCrunch & Nature
-            </p>
-          </button>
-        </div>
-      </div>
-
-      {/* Subscribed Feeds Grouped by Folder/Category */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between px-1">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
-            Your Subscriptions ({sources.length})
-          </h2>
-          {activeSourceId && (
-            <button
-              type="button"
-              onClick={() => onSelectSource(null)}
-              className="text-xs font-medium text-[#FF6719] hover:underline cursor-pointer"
-            >
-              Show All Feeds
-            </button>
-          )}
-        </div>
-
-        {sources.length === 0 ? (
-          <div className="p-8 text-center rounded-2xl border border-dashed border-stone-300 dark:border-stone-800 text-stone-500 text-sm">
-            No feeds subscribed yet. Add a URL above or pick a Starter Pack.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {(Object.entries(displayedGroupedSources) as [string, FeedSource[]][]).map(
-              ([categoryName, groupItems]) => {
-                const isCollapsed = Boolean(collapsedGroups[categoryName]);
-                const totalInGroup = groupedSources[categoryName]?.length || groupItems.length;
-                return (
-                  <div key={categoryName} className="space-y-1.5">
-                    <button
-                      type="button"
-                      onClick={() => toggleGroupCollapse(categoryName)}
-                      className="w-full flex items-center justify-between px-2 py-1 rounded-lg hover:bg-stone-200/50 dark:hover:bg-white/[0.04] transition-colors text-left"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        {isCollapsed ? (
-                          <ChevronRight className="w-3.5 h-3.5 text-stone-400" />
-                        ) : (
-                          <ChevronDown className="w-3.5 h-3.5 text-stone-400" />
-                        )}
-                        <span className="text-[11px] font-bold uppercase tracking-wider text-stone-400 dark:text-stone-500">
-                          {categoryName}
-                        </span>
-                        <span className="text-[10px] font-mono text-stone-400 dark:text-stone-500">
-                          ({totalInGroup})
-                        </span>
-                      </div>
-                      <span className="text-[10px] text-stone-400 dark:text-stone-500">
-                        {isCollapsed ? 'Expand' : 'Collapse'}
-                      </span>
-                    </button>
-                    {!isCollapsed && (
-                      <div className="divide-y divide-stone-200/60 dark:divide-white/[0.06] rounded-2xl liquid-glass overflow-hidden">
-                        {groupItems.map((source) => {
-                          const isSelected = activeSourceId === source.id;
-                          const health = getSourceHealthBadge(source);
-                          return (
-                            <div
-                              key={source.id}
-                              className={`p-3.5 sm:px-4 flex items-center justify-between gap-3 transition-colors ${
-                                isSelected
-                                  ? 'bg-amber-500/5 dark:bg-amber-500/10'
-                                  : 'hover:bg-stone-50 dark:hover:bg-stone-800/40'
-                              }`}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => onSelectSource(isSelected ? null : source.id)}
-                                className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer"
-                              >
-                                <SourceAvatar name={source.title} url={source.url} size="md" />
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2">
-                                    <p className="font-medium text-sm text-stone-900 dark:text-stone-100 truncate">
-                                      {source.title}
-                                    </p>
-                                    <span
-                                      title={health.label}
-                                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium shrink-0 ${
-                                        health.tone === 'emerald'
-                                          ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                                          : health.tone === 'amber'
-                                            ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                                            : 'bg-stone-200/70 dark:bg-white/[0.06] text-stone-500 dark:text-stone-400'
-                                      }`}
-                                    >
-                                      <span
-                                        className={`w-1.5 h-1.5 rounded-full ${
-                                          health.tone === 'emerald'
-                                            ? 'bg-emerald-500'
-                                            : health.tone === 'amber'
-                                              ? 'bg-amber-500'
-                                              : 'bg-stone-400'
-                                        }`}
-                                      />
-                                      <span className="hidden sm:inline">{health.label}</span>
-                                    </span>
-                                  </div>
-                                  <p className="text-xs text-stone-400 dark:text-stone-500 truncate">
-                                    {source.url}
-                                  </p>
-                                </div>
-                              </button>
-
-                              <div className="flex items-center gap-1 shrink-0">
-                                {editingCatId === source.id ? (
-                                  <form
-                                    onSubmit={(e) => {
-                                      e.preventDefault();
-                                      if (catInput.trim()) {
-                                        onUpdateSourceCategory(source.id, catInput.trim());
-                                      }
-                                      setEditingCatId(null);
-                                    }}
-                                    className="flex items-center gap-1"
-                                  >
-                                    <input
-                                      type="text"
-                                      value={catInput}
-                                      onChange={(e) => setCatInput(e.target.value)}
-                                      placeholder="Folder..."
-                                      autoFocus
-                                      onBlur={() => setEditingCatId(null)}
-                                      className="w-24 px-2 py-1 text-xs rounded-lg bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-700 text-stone-900 dark:text-stone-100 focus:outline-none"
-                                    />
-                                  </form>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setEditingCatId(source.id);
-                                      setCatInput(source.category || 'General');
-                                    }}
-                                    className="p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg transition-colors cursor-pointer"
-                                    title="Move to folder / category"
-                                  >
-                                    <FolderPlus className="w-4 h-4" />
-                                  </button>
-                                )}
-
-                                {onEditSource && (
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditSourceModal(source)}
-                                    className="p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg transition-colors cursor-pointer"
-                                    title={`Edit ${source.title}`}
-                                    aria-label={`Edit ${source.title}`}
-                                  >
-                                    <Edit3 className="w-4 h-4" />
-                                  </button>
-                                )}
-
-                                <a
-                                  href={source.siteUrl || source.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  referrerPolicy="no-referrer"
-                                  className="p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg transition-colors"
-                                  title="Open site"
-                                >
-                                  <ExternalLink className="w-4 h-4" />
-                                </a>
-
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteSource(source)}
-                                  className="p-2 text-stone-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg transition-colors cursor-pointer"
-                                  title={`Remove ${source.title}`}
-                                  aria-label={`Remove ${source.title}`}
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-            )}
-
-            {/* Show All / Compact Toggle for Subscriptions */}
-            {sources.length > INITIAL_VISIBLE_SUBSCRIPTIONS && !searchQuery.trim() && (
+          {allFolders.map((folder) => {
+            const isActive = activeFolderPill === folder || selectedFolder === folder;
+            return (
               <button
+                key={folder}
                 type="button"
-                onClick={() => setShowAllSubscribed((prev) => !prev)}
-                className="w-full py-2.5 px-4 rounded-2xl liquid-glass text-xs font-semibold text-stone-700 dark:text-stone-200 hover:border-[#FF6719]/50 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-              >
-                {showAllSubscribed ? (
-                  <>
-                    <ChevronDown className="w-4 h-4 rotate-180 text-[#FF6719]" />
-                    <span>Show Fewer Subscriptions</span>
-                  </>
-                ) : (
-                  <>
-                    <ChevronDown className="w-4 h-4 text-[#FF6719]" />
-                    <span>
-                      Show All {sources.length} Subscriptions (
-                      {sources.length - INITIAL_VISIBLE_SUBSCRIPTIONS} more)
-                    </span>
-                  </>
-                )}
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Curated Directory with Search + Category + Language Filter */}
-      <div className="space-y-3.5 pt-2">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-1">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
-            Curated Directory ({filteredPresets.length})
-          </h2>
-
-          {/* Language Filter Segment */}
-          <div className="flex items-center gap-1 bg-stone-200/70 dark:bg-stone-900 p-1 rounded-xl self-start">
-            {(
-              [
-                { id: 'all', label: 'All' },
-                { id: 'bn', label: 'বাংলা / BD' },
-                { id: 'en', label: 'Global / EN' },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setDiscoverLang(tab.id)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                  discoverLang === tab.id
-                    ? 'bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 shadow-2xs'
-                    : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                onClick={() => {
+                  triggerHapticSelection();
+                  if (activeFolderPill === folder) {
+                    onSelectFolder(folder);
+                  } else {
+                    setActiveFolderPill(folder);
+                  }
+                }}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap flex items-center gap-1.5 transition-all ${
+                  isActive
+                    ? 'bg-[#FF6719] text-white shadow-xs'
+                    : 'liquid-glass-pill text-stone-600 dark:text-stone-300'
                 }`}
               >
-                {tab.label}
+                <Folder className="w-3 h-3" />
+                <span>{folder}</span>
               </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Search Input inside Directory */}
-        <div className="relative">
-          <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search directory (e.g. Prothom Alo, BBC, Science, Bangla)..."
-            className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800/80 rounded-xl text-sm text-stone-900 dark:text-stone-100 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-amber-600/30"
-          />
-        </div>
-
-        {/* Category Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1">
-          {allDiscoverCategories.map((cat) => (
-            <button
-              key={cat}
-              type="button"
-              onClick={() => setDiscoverCategory(cat)}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
-                discoverCategory === cat
-                  ? 'bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900'
-                  : 'bg-stone-200/60 dark:bg-stone-900 text-stone-600 dark:text-stone-400 hover:bg-stone-300/60 dark:hover:bg-stone-800'
-              }`}
-            >
-              {cat}
-            </button>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          {displayedPresets.map((preset) => {
-            const added = isSourceAdded(preset.url);
-            const favicon = getFaviconUrl(preset.url);
-            return (
-              <div
-                key={preset.url}
-                className="p-3.5 rounded-2xl liquid-glass flex items-center justify-between gap-3"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  {favicon ? (
-                    <img
-                      src={favicon}
-                      alt=""
-                      className="w-7 h-7 rounded-md bg-stone-100 dark:bg-stone-800 p-0.5 shrink-0"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <Globe className="w-7 h-7 text-stone-400 shrink-0" />
-                  )}
-                  <div className="min-w-0">
-                    <p className="font-medium text-sm text-stone-900 dark:text-stone-100 truncate">
-                      {preset.title}
-                    </p>
-                    <span className="text-[11px] font-medium text-stone-500 dark:text-stone-400">
-                      {preset.category}
-                    </span>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={added || isAdding}
-                  onClick={() => onAddPreset(preset)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors shrink-0 cursor-pointer ${
-                    added
-                      ? 'bg-stone-100 dark:bg-stone-800 text-stone-400 dark:text-stone-500 cursor-default'
-                      : 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 hover:opacity-90'
-                  }`}
-                >
-                  {added ? 'Added' : '+ Subscribe'}
-                </button>
-              </div>
             );
           })}
-        </div>
 
-        {/* Show All / Compact Toggle for Curated Directory */}
-        {filteredPresets.length > INITIAL_VISIBLE_PRESETS && !isDirectoryFiltered && (
           <button
             type="button"
-            onClick={() => setShowAllDirectory((prev) => !prev)}
-            className="w-full py-2.5 px-4 rounded-2xl liquid-glass text-xs font-semibold text-stone-700 dark:text-stone-200 hover:border-[#FF6719]/50 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+            onClick={() => {
+              triggerHapticSelection();
+              setIsNewFolderOpen((v) => !v);
+            }}
+            className="px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap liquid-glass-pill text-[#FF6719] flex items-center gap-1 shrink-0 active:scale-95 transition-transform"
           >
-            {showAllDirectory ? (
-              <>
-                <ChevronDown className="w-4 h-4 rotate-180 text-[#FF6719]" />
-                <span>Show Fewer Directory Sources</span>
-              </>
+            <FolderPlus className="w-3 h-3" />
+            <span>+ Folder</span>
+          </button>
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-4 py-1.5 pb-28 space-y-4 no-scrollbar">
+        {isNewFolderOpen && (
+          <form
+            onSubmit={handleCreateFolderSubmit}
+            className="p-3 rounded-2xl liquid-glass border border-[#FF6719]/30 space-y-2 animate-in fade-in duration-150"
+          >
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                required
+                autoFocus
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                placeholder="Folder name (e.g. Daily, Tech, Markets)..."
+                className="flex-1 px-3 py-2 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-stone-200/80 dark:border-white/[0.08] text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-[#FF6719]"
+              />
+              <button
+                type="submit"
+                disabled={!newFolderName.trim()}
+                className="px-3.5 py-2 bg-[#FF6719] text-white rounded-xl text-xs font-semibold disabled:opacity-40"
+              >
+                Create
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsNewFolderOpen(false)}
+                aria-label="Cancel folder"
+                className="p-2 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </form>
+        )}
+
+        {activeFolderPill && (
+          <div className="flex items-center justify-between px-3.5 py-2 rounded-2xl bg-[#FF6719]/10 border border-[#FF6719]/25">
+            <span className="text-xs font-semibold text-stone-800 dark:text-stone-100">
+              Folder: {activeFolderPill} ({filteredFeeds.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                triggerHapticSelection();
+                onSelectFolder(activeFolderPill);
+              }}
+              className="text-xs font-bold text-[#FF6719] flex items-center gap-1"
+            >
+              <span>Read Folder Feed</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {feeds.length > 0 && (
+          <section className="space-y-2">
+            {feeds.length > 5 && (
+              <div className="px-3 py-1.5 rounded-xl bg-stone-200/50 dark:bg-white/[0.04] flex items-center gap-2">
+                <Search className="w-3.5 h-3.5 text-stone-400 shrink-0" />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Filter your added sources..."
+                  className="w-full bg-transparent text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none"
+                />
+              </div>
+            )}
+            <div className="rounded-2xl liquid-glass overflow-hidden divide-y divide-stone-200/40 dark:divide-white/[0.06]">
+              {filteredFeeds.map((feed) => renderSourceRow(feed))}
+              {filteredFeeds.length === 0 && (
+                <div className="px-4 py-6 text-center text-xs text-stone-400">
+                  No sources match this filter.
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        <section className="rounded-2xl liquid-glass overflow-hidden border border-stone-200/60 dark:border-white/[0.08]">
+          <button
+            type="button"
+            onClick={() => {
+              triggerHapticSelection();
+              setIsDirectoryExpanded((v) => !v);
+            }}
+            className="w-full px-4 py-3 flex items-center justify-between text-left bg-stone-100/60 dark:bg-white/[0.03] hover:bg-stone-200/50 dark:hover:bg-white/[0.05] transition-colors"
+          >
+            <div>
+              <h2 className="font-sans text-xs font-bold uppercase tracking-wider text-stone-800 dark:text-stone-100">
+                Quick-Add Newspapers &amp; Portals
+              </h2>
+              <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                1-tap subscribe to curated Bangladesh &amp; world outlets
+              </span>
+            </div>
+            {isDirectoryExpanded ? (
+              <ChevronDown className="w-4 h-4 text-stone-400 shrink-0" />
             ) : (
-              <>
-                <ChevronDown className="w-4 h-4 text-[#FF6719]" />
-                <span>
-                  Browse All {filteredPresets.length} Curated Sources (
-                  {filteredPresets.length - INITIAL_VISIBLE_PRESETS} more)
-                </span>
-              </>
+              <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
             )}
           </button>
-        )}
+
+          {isDirectoryExpanded && (
+            <div className="divide-y divide-stone-200/40 dark:divide-white/[0.06]">
+              {QUICK_ADD_PRESETS.map((preset) => {
+                const added = isPresetAdded(preset);
+                const isAdding = addingPresetDomain === preset.domain;
+                return (
+                  <div
+                    key={preset.domain}
+                    className="px-3.5 py-2.5 flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <SourceAvatar name={preset.title} url={preset.siteUrl} size="sm" />
+                      <div className="min-w-0">
+                        <div className="font-serif text-sm font-semibold text-stone-900 dark:text-stone-100 truncate">
+                          {preset.title}
+                        </div>
+                        <div className="text-[11px] text-stone-400 dark:text-stone-500 truncate">
+                          {preset.domain}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={added || isAdding}
+                      onClick={() => handleQuickAddPreset(preset)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-semibold shrink-0 flex items-center gap-1 transition-all active:scale-95 ${
+                        added
+                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 cursor-default'
+                          : 'bg-[#FF6719]/15 hover:bg-[#FF6719] text-[#FF6719] hover:text-white'
+                      }`}
+                    >
+                      {isAdding ? (
+                        <LoaderCircle className="w-3 h-3 animate-spin" />
+                      ) : added ? (
+                        <>
+                          <Check className="w-3 h-3" />
+                          <span>Added</span>
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-3 h-3" />
+                          <span>Add</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       </div>
 
-      {/* Edit Source Modal */}
-      {editingSource && (
+      {movingFeed && (
         <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Edit Source"
-          onClick={() => !isSavingEdit && setEditingSource(null)}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setMovingFeed(null)}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-3xl liquid-glass bg-white/95 dark:bg-stone-900/95 border border-stone-200/80 dark:border-white/15 p-5 shadow-2xl space-y-4"
+            className="w-full max-w-xs liquid-glass rounded-3xl p-4 shadow-2xl border border-white/30 dark:border-white/15 text-stone-900 dark:text-stone-100 space-y-3 animate-in zoom-in-95 duration-150"
           >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Edit3 className="w-4 h-4 text-[#FF6719]" />
-                <h3 className="font-serif text-lg font-bold text-stone-900 dark:text-stone-100">
-                  Edit Source
-                </h3>
+            <div className="flex items-center justify-between pb-2.5 border-b border-stone-200/60 dark:border-white/10">
+              <div className="min-w-0 pr-2">
+                <span className="text-[11px] uppercase tracking-wider font-semibold text-stone-400 block">
+                  Assign Folder
+                </span>
+                <span className="font-serif font-semibold text-sm truncate block">
+                  {movingFeed.title}
+                </span>
               </div>
               <button
                 type="button"
-                onClick={() => setEditingSource(null)}
-                disabled={isSavingEdit}
-                className="w-8 h-8 rounded-full flex items-center justify-center text-stone-400 hover:text-stone-700 dark:hover:text-white hover:bg-stone-200/50 dark:hover:bg-white/10 transition-colors"
-                aria-label="Close edit source modal"
+                onClick={() => setMovingFeed(null)}
+                className="p-1 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveSourceEdit} className="space-y-3.5">
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400 mb-1">
-                  Display Name
-                </label>
-                <input
-                  type="text"
-                  value={editTitleInput}
-                  onChange={(e) => setEditTitleInput(e.target.value)}
-                  placeholder="e.g. Prothom Alo"
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-stone-100 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-[#FF6719]/40"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400 mb-1">
-                  Feed or Website URL
-                </label>
-                <input
-                  type="text"
-                  value={editUrlInput}
-                  onChange={(e) => setEditUrlInput(e.target.value)}
-                  placeholder="https://..."
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-stone-100 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-[#FF6719]/40 font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400 mb-1">
-                  Category / Folder
-                </label>
-                <input
-                  type="text"
-                  value={editCategoryInput}
-                  onChange={(e) => setEditCategoryInput(e.target.value)}
-                  placeholder="e.g. Bangla, World, Tech..."
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-stone-100 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-sm text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-[#FF6719]/40"
-                />
-              </div>
-
-              {editError && (
-                <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-600 dark:text-red-400 flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{editError}</span>
-                </div>
-              )}
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  disabled={isSavingEdit}
-                  onClick={() => setEditingSource(null)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-stone-600 dark:text-stone-400 hover:bg-stone-200/60 dark:hover:bg-white/10 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingEdit}
-                  className="px-5 py-2 rounded-xl text-xs font-semibold bg-[#FF6719] hover:bg-[#e55b15] text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
-                >
-                  {isSavingEdit ? (
-                    <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <Check className="w-3.5 h-3.5" />
-                  )}
-                  <span>{isSavingEdit ? 'Verifying & Saving...' : 'Save Changes'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Delete Source Confirmation Modal */}
-      {confirmDeleteSource && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Confirm Remove Source"
-          onClick={() => setConfirmDeleteSource(null)}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-sm rounded-3xl liquid-glass bg-white/95 dark:bg-stone-900/95 border border-stone-200/80 dark:border-white/15 p-5 shadow-2xl space-y-4"
-          >
-            <div className="flex items-center gap-2.5 text-red-600 dark:text-red-400">
-              <Trash2 className="w-5 h-5 shrink-0" />
-              <h3 className="font-serif text-lg font-bold text-stone-900 dark:text-stone-100">
-                Remove Source?
-              </h3>
-            </div>
-            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
-              Are you sure you want to unsubscribe from{' '}
-              <span className="font-semibold text-stone-900 dark:text-white">
-                {confirmDeleteSource.title}
-              </span>
-              ? Its cached stories will be removed from your timeline (saved bookmarks are kept).
-            </p>
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setConfirmDeleteSource(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-stone-600 dark:text-stone-400 hover:bg-stone-200/60 dark:hover:bg-white/10 transition-colors"
-              >
-                Cancel
-              </button>
+            <div className="space-y-1.5 max-h-60 overflow-y-auto no-scrollbar">
               <button
                 type="button"
                 onClick={() => {
-                  const target = confirmDeleteSource;
-                  setConfirmDeleteSource(null);
-                  onRemoveSource(target.id);
-                  setOpmlMessage(`Removed "${target.title}"`);
-                  setTimeout(() => setOpmlMessage(null), 3000);
+                  triggerHapticComplete();
+                  onMoveFeedToFolder(movingFeed.id, '');
+                  setMovingFeed(null);
                 }}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-700 text-white transition-colors"
+                className={`w-full px-3 py-2 rounded-xl text-xs flex items-center justify-between transition-colors ${
+                  !movingFeed.category?.trim()
+                    ? 'bg-[#FF6719]/15 text-[#FF6719] font-semibold'
+                    : 'hover:bg-stone-200/60 dark:hover:bg-white/[0.06] text-stone-600 dark:text-stone-300'
+                }`}
               >
-                Remove
+                <span>No Folder (All Sources)</span>
+                {!movingFeed.category?.trim() && (
+                  <Check className="w-3.5 h-3.5 text-[#FF6719]" />
+                )}
               </button>
+
+              {allFolders.map((folder) => {
+                const isCurrent = (movingFeed.category?.trim() || '') === folder;
+                return (
+                  <button
+                    key={folder}
+                    type="button"
+                    onClick={() => {
+                      triggerHapticComplete();
+                      onMoveFeedToFolder(movingFeed.id, folder);
+                      setMovingFeed(null);
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl text-xs flex items-center justify-between transition-colors ${
+                      isCurrent
+                        ? 'bg-[#FF6719]/15 text-[#FF6719] font-semibold'
+                        : 'hover:bg-stone-200/60 dark:hover:bg-white/[0.06] text-stone-800 dark:text-stone-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <Folder className="w-3.5 h-3.5 text-[#FF6719] shrink-0" />
+                      <span className="truncate">{folder}</span>
+                    </div>
+                    {isCurrent && <Check className="w-3.5 h-3.5 text-[#FF6719] shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 border-t border-stone-200/60 dark:border-white/10">
+              {isCreatingFolderInMove ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!moveNewFolderName.trim()) return;
+                    triggerHapticComplete();
+                    onMoveFeedToFolder(movingFeed.id, moveNewFolderName.trim());
+                    setMovingFeed(null);
+                  }}
+                  className="flex items-center gap-1.5"
+                >
+                  <input
+                    type="text"
+                    autoFocus
+                    value={moveNewFolderName}
+                    onChange={(e) => setMoveNewFolderName(e.target.value)}
+                    placeholder="New folder name..."
+                    className="flex-1 px-2.5 py-1.5 rounded-xl text-xs bg-white/80 dark:bg-black/40 border border-[#FF6719]/50 text-stone-900 dark:text-stone-100 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!moveNewFolderName.trim()}
+                    className="px-3 py-1.5 bg-[#FF6719] text-white rounded-xl text-xs font-semibold disabled:opacity-40"
+                  >
+                    Move
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsCreatingFolderInMove(true)}
+                  className="w-full py-1.5 text-xs font-semibold text-[#FF6719] flex items-center justify-center gap-1.5 hover:opacity-80"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                  <span>+ Move to New Folder</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
       )}
-
-      {/* Restore Defaults Confirmation Modal */}
-      {confirmResetModal && onResetDefaultSources && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Restore Default Sources"
-          onClick={() => !isResettingDefaults && setConfirmResetModal(false)}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-sm rounded-3xl liquid-glass bg-white/95 dark:bg-stone-900/95 border border-stone-200/80 dark:border-white/15 p-5 shadow-2xl space-y-4"
-          >
-            <div className="flex items-center gap-2.5 text-[#FF6719]">
-              <Sparkles className="w-5 h-5 shrink-0" />
-              <h3 className="font-serif text-lg font-bold text-stone-900 dark:text-stone-100">
-                Restore Default Sources?
-              </h3>
-            </div>
-            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
-              This will restore Chinta&apos;s starter Bangla &amp; Global news sources and refresh
-              your timeline. Your saved bookmarks will remain untouched.
-            </p>
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                disabled={isResettingDefaults}
-                onClick={() => setConfirmResetModal(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-stone-600 dark:text-stone-400 hover:bg-stone-200/60 dark:hover:bg-white/10 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isResettingDefaults}
-                onClick={async () => {
-                  setIsResettingDefaults(true);
-                  try {
-                    await onResetDefaultSources();
-                    setConfirmResetModal(false);
-                    setOpmlMessage('Restored default starter sources!');
-                  } finally {
-                    setIsResettingDefaults(false);
-                    setTimeout(() => setOpmlMessage(null), 3500);
-                  }
-                }}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-[#FF6719] hover:bg-[#e55b15] text-white transition-colors disabled:opacity-50"
-              >
-                {isResettingDefaults ? 'Restoring...' : 'Restore Defaults'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 100% On-Device & IP-Shielded Privacy Guarantee Card */}
-      <div className="p-4 sm:p-5 rounded-2xl liquid-glass border border-stone-200/70 dark:border-white/10 space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-1.5">
-                <span>100% Tracker-Free &amp; IP-Shielded</span>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
-                  Local Only
-                </span>
-              </h2>
-              <p className="text-xs text-stone-500 dark:text-stone-400">
-                Zero cloud servers, zero accounts, and zero third-party telemetry. Every feed,
-                article, and image is fetched through the privacy relay so publishers never see your
-                IP address. Use Export/Import OPML above for offline backups.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

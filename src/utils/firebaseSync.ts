@@ -1,7 +1,8 @@
-import type { FeedSource, FeedItem } from '../types';
+import type { Feed, FeedSource, FeedItem, ReaderPreferences } from '../types';
 import type { ReadingHabitState, ReadHistoryEntry } from './feedIntelligence';
 import type { ReadingSpeedProfile } from './readingSpeed';
 import type { PrivacySettings } from './storage';
+import type { LocalPrivacyUser } from '../contexts/FirebaseContext';
 
 /**
  * Local-only no-op stubs.
@@ -9,7 +10,11 @@ import type { PrivacySettings } from './storage';
  * in localStorage and IndexedDB without contacting Firebase or any external cloud server.
  */
 
+export type UserOrUid = string | LocalPrivacyUser | { uid: string };
+
 export interface CloudMetaState {
+  folders?: string[];
+  preferences?: ReaderPreferences;
   darkMode?: boolean;
   feedLanguageFilter?: 'all' | 'bn' | 'en';
   feedCategoryFilter?: string;
@@ -20,62 +25,74 @@ export interface CloudMetaState {
 }
 
 export async function saveCloudStateToFirestore(
-  _uid: string,
-  _state: Partial<CloudMetaState>
+  _uidOrParams:
+    | UserOrUid
+    | {
+        user: UserOrUid;
+        folders?: string[];
+        preferences?: ReaderPreferences;
+        readingHabit?: ReadingHabitState;
+        readingSpeedProfile?: ReadingSpeedProfile;
+      },
+  _state?: Partial<CloudMetaState>
 ): Promise<void> {}
 
 export async function syncAllSourcesToFirestore(
-  _uid: string,
+  _userOrUid: UserOrUid,
   _sources: FeedSource[]
 ): Promise<void> {}
 
 export async function syncSourceToFirestore(
-  _uid: string,
-  _source: FeedSource
+  _userOrUid: UserOrUid,
+  _source: Feed | FeedSource
 ): Promise<void> {}
 
 export async function deleteSourceFromFirestore(
-  _uid: string,
-  _sourceId: string
+  _userOrUid: UserOrUid,
+  _sourceOrId: string | Feed | FeedSource
 ): Promise<void> {}
 
 export async function syncBookmarkToFirestore(
-  _uid: string,
+  _userOrUid: UserOrUid,
   _article: FeedItem
 ): Promise<void> {}
 
 export async function deleteBookmarkFromFirestore(
-  _uid: string,
-  _articleId: string
+  _userOrUid: UserOrUid,
+  _articleOrId: string | FeedItem
 ): Promise<void> {}
 
 export async function syncAllBookmarksToFirestore(
-  _uid: string,
-  _bookmarks: Record<string, FeedItem>
+  _userOrUid: UserOrUid,
+  _bookmarks: Record<string, FeedItem> | FeedItem[]
 ): Promise<void> {}
 
 export async function recordReadEntryToFirestore(
-  _uid: string,
-  _entry: ReadHistoryEntry
+  _userOrUid: UserOrUid,
+  _entry: ReadHistoryEntry | FeedItem
 ): Promise<void> {}
 
 export interface CloudUserDataSnapshot {
   meta: CloudMetaState | null;
+  metaState: CloudMetaState | null;
   sources: FeedSource[];
-  bookmarks: Record<string, FeedItem>;
+  bookmarks: FeedItem[];
+  readSignatures: string[];
 }
 
-export async function loadAllCloudUserData(_uid: string): Promise<CloudUserDataSnapshot> {
+export async function loadAllCloudUserData(_userOrUid: UserOrUid): Promise<CloudUserDataSnapshot> {
   return {
     meta: null,
+    metaState: null,
     sources: [],
-    bookmarks: {},
+    bookmarks: [],
+    readSignatures: [],
   };
 }
 
 export function subscribeToCloudMetaState(
-  _uid: string,
-  _onUpdate: (meta: CloudMetaState) => void
+  _userOrUid: UserOrUid,
+  _onUpdate: (meta: CloudMetaState | null) => void
 ): () => void {
   return () => {};
 }

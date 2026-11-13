@@ -23,14 +23,17 @@ test('toFirestoreSafeId normalizes arbitrary RSS/URL IDs into valid Firestore do
     assert.ok(safe.length >= 1 && safe.length <= 128);
     assert.equal(SAFE_ID_REGEX.test(safe), true);
   }
-  assert.notEqual(toFirestoreSafeId('https://example.com/a'), toFirestoreSafeId('https://example.com/b'));
+  assert.notEqual(
+    toFirestoreSafeId('https://www.thedailystar.net/a'),
+    toFirestoreSafeId('https://www.thedailystar.net/b')
+  );
 });
 
 test('Firebase payload sanitizers enforce blueprint string length bounds, list limits, and whitelist keys', () => {
   const userRoot = sanitizeUserRootPayload({
     uid: 'alice_uid_123',
     displayName: 'A'.repeat(250),
-    photoURL: 'https://example.com/' + 'x'.repeat(600),
+    photoURL: 'https://www.thedailystar.net/' + 'x'.repeat(600),
   });
   assert.equal(userRoot.ownerId, 'alice_uid_123');
   assert.equal(userRoot.displayName?.length, 120);
@@ -98,9 +101,9 @@ test('Firebase payload sanitizers enforce blueprint string length bounds, list l
     id: 'b1',
     feedId: 'f1',
     feedTitle: 'T'.repeat(300),
-    feedUrl: 'https://example.com',
+    feedUrl: 'https://www.thedailystar.net',
     title: 'H'.repeat(800),
-    link: 'https://example.com/news',
+    link: 'https://www.thedailystar.net/news',
     pubDate: new Date().toISOString(),
     timestamp: -10,
     author: 'N'.repeat(300),
@@ -123,7 +126,7 @@ test('Firebase payload sanitizers enforce blueprint string length bounds, list l
   const source = sanitizeSourcePayload('alice_uid_123', {
     id: 'src1',
     title: 'S'.repeat(300),
-    url: 'https://example.com/' + 'u'.repeat(1200),
+    url: 'https://www.thedailystar.net/' + 'u'.repeat(1200),
     category: 'C'.repeat(120),
     defaultTags: ['bd'],
     unreadCount: 0,
@@ -134,10 +137,10 @@ test('Firebase payload sanitizers enforce blueprint string length bounds, list l
 
   const readEntry = sanitizeReadEntryPayload('alice_uid_123', {
     id: 'art_123',
-    link: 'https://www.example.com/story?utm_source=fb',
+    link: 'https://www.thedailystar.net/story?utm_source=fb',
     title: 'Test Read Headline',
   });
   assert.equal(readEntry.ownerId, 'alice_uid_123');
-  assert.equal(readEntry.canonicalUrl, 'https://example.com/story');
+  assert.equal(readEntry.canonicalUrl, 'https://thedailystar.net/story');
   assert.ok(readEntry.headlineKey?.startsWith('title:'));
 });
